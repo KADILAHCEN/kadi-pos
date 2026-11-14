@@ -1,0 +1,120 @@
+@import "tailwindcss";
+
+@custom-variant dark (&:where(.dark, .dark *));
+
+/* True Dark Mode (OLED Charcoal & High-Contrast Text/Icons) — scoped strictly to .dark */
+html.dark {
+  color-scheme: dark;
+  --color-slate-950: var(--palette-dark-950, #04060a);
+  --color-slate-900: var(--palette-dark-900, #0a0f18);
+  --color-slate-800: var(--palette-dark-800, #131c2b);
+  --color-slate-700: var(--palette-dark-700, #26344a);
+  --color-slate-600: var(--palette-dark-600, #3c4d69);
+  --color-slate-500: #93a5bf;
+  --color-slate-400: #b7c6db;
+  --color-slate-300: #d6e1f0;
+  --color-slate-200: #e9eff8;
+  --color-slate-100: #f4f7fc;
+}
+
+@layer base {
+  :root {
+    --font-arabic: 'Cairo', 'Plus Jakarta Sans', system-ui, -apple-system, sans-serif;
+  }
+
+  body {
+    font-family: var(--font-arabic);
+  }
+
+  html.dark body {
+    background-color: #04060a;
+    color: #f4f7fc;
+    -webkit-font-smoothing: antialiased;
+    -moz-osx-font-smoothing: grayscale;
+  }
+
+  html.dark input::placeholder,
+  html.dark textarea::placeholder {
+    color: #7d90ab;
+    opacity: 1;
+  }
+
+  html.dark :focus-visible {
+    outline-color: #34d399;
+  }
+
+  /* Custom scrollbar for POS item lists and ticket items */
+  ::-webkit-scrollbar {
+    width: 6px;
+    height: 6px;
+  }
+  ::-webkit-scrollbar-track {
+    background: transparent;
+  }
+  ::-webkit-scrollbar-thumb {
+    background: rgba(150, 150, 150, 0.25);
+    border-radius: 9999px;
+  }
+  ::-webkit-scrollbar-thumb:hover {
+    background: rgba(150, 150, 150, 0.45);
+  }
+
+  html.dark ::-webkit-scrollbar-track {
+    background: #04060a;
+  }
+  html.dark ::-webkit-scrollbar-thumb {
+    background: rgba(148, 163, 184, 0.28);
+  }
+  html.dark ::-webkit-scrollbar-thumb:hover {
+    background: rgba(148, 163, 184, 0.5);
+  }
+}
+
+/* Recharts True Dark Mode high-contrast grid & labels */
+html.dark .recharts-cartesian-grid line {
+  stroke: #1e293b;
+  stroke-opacity: 0.85;
+}
+html.dark .recharts-cartesian-axis-tick-value {
+  fill: #b7c6db;
+}
+
+/* Print styles for thermal receipt 80mm & 58mm */
+@media print {
+  body * {
+    visibility: hidden;
+  }
+  #thermal-receipt-print, #thermal-receipt-print * {
+    visibility: visible;
+  }
+  #thermal-receipt-print {
+    position: absolute;
+    left: 0;
+    top: 0;
+    margin: 0;
+    background: white !important;
+    color: black !important;
+  }
+  
+  /* 80mm Standard POS roll */
+  #thermal-receipt-print.print-paper-80mm {
+    width: 76mm;
+    max-width: 80mm;
+    padding: 2mm 3mm;
+    font-size: 11px;
+    line-height: 1.25;
+  }
+
+  /* 58mm Compact / Mobile Bluetooth roll */
+  #thermal-receipt-print.print-paper-58mm {
+    width: 48mm;
+    max-width: 58mm;
+    padding: 1mm 1.5mm;
+    font-size: 9.5px;
+    line-height: 1.15;
+  }
+
+  #thermal-receipt-print.print-paper-58mm table {
+    font-size: 9px;
+  }
+}
