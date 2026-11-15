@@ -260,22 +260,26 @@ export async function deleteDriveFile(fileId: string): Promise<void> {
   }
 }
 
-function encodeBase64UrlUtf8(input: string): string {
-  const bytes = new TextEncoder().encode(input);
-  let binary = '';
-  for (let i = 0; i < bytes.length; i++) {
-    binary += String.fromCharCode(bytes[i]);
+function uint8ToBase64(bytes: Uint8Array): string {
+  const chunkSize = 0x8000;
+  const parts: string[] = [];
+  for (let i = 0; i < bytes.length; i += chunkSize) {
+    parts.push(String.fromCharCode(...bytes.subarray(i, i + chunkSize)));
   }
-  return btoa(binary).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
+  return btoa(parts.join(''));
+}
+
+function encodeBase64UrlFromBytes(bytes: Uint8Array): string {
+  return uint8ToBase64(bytes).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
 }
 
 function encodeRfc2047Subject(subject: string): string {
   const bytes = new TextEncoder().encode(subject);
-  let binary = '';
-  for (let i = 0; i < bytes.length; i++) {
-    binary += String.fromCharCode(bytes[i]);
-  }
-  return `=?UTF-8?B?${btoa(binary)}?=`;
+  return `=?UTF-8?B?${uint8ToBase64(bytes)}?=`;
+}
+
+function wrapBase6476(b64: string): string {
+  return b64.replace(/(.{1,76})/g, '$1\r\n').trimEnd();
 }
 
 export async function sendGmailHtmlMessage(params: {
@@ -284,6 +288,7 @@ export async function sendGmailHtmlMessage(params: {
   htmlBody: string;
 }): Promise<{ id: string }> {
   const token = await requireToken();
+  const bodyB64 = wrapBase6476(uint8ToBase64(new TextEncoder().encode(params.htmlBody)));
   const mime = [
     `To: ${params.to.trim()}`,
     `Subject: ${encodeRfc2047Subject(params.subject)}`,
@@ -291,14 +296,10 @@ export async function sendGmailHtmlMessage(params: {
     'Content-Type: text/html; charset="UTF-8"',
     'Content-Transfer-Encoding: base64',
     '',
-    btoa(
-      Array.from(new TextEncoder().encode(params.htmlBody))
-        .map((b) => String.fromCharCode(b))
-        .join('')
-    )
+    bodyB64
   ].join('\r\n');
 
-  const raw = encodeBase64UrlUtf8(mime);
+  const raw = encodeBase64UrlFromBytes(new TextEncoder().encode(mime));
 
   const res = await fetch('https://gmail.googleapis.com/gmail/v1/users/me/messages/send', {
     method: 'POST',
@@ -317,6 +318,74 @@ export async function sendGmailHtmlMessage(params: {
   if (!res.ok) {
     const errText = await res.text().catch(() => '');
     throw new Error(`Gmail send error (${res.status}): ${errText}`);
+  }
+
+  return res.json() as Promise<{ id: string }>;
+}
+
+export interface GmailAttachmentInput {
+  filename: string;
+  mimeType: string;
+  contentBase64: string;
+}
+
+export async function sendGmailMessageWithAttachment(params: {
+  to: string;
+  subject: string;
+  htmlBody: string;
+  attachments: GmailAttachmentInput[];
+}): Promise<{ id: string }> {
+  const token = await requireToken();
+  const boundary = `kadi_mime_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
+  const htmlB64 = wrapBase6476(uint8ToBase64(new TextEncoder().encode(params.htmlBody)));
+
+  const mimeSections: string[] = [
+    `To: ${params.to.trim()}`,
+    `Subject: ${encodeRfc2047Subject(params.subject)}`,
+    'MIME-Version: 1.0',
+    `Content-Type: multipart/mixed; boundary="${boundary}"`,
+    '',
+    `--${boundary}`,
+    'Content-Type: text/html; charset="UTF-8"',
+    'Content-Transfer-Encoding: base64',
+    '',
+    htmlB64
+  ];
+
+  for (const att of params.attachments) {
+    const encodedFilename = encodeRfc2047Subject(att.filename);
+    mimeSections.push(
+      `--${boundary}`,
+      `Content-Type: ${att.mimeType}; name="${encodedFilename}"`,
+      `Content-Disposition: attachment; filename="${encodedFilename}"`,
+      'Content-Transfer-Encoding: base64',
+      '',
+      wrapBase6476(att.contentBase64)
+    );
+  }
+
+  mimeSections.push(`--${boundary}--`);
+
+  const fullMime = mimeSections.join('\r\n');
+  const raw = encodeBase64UrlFromBytes(new TextEncoder().encode(fullMime));
+
+  const res = await fetch('https://gmail.googleapis.com/gmail/v1/users/me/messages/send', {
+    method: 'POST',
+    headers: {
+      Authorization: `Bearer ${token}`,
+      'Content-Type': 'application/json'
+    },
+    body: JSON.stringify({ raw })
+  });
+
+  if (res.status === 401) {
+    cachedAccessToken = null;
+    throw new Error('AUTH_EXPIRED');
+  }
+
+  if (!res.ok) {
+    const errText = await res.text().catch(() => '');
+    throw new Error(`Gmail attachment send error (${res.status}): ${errText}`);
   }
 
   return res.json() as Promise<{ id: string }>;

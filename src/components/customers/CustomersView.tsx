@@ -5,6 +5,7 @@ import { Customer, Order } from '../../types';
 import { ReceiptModal } from '../pos/ReceiptModal';
 import { CustomerDebtInvoiceModal } from './CustomerDebtInvoiceModal';
 import { CustomerCreditPage } from './CustomerCreditPage';
+import { ExportCreditLedgerGmailModal } from './ExportCreditLedgerGmailModal';
 import {
   Users,
   Plus,
@@ -30,7 +31,8 @@ import {
   ArrowUpDown,
   ShieldAlert,
   Clock,
-  ExternalLink
+  ExternalLink,
+  Mail
 } from 'lucide-react';
 
 export const CustomersView: React.FC = () => {
@@ -83,6 +85,7 @@ export const CustomersView: React.FC = () => {
   const [selectedCreditOrder, setSelectedCreditOrder] = useState<Order | null>(null);
   const [whatsappReminderCustomer, setWhatsappReminderCustomer] = useState<Customer | null>(null);
   const [showBulkReminderModal, setShowBulkReminderModal] = useState(false);
+  const [showCreditGmailModal, setShowCreditGmailModal] = useState(false);
   const [creditLimitModalCustomer, setCreditLimitModalCustomer] = useState<Customer | null>(null);
   const [draftCreditLimit, setDraftCreditLimit] = useState<string>('');
 
@@ -458,7 +461,7 @@ export const CustomersView: React.FC = () => {
         </div>
 
         {/* Action Controls: Tabs & Add Button */}
-        <div className="flex items-center gap-2.5">
+        <div className="flex flex-wrap items-center gap-2.5">
           {/* Segmented Control */}
           <div className="flex items-center p-1 bg-slate-200/80 dark:bg-slate-800 rounded-2xl">
             <button
@@ -493,6 +496,18 @@ export const CustomersView: React.FC = () => {
               <span className="text-[10px] text-slate-400">({customers.length})</span>
             </button>
           </div>
+
+          {/* Export Credit Ledger File & Send via Gmail */}
+          <button
+            type="button"
+            onClick={() => setShowCreditGmailModal(true)}
+            disabled={customers.length === 0}
+            className="px-3.5 py-2 text-xs font-extrabold rounded-xl bg-rose-50 dark:bg-rose-950/50 border border-rose-200 dark:border-rose-800 text-rose-700 dark:text-rose-300 hover:bg-rose-100 disabled:opacity-45 disabled:cursor-not-allowed transition-all flex items-center gap-1.5"
+            title={isAr ? 'حفظ كناش الكريدي في ملف وإرساله إلى Gmail' : 'Export Credit Ledger to File & Gmail'}
+          >
+            <Mail className="w-3.5 h-3.5" />
+            <span>{isAr ? 'كناش الكريدي ➔ Gmail' : 'Ledger ➔ Gmail'}</span>
+          </button>
 
           {/* Bulk WhatsApp Reminders CTA */}
           <button
@@ -2402,6 +2417,11 @@ export const CustomersView: React.FC = () => {
           </div>
         </div>
       )}
+
+      <ExportCreditLedgerGmailModal
+        isOpen={showCreditGmailModal}
+        onClose={() => setShowCreditGmailModal(false)}
+      />
     </div>
   );
 };

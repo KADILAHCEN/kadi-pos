@@ -36,6 +36,7 @@ import { AddCategoryModal } from './AddCategoryModal';
 import { BulkUpdateModal } from './BulkUpdateModal';
 import { EditProductModal } from '../pos/EditProductModal';
 import { BarcodeScannerModal } from '../pos/BarcodeScannerModal';
+import { ExportCatalogGmailModal } from './ExportCatalogGmailModal';
 import {
   exportInventoryToExcel,
   exportInventoryToPdf,
@@ -43,7 +44,7 @@ import {
   exportReplenishmentPoToPdf,
   ReplenishmentOrderLine
 } from '../../utils/exportReports';
-import { ScanLine, FileText, Brain, ShoppingCart, CheckCircle2 } from 'lucide-react';
+import { ScanLine, FileText, Brain, ShoppingCart, CheckCircle2, Mail } from 'lucide-react';
 
 export const InventoryView: React.FC = () => {
   const {
@@ -94,6 +95,7 @@ export const InventoryView: React.FC = () => {
   const [showAdjustModal, setShowAdjustModal] = useState(false);
   const [showBulkModal, setShowBulkModal] = useState(false);
   const [showBarcodeScanner, setShowBarcodeScanner] = useState(false);
+  const [showCatalogGmailModal, setShowCatalogGmailModal] = useState(false);
   const [selectedProductForAdjust, setSelectedProductForAdjust] = useState<Product | null>(null);
   const [productToast, setProductToast] = useState<string | null>(null);
 
@@ -639,6 +641,16 @@ export const InventoryView: React.FC = () => {
             >
               <FileText className="w-3.5 h-3.5" />
               <span>{isAr ? 'تصدير PDF' : 'PDF'}</span>
+            </button>
+
+            <button
+              type="button"
+              onClick={() => setShowCatalogGmailModal(true)}
+              className="px-3 py-2 text-xs font-black rounded-xl border border-rose-200 dark:border-rose-800 bg-rose-50 dark:bg-rose-950/50 hover:bg-rose-100 text-rose-700 dark:text-rose-300 transition-colors flex items-center gap-1.5 shadow-2xs"
+              title={isAr ? 'تسجيل السلع وصورها وثمنها في ملف وإرساله إلى Gmail' : 'Export catalog with images & prices to Gmail'}
+            >
+              <Mail className="w-3.5 h-3.5" />
+              <span>{isAr ? 'ملف السلع والصور ➔ Gmail' : 'Catalog + Photos ➔ Gmail'}</span>
             </button>
 
             <button
@@ -1635,6 +1647,13 @@ export const InventoryView: React.FC = () => {
           }}
         />
       )}
+
+      {/* Export Products, Images & Prices to File / Gmail Modal */}
+      <ExportCatalogGmailModal
+        isOpen={showCatalogGmailModal}
+        onClose={() => setShowCatalogGmailModal(false)}
+        selectedProducts={selectedProductsList}
+      />
     </div>
   );
 };

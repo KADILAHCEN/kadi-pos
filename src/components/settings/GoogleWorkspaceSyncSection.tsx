@@ -28,18 +28,33 @@ import {
   initGoogleWorkspaceAuth,
   listDriveFolderFiles,
   sendGmailHtmlMessage,
+  sendGmailMessageWithAttachment,
   signInWithGoogleWorkspace,
   signOutGoogleWorkspace,
   uploadFileToDriveFolder
 } from '../../utils/googleWorkspace';
 import { buildScheduledFinancialEmailHtml } from '../../utils/exportReports';
+import {
+  buildCatalogEmailSummaryHtml,
+  buildPortableCatalogHtml,
+  buildPortableCatalogJson,
+  prepareCatalogExportItems,
+  utf8StringToBase64
+} from '../../utils/catalogGmailExport';
+import {
+  buildCreditLedgerEmailSummaryHtml,
+  buildPortableCreditLedgerHtml,
+  buildPortableCreditLedgerJson
+} from '../../utils/creditLedgerGmailExport';
 
 type PendingWorkspaceAction =
   | { type: 'upload_backup' }
   | { type: 'upload_report' }
   | { type: 'restore_file'; file: GoogleDriveFileItem }
   | { type: 'delete_file'; file: GoogleDriveFileItem }
-  | { type: 'send_gmail'; to: string };
+  | { type: 'send_gmail'; to: string }
+  | { type: 'send_catalog_gmail'; to: string }
+  | { type: 'send_credit_gmail'; to: string };
 
 export const GoogleWorkspaceSyncSection: React.FC = () => {
   const {
@@ -50,6 +65,9 @@ export const GoogleWorkspaceSyncSection: React.FC = () => {
     orders,
     expenses,
     products,
+    categories,
+    customers,
+    creditTransactions,
     currencySymbol,
     language
   } = usePos();
@@ -273,6 +291,97 @@ export const GoogleWorkspaceSyncSection: React.FC = () => {
             ? `تم إرسال التقرير المالي عبر Gmail إلى ${action.to} بنجاح`
             : `Financial report sent via Gmail to ${action.to}`
         });
+      } else if (action.type === 'send_catalog_gmail') {
+        const exportItems = await prepareCatalogExportItems(products, categories, true);
+        const stamp = new Date().toISOString().slice(0, 10);
+        const htmlFile = buildPortableCatalogHtml({
+          items: exportItems,
+          settings,
+          currencySymbol
+        });
+        const jsonFile = buildPortableCatalogJson({
+          items: exportItems,
+          settings,
+          currencySymbol
+        });
+        const emailBody = buildCatalogEmailSummaryHtml({
+          items: exportItems,
+          settings,
+          currencySymbol
+        });
+        await sendGmailMessageWithAttachment({
+          to: action.to,
+          subject: isAr
+            ? `كتالوج السلع والصور والأثمان - ${settings.storeName || 'Kadi POS'} (${stamp})`
+            : `Catalog with Photos & Prices - ${settings.storeName || 'Kadi POS'} (${stamp})`,
+          htmlBody: emailBody,
+          attachments: [
+            {
+              filename: `KadiPOS_Catalog_Images_${stamp}.html`,
+              mimeType: 'text/html; charset=utf-8',
+              contentBase64: utf8StringToBase64(htmlFile)
+            },
+            {
+              filename: `KadiPOS_Catalog_Data_${stamp}.json`,
+              mimeType: 'application/json; charset=utf-8',
+              contentBase64: utf8StringToBase64(jsonFile)
+            }
+          ]
+        });
+        setStatusBanner({
+          type: 'success',
+          text: isAr
+            ? `تم إرسال ملف السلع والصور والأثمان (${exportItems.length} سلعة) إلى ${action.to} عبر Gmail`
+            : `Catalog (${exportItems.length} items with photos) sent via Gmail to ${action.to}`
+        });
+      } else if (action.type === 'send_credit_gmail') {
+        const stamp = new Date().toISOString().slice(0, 10);
+        const htmlFile = buildPortableCreditLedgerHtml({
+          customers,
+          creditTransactions,
+          settings,
+          currencySymbol,
+          scope: 'all'
+        });
+        const jsonFile = buildPortableCreditLedgerJson({
+          customers,
+          creditTransactions,
+          settings,
+          currencySymbol,
+          scope: 'all'
+        });
+        const emailBody = buildCreditLedgerEmailSummaryHtml({
+          customers,
+          creditTransactions,
+          settings,
+          currencySymbol,
+          scope: 'all'
+        });
+        await sendGmailMessageWithAttachment({
+          to: action.to,
+          subject: isAr
+            ? `كناش الكريدي وحسابات الزبناء - ${settings.storeName || 'Kadi POS'} (${stamp})`
+            : `Credit Ledger Backup - ${settings.storeName || 'Kadi POS'} (${stamp})`,
+          htmlBody: emailBody,
+          attachments: [
+            {
+              filename: `KadiPOS_CreditLedger_${stamp}.html`,
+              mimeType: 'text/html; charset=utf-8',
+              contentBase64: utf8StringToBase64(htmlFile)
+            },
+            {
+              filename: `KadiPOS_CreditLedger_Data_${stamp}.json`,
+              mimeType: 'application/json; charset=utf-8',
+              contentBase64: utf8StringToBase64(jsonFile)
+            }
+          ]
+        });
+        setStatusBanner({
+          type: 'success',
+          text: isAr
+            ? `تم إرسال كناش الكريدي (${customers.length} زبون و ${creditTransactions.length} حركة) إلى ${action.to} عبر Gmail`
+            : `Credit Ledger (${customers.length} customers) sent via Gmail to ${action.to}`
+        });
       }
     } catch (err) {
       const msg = err instanceof Error ? err.message : 'Workspace operation failed';
@@ -331,6 +440,26 @@ export const GoogleWorkspaceSyncSection: React.FC = () => {
           : `Are you sure you want to permanently delete "${action.file.name}" from Google Drive?`,
         confirmLabel: isAr ? 'تأكيد الحذف' : 'Delete File',
         danger: true
+      };
+    }
+    if (action.type === 'send_catalog_gmail') {
+      return {
+        title: isAr ? 'تأكيد إرسال ملف السلع والصور عبر Gmail' : 'Confirm Send Catalog with Photos via Gmail',
+        body: isAr
+          ? `سيتم إرسال ملف يحتوي على ${products.length} سلعة مع صورها وأثمانها (HTML + JSON) عبر حسابك في Gmail إلى "${action.to}".`
+          : `Files containing ${products.length} products, prices, and embedded photos (HTML + JSON) will be sent via Gmail to "${action.to}".`,
+        confirmLabel: isAr ? 'إرسال ملف السلع عبر Gmail' : 'Send Catalog via Gmail',
+        danger: false
+      };
+    }
+    if (action.type === 'send_credit_gmail') {
+      return {
+        title: isAr ? 'تأكيد إرسال كناش الكريدي عبر Gmail' : 'Confirm Send Credit Ledger via Gmail',
+        body: isAr
+          ? `سيتم إرسال ملف كناش الكريدي (${customers.length} زبون و ${creditTransactions.length} حركة دين وأداء بصيغة HTML + JSON) عبر حسابك في Gmail إلى "${action.to}".`
+          : `Credit ledger files (${customers.length} customers, ${creditTransactions.length} transactions in HTML + JSON) will be sent via Gmail to "${action.to}".`,
+        confirmLabel: isAr ? 'إرسال كناش الكريدي عبر Gmail' : 'Send Ledger via Gmail',
+        danger: false
       };
     }
     return {
@@ -652,15 +781,37 @@ export const GoogleWorkspaceSyncSection: React.FC = () => {
           </button>
 
           {!needsAuth && (
-            <button
-              type="button"
-              disabled={isBusy || !schedEmail.trim()}
-              onClick={() => setPendingAction({ type: 'send_gmail', to: schedEmail.trim() })}
-              className="px-4 py-2 rounded-xl bg-rose-600 hover:bg-rose-700 text-white text-xs font-black flex items-center gap-2 disabled:opacity-50 transition-colors"
-            >
-              <Send className="w-3.5 h-3.5" />
-              <span>{isAr ? 'إرسال التقرير المالي الآن عبر Gmail' : 'Send Financial Report via Gmail Now'}</span>
-            </button>
+            <>
+              <button
+                type="button"
+                disabled={isBusy || !schedEmail.trim()}
+                onClick={() => setPendingAction({ type: 'send_gmail', to: schedEmail.trim() })}
+                className="px-4 py-2 rounded-xl bg-rose-600 hover:bg-rose-700 text-white text-xs font-black flex items-center gap-2 disabled:opacity-50 transition-colors"
+              >
+                <Send className="w-3.5 h-3.5" />
+                <span>{isAr ? 'إرسال التقرير المالي الآن عبر Gmail' : 'Send Financial Report via Gmail Now'}</span>
+              </button>
+
+              <button
+                type="button"
+                disabled={isBusy || !schedEmail.trim()}
+                onClick={() => setPendingAction({ type: 'send_catalog_gmail', to: schedEmail.trim() })}
+                className="px-4 py-2 rounded-xl bg-emerald-600 hover:bg-emerald-700 text-white text-xs font-black flex items-center gap-2 disabled:opacity-50 transition-colors"
+              >
+                <Send className="w-3.5 h-3.5" />
+                <span>{isAr ? 'إرسال ملف السلع والصور إلى Gmail' : 'Send Catalog + Photos to Gmail'}</span>
+              </button>
+
+              <button
+                type="button"
+                disabled={isBusy || !schedEmail.trim()}
+                onClick={() => setPendingAction({ type: 'send_credit_gmail', to: schedEmail.trim() })}
+                className="px-4 py-2 rounded-xl bg-amber-600 hover:bg-amber-700 text-white text-xs font-black flex items-center gap-2 disabled:opacity-50 transition-colors"
+              >
+                <Send className="w-3.5 h-3.5" />
+                <span>{isAr ? 'إرسال كناش الكريدي إلى Gmail' : 'Send Credit Ledger to Gmail'}</span>
+              </button>
+            </>
           )}
         </div>
       </div>

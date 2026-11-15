@@ -37,6 +37,7 @@ import {
 } from 'lucide-react';
 import { PinGateModal } from './auth/PinGateModal';
 import { KExecutivePanel } from './KExecutivePanel';
+import { PWAInstallButton } from './pwa/PWAInstallButton';
 
 export const Navbar: React.FC = () => {
   const {
@@ -866,6 +867,9 @@ export const Navbar: React.FC = () => {
             </div>
           )}
         </div>
+
+        {/* Compact Top Install on Phone (PWA) Trigger */}
+        <PWAInstallButton variant="navbar" />
 
         {/* Compact Top Voice Assistant Trigger */}
         <button
