@@ -1020,6 +1020,16 @@ function renderDetailedInvoicePdfCanvas(input: DetailedInvoicePdfInput): {
 
   curY += 108;
 
+  if ((settings?.showReceiptHeaderMsg ?? true) && settings?.receiptHeaderMsg?.trim()) {
+    drawText(settings.receiptHeaderMsg.trim(), width / 2, curY - 4, {
+      font: 'bold 11px "Cairo", "Segoe UI", Tahoma, sans-serif',
+      color: '#047857',
+      align: 'center',
+      maxWidth: contentW - 20
+    });
+    curY += 16;
+  }
+
   // Invoice Metadata Strip
   const hasDeliveryAddress = Boolean(order?.customerPhone || order?.customerAddress);
   const metaH = hasDeliveryAddress ? 84 : 64;
@@ -1275,8 +1285,12 @@ function renderDetailedInvoicePdfCanvas(input: DetailedInvoicePdfInput): {
 
   // Footer
   const footerY = height - 60;
+  const pdfFooterNote =
+    (settings?.showReceiptFooterMsg ?? true) && settings?.receiptFooterMsg?.trim()
+      ? settings.receiptFooterMsg.replace(/\s*\n\s*/g, ' · ')
+      : '';
   drawText(
-    `${isAr ? 'الرقم الضريبي:' : 'Tax No:'} ${settings?.taxNumber || '-'} · ${settings?.receiptFooterMsg || ''}`,
+    `${isAr ? 'الرقم الضريبي:' : 'Tax No:'} ${settings?.taxNumber || '-'}${pdfFooterNote ? ` · ${pdfFooterNote}` : ''}`,
     width / 2,
     footerY,
     {
@@ -1327,6 +1341,9 @@ export function buildOrderWhatsAppSummaryText(
 
   const lines: string[] = [
     `🧾 *${settings?.storeName || 'Kadi POS'}*`,
+    ...((settings?.showReceiptHeaderMsg ?? true) && settings?.receiptHeaderMsg?.trim()
+      ? [`✨ ${settings.receiptHeaderMsg.trim()}`]
+      : []),
     isAr ? `📄 فاتورة رقم: *${order?.orderNumber || '-'}*` : `📄 Invoice #: *${order?.orderNumber || '-'}*`,
     isAr ? `📅 التاريخ: ${formattedDate}` : `📅 Date: ${formattedDate}`
   ];
@@ -1399,8 +1416,8 @@ export function buildOrderWhatsAppSummaryText(
         : `📎 Invoice PDF file: ${pdfFilename}`
     );
   }
-  if (settings?.receiptFooterMsg) {
-    lines.push(settings.receiptFooterMsg);
+  if ((settings?.showReceiptFooterMsg ?? true) && settings?.receiptFooterMsg?.trim()) {
+    lines.push(settings.receiptFooterMsg.trim());
   }
 
   return lines.join('\n');
@@ -1811,16 +1828,17 @@ function renderCustomerDebtInvoicePdfCanvas(input: CustomerDebtPdfInput): {
 
   // Footer
   const footerY = height - 48;
-  drawText(
-    `${settings.receiptFooterMsg || (isAr ? 'نشكركم على ثقتكم وحسن تعاملكم' : 'Thank you for your business')}`,
-    width / 2,
-    footerY,
-    {
+  const debtPdfFooter =
+    (settings.showReceiptFooterMsg ?? true) && settings.receiptFooterMsg?.trim()
+      ? settings.receiptFooterMsg.replace(/\s*\n\s*/g, ' · ')
+      : '';
+  if (debtPdfFooter) {
+    drawText(debtPdfFooter, width / 2, footerY, {
       font: '11px "Cairo", "Segoe UI", Tahoma, sans-serif',
       color: '#64748b',
       align: 'center'
-    }
-  );
+    });
+  }
 
   const safeName = customer.name.replace(/[^\u0600-\u06FFa-zA-Z0-9_-]/g, '_');
   const filename = `Debt_Invoice_${safeName || customer.id}.pdf`;

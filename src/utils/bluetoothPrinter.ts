@@ -384,11 +384,18 @@ class BluetoothPrinterManager {
       // Pre-calculate total height accurately
       const itemsHeight = order.items.length * (lineH + 6);
       const qrSize = isNarrow ? 150 : 180;
+      const hasWelcome = Boolean((settings.showReceiptHeaderMsg ?? true) && settings.receiptHeaderMsg?.trim());
+      const footerLines =
+        (settings.showReceiptFooterMsg ?? true) && settings.receiptFooterMsg?.trim()
+          ? settings.receiptFooterMsg.split('\n').map((l) => l.trim()).filter(Boolean)
+          : [];
       const extraLines =
         (order.discountTotal > 0 ? 1 : 0) +
         (order.customerName ? 1 : 0) +
-        (order.amountTendered && order.amountTendered > order.grandTotal ? 2 : 0);
-      const totalHeight = 360 + itemsHeight + extraLines * lineH + qrSize + 120;
+        (order.amountTendered && order.amountTendered > order.grandTotal ? 2 : 0) +
+        (hasWelcome ? 1 : 0) +
+        footerLines.length;
+      const totalHeight = 360 + itemsHeight + extraLines * lineH + qrSize + 130;
 
       const canvas = document.createElement('canvas');
       canvas.width = width;
@@ -454,7 +461,11 @@ class BluetoothPrinterManager {
       }
 
       drawCentered(isAr ? 'فاتورة ضريبية مبسطة' : 'SIMPLIFIED TAX INVOICE', isNarrow ? 15 : 18, true);
-      y += 14;
+      y += 22;
+      if (hasWelcome && settings.receiptHeaderMsg) {
+        drawCentered(settings.receiptHeaderMsg.trim(), isNarrow ? 14 : 16, true);
+        y += 20;
+      }
       drawDash();
       y += lineH;
 
@@ -568,12 +579,13 @@ class BluetoothPrinterManager {
       });
 
       y += actualQrPx + 30;
-      drawCentered(
-        settings.receiptFooterMsg || (isAr ? 'شكراً لتسوقكم معنا' : 'Thank you!'),
-        isNarrow ? 15 : 18,
-        true
-      );
-      y += 28;
+      if (footerLines.length > 0) {
+        for (const fLine of footerLines) {
+          drawCentered(fLine, isNarrow ? 15 : 18, true);
+          y += isNarrow ? 22 : 26;
+        }
+      }
+      y += 8;
 
       // Crop canvas tightly to used height
       const finalCanvas = document.createElement('canvas');
@@ -616,9 +628,19 @@ class BluetoothPrinterManager {
       const fontBase = isNarrow ? 15 : 19;
       const lineH = isNarrow ? 25 : 31;
 
+      const hasDebtWelcome = Boolean((settings.showReceiptHeaderMsg ?? true) && settings.receiptHeaderMsg?.trim());
+      const debtFooterLines =
+        (settings.showReceiptFooterMsg ?? true) && settings.receiptFooterMsg?.trim()
+          ? settings.receiptFooterMsg.split('\n').map((l) => l.trim()).filter(Boolean)
+          : [];
       const rowsCount =
         purchaseItems.length + (paymentItems.length > 0 ? paymentItems.length + 2 : 0);
-      const totalHeight = 360 + rowsCount * (lineH + 10) + 180;
+      const totalHeight =
+        360 +
+        rowsCount * (lineH + 10) +
+        (hasDebtWelcome ? 32 : 0) +
+        debtFooterLines.length * 26 +
+        180;
 
       const canvas = document.createElement('canvas');
       canvas.width = width;
@@ -683,7 +705,11 @@ class BluetoothPrinterManager {
         isNarrow ? 15 : 18,
         true
       );
-      y += 14;
+      y += 20;
+      if (hasDebtWelcome && settings.receiptHeaderMsg) {
+        drawCentered(settings.receiptHeaderMsg.trim(), isNarrow ? 14 : 16, true);
+        y += 20;
+      }
       drawDash();
       y += lineH;
 
@@ -747,12 +773,13 @@ class BluetoothPrinterManager {
       );
       y += lineH + 16;
 
-      drawCentered(
-        settings.receiptFooterMsg || (isAr ? 'شكراً لتعاملكم وثقتكم' : 'Thank you!'),
-        isNarrow ? 14 : 17,
-        true
-      );
-      y += 28;
+      if (debtFooterLines.length > 0) {
+        for (const fLine of debtFooterLines) {
+          drawCentered(fLine, isNarrow ? 14 : 17, true);
+          y += isNarrow ? 22 : 25;
+        }
+      }
+      y += 8;
 
       const finalCanvas = document.createElement('canvas');
       finalCanvas.width = width;

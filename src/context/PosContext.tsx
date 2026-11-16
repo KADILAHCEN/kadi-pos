@@ -28,7 +28,12 @@ import {
   CpuTaxSettings,
   SupplierInvoice,
   AppPalette,
-  LowStockAlertItem
+  LowStockAlertItem,
+  TheftAlertCategory,
+  TheftAlertSettings,
+  TheftAlertItem,
+  StocktakeRecordItem,
+  StocktakeSessionRecord
 } from '../types';
 import {
   initialProducts,
@@ -40,9 +45,10 @@ import {
   initialBranches,
   initialTransfers,
   initialUsers,
-  initialActivityLogs
+  initialActivityLogs,
+  DEFAULT_THEFT_ALERT_SETTINGS
 } from '../data/initialData';
-import { playSound } from '../utils/audio';
+import { playSound, startSecuritySiren, stopSecuritySiren } from '../utils/audio';
 import { generateZatcaTlvBase64 } from '../utils/zatca';
 import {
   saveProductsToIndexedDB,
@@ -144,6 +150,11 @@ interface PosContextType {
   ) => { added: number; updated: number; categoriesCreated: number };
   seedLargeCatalogDemo: (count?: number) => void;
   stockMovements: StockMovement[];
+  stocktakeHistory: StocktakeSessionRecord[];
+  applyStocktakeSession: (
+    entries: { productId: string; countedStock: number; note?: string }[],
+    sessionNote?: string
+  ) => StocktakeSessionRecord;
   lowStockProducts: Product[];
   criticalLowStockProducts: Product[];
   expiringSoonProducts: Product[];
@@ -160,7 +171,7 @@ interface PosContextType {
   updateCartItemQuantity: (cartItemId: string, delta: number) => void;
   setCartItemQuantity: (cartItemId: string, quantity: number) => void;
   removeCartItem: (cartItemId: string) => void;
-  clearCart: () => void;
+  clearCart: (markAsVoid?: boolean) => void;
   applyCartItemDiscount: (cartItemId: string, discount: { type: 'percent' | 'fixed'; value: number } | undefined) => void;
   cartItemNote: (cartItemId: string, note: string) => void;
   overrideCartItemPrice: (cartItemId: string, newPrice: number, reason?: string) => void;
@@ -234,7 +245,16 @@ interface PosContextType {
   currentShift: Shift;
   shiftsHistory: Shift[];
   openNewShift: (startingCash: number, cashierName: string) => void;
-  closeCurrentShift: (actualCashCounted: number) => Shift;
+  closeCurrentShift: (
+    actualCashCounted: number,
+    options?: {
+      closingNotes?: string;
+      denominationBreakdown?: Record<string, number>;
+      includeCreditCollectionsInExpectedCash?: boolean;
+      retainedFloatForNextDay?: number;
+      reopenNextShiftWithRetainedFloat?: boolean;
+    }
+  ) => Shift;
   addCashTransaction: (type: 'pay_in' | 'pay_out', amount: number, reason: string) => void;
   // Multi-Branch Management (إدارة الفروع المتعددة)
   branches: Branch[];
@@ -317,6 +337,27 @@ interface PosContextType {
   localSnapshotAt: string | null;
   saveLocalSnapshot: () => { success: boolean; timestamp: string };
   restoreLocalSnapshot: () => boolean;
+
+  // Anti-Theft & Loss Prevention Security Center (نظام تنبيه السرقة وحماية الصندوق والمخزون)
+  theftAlerts: TheftAlertItem[];
+  unresolvedTheftAlerts: TheftAlertItem[];
+  activeTheftToasts: TheftAlertItem[];
+  isSirenActive: boolean;
+  stopActiveSecuritySiren: () => void;
+  dismissTheftToast: (alertId: string) => void;
+  raiseTheftAlert: (params: {
+    category: TheftAlertCategory;
+    severity: 'critical' | 'high' | 'medium';
+    title: string;
+    description: string;
+    amountAtRisk?: number;
+    playSiren?: boolean;
+  }) => TheftAlertItem;
+  triggerPanicTheftAlert: (customNote?: string) => TheftAlertItem;
+  triggerTestTheftAlert: () => Promise<TheftAlertItem>;
+  acknowledgeTheftAlert: (alertId: string, resolutionNote?: string, managerPin?: string) => { success: boolean; message?: string };
+  acknowledgeAllTheftAlerts: (managerPin?: string) => { success: boolean; message?: string };
+  clearAcknowledgedTheftAlerts: () => void;
 
   // Utilities
   buildFullBackupObject: () => Record<string, unknown>;
@@ -1368,12 +1409,28 @@ export const PosProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
     localStorage.setItem('kadi_pos_stock_movements', JSON.stringify(stockMovements));
   }, [stockMovements]);
 
+  const [stocktakeHistory, setStocktakeHistory] = useState<StocktakeSessionRecord[]>(() => {
+    try {
+      const saved = localStorage.getItem('kadi_pos_stocktake_history');
+      return saved ? JSON.parse(saved) : [];
+    } catch {
+      return [];
+    }
+  });
+
+  useEffect(() => {
+    localStorage.setItem('kadi_pos_stocktake_history', JSON.stringify(stocktakeHistory));
+  }, [stocktakeHistory]);
+
   const adjustStock = (
     productId: string,
     quantityChange: number,
     reason: string,
     type: 'restock' | 'waste' | 'audit_adjustment' = 'audit_adjustment'
   ) => {
+    const targetProduct = products.find((p) => p.id === productId);
+    const prevStockVal = targetProduct?.stock ?? 0;
+
     setProducts((prev) =>
       prev.map((p) => {
         if (p.id === productId) {
@@ -1428,6 +1485,164 @@ export const PosProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
         return p;
       })
     );
+
+    const theftCfg = getTheftConfig();
+    if (
+      theftCfg.enabled &&
+      targetProduct &&
+      quantityChange < 0 &&
+      (type === 'waste' || type === 'audit_adjustment') &&
+      Math.abs(quantityChange) >= theftCfg.stockShrinkageUnitsThreshold
+    ) {
+      const unitsLost = Math.abs(quantityChange);
+      const lossValue = Number((unitsLost * targetProduct.costPrice).toFixed(2));
+      raiseTheftAlert({
+        category: 'stock_shrinkage',
+        severity: unitsLost >= theftCfg.stockShrinkageUnitsThreshold * 2 ? 'critical' : 'high',
+        title: `تنبيه فقدان / عجز مخزون مفاجئ: ${targetProduct.name}`,
+        description: `تم خصم ${unitsLost} ${targetProduct.unitType || 'وحدة'} من "${targetProduct.name}" (من ${prevStockVal} إلى ${Math.max(0, Number((prevStockVal + quantityChange).toFixed(2)))}). السبب المسجل: ${reason || 'غير محدد'}.`,
+        amountAtRisk: lossValue,
+        playSiren: unitsLost >= theftCfg.stockShrinkageUnitsThreshold * 2
+      });
+    }
+  };
+
+  const applyStocktakeSession = (
+    entries: { productId: string; countedStock: number; note?: string }[],
+    sessionNote?: string
+  ): StocktakeSessionRecord => {
+    const nowIso = new Date().toISOString();
+    const entryMap = new Map<string, { countedStock: number; note?: string }>();
+    entries.forEach((e) => {
+      entryMap.set(e.productId, {
+        countedStock: Math.max(0, Number(e.countedStock.toFixed(2))),
+        note: e.note
+      });
+    });
+
+    const recordItems: StocktakeRecordItem[] = [];
+    const movementsToAdd: StockMovement[] = [];
+    let discrepancyItemsCount = 0;
+    let totalShrinkageUnits = 0;
+    let totalShrinkageValue = 0;
+    let totalSurplusUnits = 0;
+    let totalSurplusValue = 0;
+    let totalRealStockCostValue = 0;
+    let totalRealStockRetailValue = 0;
+
+    const updatedProducts = products.map((p) => {
+      const countedEntry = entryMap.get(p.id);
+      if (!countedEntry) {
+        totalRealStockCostValue += p.stock * p.costPrice;
+        totalRealStockRetailValue += p.stock * p.price;
+        return p;
+      }
+
+      const systemStock = p.stock;
+      const countedStock = countedEntry.countedStock;
+      const variance = Number((countedStock - systemStock).toFixed(2));
+      const varianceValue = Number((variance * p.costPrice).toFixed(2));
+
+      totalRealStockCostValue += countedStock * p.costPrice;
+      totalRealStockRetailValue += countedStock * p.price;
+
+      if (variance !== 0) {
+        discrepancyItemsCount += 1;
+        if (variance < 0) {
+          totalShrinkageUnits += Math.abs(variance);
+          totalShrinkageValue += Math.abs(varianceValue);
+        } else {
+          totalSurplusUnits += variance;
+          totalSurplusValue += varianceValue;
+        }
+
+        movementsToAdd.push({
+          id: `mov-stk-${Date.now()}-${p.id}`,
+          productId: p.id,
+          productName: p.name,
+          date: nowIso,
+          type: 'audit_adjustment',
+          quantityChange: variance,
+          previousStock: systemStock,
+          newStock: countedStock,
+          unit: p.unitType || 'piece',
+          costPerUnit: p.costPrice,
+          reason: countedEntry.note?.trim() || sessionNote?.trim() || 'جرد فعلي للمخزون الحقيقي'
+        });
+      }
+
+      recordItems.push({
+        productId: p.id,
+        productName: p.name,
+        sku: p.sku,
+        unitType: p.unitType,
+        systemStock,
+        countedStock,
+        variance,
+        costPrice: p.costPrice,
+        varianceValue,
+        note: countedEntry.note
+      });
+
+      return { ...p, stock: countedStock };
+    });
+
+    setProducts(updatedProducts);
+    if (movementsToAdd.length > 0) {
+      setStockMovements((prev) => [...movementsToAdd, ...prev]);
+    }
+
+    const netVarianceValue = Number((totalSurplusValue - totalShrinkageValue).toFixed(2));
+    const sessionRecord: StocktakeSessionRecord = {
+      id: `stk-${Date.now()}`,
+      sessionNumber: `INV-${String(stocktakeHistory.length + 1).padStart(3, '0')}`,
+      date: nowIso,
+      conductedBy: currentUser.name,
+      branchId: activeBranchNameRef.current ? activeBranchId : undefined,
+      branchName: activeBranchNameRef.current || undefined,
+      totalCatalogProducts: products.length,
+      totalCountedItems: entries.length,
+      discrepancyItemsCount,
+      totalShrinkageUnits: Number(totalShrinkageUnits.toFixed(2)),
+      totalShrinkageValue: Number(totalShrinkageValue.toFixed(2)),
+      totalSurplusUnits: Number(totalSurplusUnits.toFixed(2)),
+      totalSurplusValue: Number(totalSurplusValue.toFixed(2)),
+      netVarianceValue,
+      totalRealStockCostValue: Number(totalRealStockCostValue.toFixed(2)),
+      totalRealStockRetailValue: Number(totalRealStockRetailValue.toFixed(2)),
+      notes: sessionNote?.trim() || undefined,
+      items: recordItems
+    };
+
+    setStocktakeHistory((prev) => [sessionRecord, ...prev.slice(0, 49)]);
+
+    addActivityLog({
+      category: 'inventory_major',
+      title: `اعتماد جرد المخزون الحقيقي (${sessionRecord.sessionNumber})`,
+      description: `تم جرد ${entries.length} صنف (${discrepancyItemsCount} بها فرق). العجز: -${totalShrinkageValue.toFixed(2)} ${settings.currencySymbol} | الفائض: +${totalSurplusValue.toFixed(2)} ${settings.currencySymbol} | القيمة الحقيقية للمخزون بالتكلفة: ${totalRealStockCostValue.toFixed(2)} ${settings.currencySymbol}`,
+      actor: currentUser.name,
+      actorRole: currentUser.role,
+      amount: Math.abs(netVarianceValue),
+      severity: totalShrinkageValue > 0 ? 'warning' : 'success'
+    });
+
+    const theftCfg = getTheftConfig();
+    if (theftCfg.enabled && totalShrinkageUnits >= theftCfg.stockShrinkageUnitsThreshold) {
+      raiseTheftAlert({
+        category: 'stock_shrinkage',
+        severity: totalShrinkageUnits >= theftCfg.stockShrinkageUnitsThreshold * 2 ? 'critical' : 'high',
+        title: `عجز مخزون مكتشف أثناء الجرد الفعلي (${sessionRecord.sessionNumber})`,
+        description: `كشف الجرد عجزاً بإجمالي ${totalShrinkageUnits.toFixed(2)} وحدة بقيمة ${totalShrinkageValue.toFixed(2)} ${settings.currencySymbol}.`,
+        amountAtRisk: Number(totalShrinkageValue.toFixed(2)),
+        playSiren: totalShrinkageUnits >= theftCfg.stockShrinkageUnitsThreshold * 2
+      });
+    }
+
+    if (settings.enableSoundEffects) {
+      playSound('success');
+    }
+
+    return sessionRecord;
   };
 
   const [notificationPermission, setNotificationPermission] = useState<NotificationPermission | 'unsupported'>(() => {
@@ -1436,6 +1651,235 @@ export const PosProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
   });
 
   const [activeLowStockToasts, setActiveLowStockToasts] = useState<LowStockAlertItem[]>([]);
+
+  // Anti-Theft & Loss Prevention State (نظام تنبيه السرقة وحماية الصندوق والمخزون)
+  const activeBranchNameRef = useRef<string>('');
+  const [theftAlerts, setTheftAlerts] = useState<TheftAlertItem[]>(() => {
+    try {
+      const saved = localStorage.getItem('kadi_pos_theft_alerts');
+      return saved ? JSON.parse(saved) : [];
+    } catch {
+      return [];
+    }
+  });
+  const [activeTheftToasts, setActiveTheftToasts] = useState<TheftAlertItem[]>([]);
+  const [isSirenActive, setIsSirenActive] = useState(false);
+
+  useEffect(() => {
+    localStorage.setItem('kadi_pos_theft_alerts', JSON.stringify(theftAlerts));
+  }, [theftAlerts]);
+
+  useEffect(() => {
+    return () => {
+      stopSecuritySiren();
+    };
+  }, []);
+
+  const getTheftConfig = useCallback((): TheftAlertSettings => {
+    return {
+      ...DEFAULT_THEFT_ALERT_SETTINGS,
+      ...(settings.theftAlertSettings || {})
+    };
+  }, [settings.theftAlertSettings]);
+
+  const stopActiveSecuritySiren = useCallback(() => {
+    stopSecuritySiren();
+    setIsSirenActive(false);
+  }, []);
+
+  const dismissTheftToast = useCallback((alertId: string) => {
+    setActiveTheftToasts((prev) => prev.filter((a) => a.id !== alertId));
+  }, []);
+
+  const unresolvedTheftAlerts = useMemo(
+    () => theftAlerts.filter((a) => !a.acknowledged),
+    [theftAlerts]
+  );
+
+  const sendTheftPushNotification = useCallback(
+    async (alertItem: TheftAlertItem) => {
+      const cfg = getTheftConfig();
+      if (!cfg.enablePushNotification) return;
+      if (typeof window === 'undefined' || !('Notification' in window)) return;
+      if (Notification.permission !== 'granted') return;
+
+      const title = `🚨 تنبيه سرقة / اشتباه: ${alertItem.title}`;
+      const body = `${alertItem.description} — المسؤول: ${alertItem.actorName}`;
+      const notifOptions: NotificationOptions = {
+        body,
+        icon: '/pwa-192x192.png',
+        badge: '/pwa-192x192.png',
+        tag: `kadi-pos-theft-${alertItem.category}`,
+        requireInteraction: true
+      };
+
+      try {
+        if ('serviceWorker' in navigator) {
+          const reg = await Promise.race([
+            navigator.serviceWorker.ready,
+            new Promise<null>((resolve) => setTimeout(() => resolve(null), 500))
+          ]);
+          if (reg && 'showNotification' in reg) {
+            await reg.showNotification(title, notifOptions);
+            return;
+          }
+        }
+        const n = new Notification(title, notifOptions);
+        n.onclick = () => {
+          window.focus();
+          n.close();
+        };
+      } catch {
+        // Ignore if sandbox prevents notification constructor
+      }
+    },
+    [getTheftConfig]
+  );
+
+  const raiseTheftAlert = useCallback(
+    (params: {
+      category: TheftAlertCategory;
+      severity: 'critical' | 'high' | 'medium';
+      title: string;
+      description: string;
+      amountAtRisk?: number;
+      playSiren?: boolean;
+    }): TheftAlertItem => {
+      const cfg = getTheftConfig();
+      const newAlert: TheftAlertItem = {
+        id: `theft-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`,
+        category: params.category,
+        severity: params.severity,
+        title: params.title,
+        description: params.description,
+        amountAtRisk: params.amountAtRisk,
+        actorName: currentUser.name,
+        actorRole: currentUser.role,
+        branchName: activeBranchNameRef.current || undefined,
+        timestamp: new Date().toISOString(),
+        acknowledged: false
+      };
+
+      setTheftAlerts((prev) => [newAlert, ...prev.slice(0, 149)]);
+      setActiveTheftToasts((prev) => [newAlert, ...prev.slice(0, 2)]);
+
+      addActivityLog({
+        category: 'system',
+        title: `🚨 تنبيه أمان: ${params.title}`,
+        description: params.description,
+        actor: currentUser.name,
+        actorRole: currentUser.role,
+        amount: params.amountAtRisk,
+        severity: 'warning',
+        metadata: {
+          details: `فئة التنبيه الأمني: ${params.category}`
+        }
+      });
+
+      if (cfg.enableSirenSound && (params.playSiren || params.severity === 'critical')) {
+        setIsSirenActive(true);
+        startSecuritySiren(params.category === 'manual_panic' ? 12000 : 8000, () => {
+          setIsSirenActive(false);
+        });
+      } else if (cfg.enableSirenSound) {
+        playSound('alert');
+      }
+
+      void sendTheftPushNotification(newAlert);
+      return newAlert;
+    },
+    [getTheftConfig, currentUser.name, currentUser.role, sendTheftPushNotification]
+  );
+
+  const triggerPanicTheftAlert = useCallback(
+    (customNote?: string): TheftAlertItem => {
+      return raiseTheftAlert({
+        category: 'manual_panic',
+        severity: 'critical',
+        title: 'إنذار سرقة فوري من الكاشير / المتجر (SOS)',
+        description:
+          customNote?.trim() ||
+          `تم تفعيل زر إنذار السرقة والطوارئ يدوياً في الفرع (${activeBranchNameRef.current || 'الرئيسي'}). يرجى التدخل الفوري للمدير!`,
+        playSiren: true
+      });
+    },
+    [raiseTheftAlert]
+  );
+
+  const acknowledgeTheftAlert = useCallback(
+    (alertId: string, resolutionNote?: string, managerPin?: string): { success: boolean; message?: string } => {
+      const cfg = getTheftConfig();
+      if (cfg.requireManagerPinToDismiss) {
+        if (!managerPin || !verifyManagerPin(managerPin)) {
+          playSound('error');
+          return {
+            success: false,
+            message: 'رمز المدير السري غير صحيح! مطلوب تصريح المدير لإغلاق تنبيه السرقة.'
+          };
+        }
+      }
+
+      const nowIso = new Date().toISOString();
+      setTheftAlerts((prev) =>
+        prev.map((a) =>
+          a.id === alertId
+            ? {
+                ...a,
+                acknowledged: true,
+                acknowledgedAt: nowIso,
+                acknowledgedBy: currentUser.name,
+                resolutionNote: resolutionNote?.trim() || a.resolutionNote
+              }
+            : a
+        )
+      );
+      setActiveTheftToasts((prev) => prev.filter((a) => a.id !== alertId));
+      stopSecuritySiren();
+      setIsSirenActive(false);
+      playSound('success');
+      return { success: true };
+    },
+    [getTheftConfig, currentUser.name, verifyManagerPin]
+  );
+
+  const acknowledgeAllTheftAlerts = useCallback(
+    (managerPin?: string): { success: boolean; message?: string } => {
+      const cfg = getTheftConfig();
+      if (cfg.requireManagerPinToDismiss) {
+        if (!managerPin || !verifyManagerPin(managerPin)) {
+          playSound('error');
+          return {
+            success: false,
+            message: 'رمز المدير السري غير صحيح! مطلوب تصريح المدير لاعتماد وإغلاق جميع التنبيهات.'
+          };
+        }
+      }
+      const nowIso = new Date().toISOString();
+      setTheftAlerts((prev) =>
+        prev.map((a) =>
+          a.acknowledged
+            ? a
+            : {
+                ...a,
+                acknowledged: true,
+                acknowledgedAt: nowIso,
+                acknowledgedBy: currentUser.name
+              }
+        )
+      );
+      setActiveTheftToasts([]);
+      stopSecuritySiren();
+      setIsSirenActive(false);
+      playSound('success');
+      return { success: true };
+    },
+    [getTheftConfig, currentUser.name, verifyManagerPin]
+  );
+
+  const clearAcknowledgedTheftAlerts = useCallback(() => {
+    setTheftAlerts((prev) => prev.filter((a) => !a.acknowledged));
+    playSound('click');
+  }, []);
 
   const dismissLowStockToast = useCallback((productId: string) => {
     setActiveLowStockToasts((prev) => prev.filter((item) => item.productId !== productId));
@@ -1460,6 +1904,21 @@ export const PosProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
       return currentPerm;
     }
   }, []);
+
+  const triggerTestTheftAlert = useCallback(async (): Promise<TheftAlertItem> => {
+    if (notificationPermission === 'default') {
+      await requestNotificationPermission();
+    }
+    return raiseTheftAlert({
+      category: 'cash_discrepancy',
+      severity: 'high',
+      title: 'تنبيه سرقة وحماية تجريبي (فحص الصافرة)',
+      description:
+        'هذا اختبار لنظام كشف السرقة والاحتيال: عند وجود عجز في الصندوق أو خصم مبالغ فيه أو حذف فاتورة سيتم إطلاق الصافرة والإشعار الفوري.',
+      amountAtRisk: 150,
+      playSiren: true
+    });
+  }, [notificationPermission, requestNotificationPermission, raiseTheftAlert]);
 
   const sendBrowserPushNotification = useCallback(
     async (items: LowStockAlertItem[]) => {
@@ -1691,7 +2150,7 @@ export const PosProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
     }
   });
 
-  const [orderDiscount, setOrderDiscount] = useState<{ type: 'percent' | 'fixed'; value: number } | null>(null);
+  const [orderDiscount, setOrderDiscountState] = useState<{ type: 'percent' | 'fixed'; value: number } | null>(null);
   const [selectedCustomer, setSelectedCustomer] = useState<Customer | null>(null);
 
   useEffect(() => {
@@ -1795,10 +2254,51 @@ export const PosProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
     }
   };
 
-  const clearCart = () => {
+  const clearCart = (markAsVoid?: boolean) => {
+    if (markAsVoid && cart.length > 0) {
+      const theftCfg = getTheftConfig();
+      if (theftCfg.enabled && cartGrandTotal >= theftCfg.cartVoidAmountThreshold) {
+        raiseTheftAlert({
+          category: 'cart_void',
+          severity: cartGrandTotal >= theftCfg.cartVoidAmountThreshold * 2 ? 'critical' : 'high',
+          title: `إفراغ / إلغاء فاتورة جارية (${cartGrandTotal.toFixed(2)} ${settings.currencySymbol})`,
+          description: `تم إلغاء السلة بالكامل قبل إتمام الدفع (${cart.length} أصناف بقيمة إجمالية ${cartGrandTotal.toFixed(2)} ${settings.currencySymbol}).`,
+          amountAtRisk: cartGrandTotal,
+          playSiren: cartGrandTotal >= theftCfg.cartVoidAmountThreshold * 2
+        });
+      }
+    }
     setCart([]);
-    setOrderDiscount(null);
+    setOrderDiscountState(null);
     setSelectedCustomer(null);
+  };
+
+  const setOrderDiscount = (discount: { type: 'percent' | 'fixed'; value: number } | null) => {
+    setOrderDiscountState(discount);
+    if (discount && discount.value > 0) {
+      const theftCfg = getTheftConfig();
+      const approxPct =
+        discount.type === 'percent'
+          ? discount.value
+          : cartSubtotal > 0
+          ? (discount.value / cartSubtotal) * 100
+          : 0;
+      const discountAmount =
+        discount.type === 'percent'
+          ? Number(((cartSubtotal * discount.value) / 100).toFixed(2))
+          : discount.value;
+
+      if (theftCfg.enabled && approxPct >= theftCfg.highDiscountPercentThreshold) {
+        raiseTheftAlert({
+          category: 'price_tampering',
+          severity: approxPct >= 50 ? 'critical' : 'high',
+          title: `خصم استثنائي مرتفع على الفاتورة (${approxPct.toFixed(0)}%)`,
+          description: `تم تطبيق خصم كلي بقيمة ${discountAmount.toFixed(2)} ${settings.currencySymbol} (${approxPct.toFixed(1)}%) — الحد المسموح به قبل التنبيه: ${theftCfg.highDiscountPercentThreshold}%.`,
+          amountAtRisk: discountAmount,
+          playSiren: approxPct >= 50
+        });
+      }
+    }
   };
 
   const applyCartItemDiscount = (
@@ -1818,6 +2318,7 @@ export const PosProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
 
   const overrideCartItemPrice = (cartItemId: string, newPrice: number, reason?: string) => {
     const cleanPrice = Math.max(0, Number(newPrice.toFixed(2)));
+    const targetItem = cart.find((item) => item.id === cartItemId);
     setCart((prev) =>
       prev.map((item) => {
         if (item.id === cartItemId) {
@@ -1832,6 +2333,28 @@ export const PosProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
         return item;
       })
     );
+    if (targetItem) {
+      const theftCfg = getTheftConfig();
+      const refPrice = targetItem.originalPrice ?? targetItem.price;
+      const dropPct = refPrice > 0 ? ((refPrice - cleanPrice) / refPrice) * 100 : 0;
+      const belowCost = cleanPrice < targetItem.costPrice;
+      if (
+        theftCfg.enabled &&
+        (belowCost || dropPct >= theftCfg.highDiscountPercentThreshold)
+      ) {
+        const riskAmount = Math.max(0, Number(((refPrice - cleanPrice) * targetItem.quantity).toFixed(2)));
+        raiseTheftAlert({
+          category: 'price_tampering',
+          severity: belowCost ? 'critical' : 'high',
+          title: belowCost
+            ? `تخفيض سعر أقل من التكلفة: ${targetItem.productName}`
+            : `تعديل سعر غير معتاد (${dropPct.toFixed(0)}%-) : ${targetItem.productName}`,
+          description: `تم تعديل سعر "${targetItem.productName}" من ${refPrice.toFixed(2)} إلى ${cleanPrice.toFixed(2)} ${settings.currencySymbol} (سعر التكلفة: ${targetItem.costPrice.toFixed(2)}). السبب: ${reason || 'بدون مبرر'}.`,
+          amountAtRisk: riskAmount,
+          playSiren: belowCost
+        });
+      }
+    }
     if (settings.enableSoundEffects) {
       playSound('click');
     }
@@ -2399,6 +2922,10 @@ export const PosProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
     const found = branches.find((b) => b.id === activeBranchId);
     return found || branches[0] || initialBranches[0];
   }, [branches, activeBranchId]);
+
+  useEffect(() => {
+    activeBranchNameRef.current = activeBranch.name;
+  }, [activeBranch.name]);
 
   const setActiveBranchId = (id: string) => {
     setActiveBranchIdState(id);
@@ -3479,10 +4006,27 @@ export const PosProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
     }
   };
 
-  const closeCurrentShift = (actualCashCounted: number): Shift => {
+  const closeCurrentShift = (
+    actualCashCounted: number,
+    options?: {
+      closingNotes?: string;
+      denominationBreakdown?: Record<string, number>;
+      includeCreditCollectionsInExpectedCash?: boolean;
+      retainedFloatForNextDay?: number;
+      reopenNextShiftWithRetainedFloat?: boolean;
+    }
+  ): Shift => {
     // Calculate totals for current shift from orders placed during this shift
     const shiftStartTime = new Date(currentShift.openedAt).getTime();
-    const shiftOrders = orders.filter((o) => new Date(o.date).getTime() >= shiftStartTime && o.status === 'completed');
+    const shiftStartDateStr = currentShift.openedAt.slice(0, 10);
+    const shiftOrders = orders.filter(
+      (o) => new Date(o.date).getTime() >= shiftStartTime && o.status === 'completed'
+    );
+    const shiftRefundOrders = orders.filter(
+      (o) =>
+        new Date(o.date).getTime() >= shiftStartTime &&
+        (o.status === 'refunded' || o.status === 'partially_refunded')
+    );
 
     let totalCashSales = 0;
     let totalCardSales = 0;
@@ -3490,10 +4034,12 @@ export const PosProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
     let totalCreditSales = 0;
     let grossSales = 0;
     let taxesCollected = 0;
+    let totalCostOfGoods = 0;
 
     shiftOrders.forEach((o) => {
       grossSales += o.grandTotal;
       taxesCollected += o.taxTotal;
+      totalCostOfGoods += o.costTotal || 0;
 
       if (o.paymentMethod === 'cash') {
         totalCashSales += o.grandTotal;
@@ -3510,6 +4056,23 @@ export const PosProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
       }
     });
 
+    const totalRefunds = shiftRefundOrders.reduce(
+      (sum, o) => sum + (o.refundedAmount || o.grandTotal),
+      0
+    );
+
+    const creditCollectionsCash = creditTransactions
+      .filter((tx) => tx.type === 'payment' && new Date(tx.date).getTime() >= shiftStartTime)
+      .reduce((sum, tx) => sum + tx.amount, 0);
+
+    const shiftExpenses = expenses
+      .filter(
+        (e) =>
+          new Date(e.createdAt).getTime() >= shiftStartTime ||
+          e.date >= shiftStartDateStr
+      )
+      .reduce((sum, e) => sum + e.amount, 0);
+
     let payIns = 0;
     let payOuts = 0;
     (currentShift.cashTransactions || []).forEach((tx) => {
@@ -3517,8 +4080,26 @@ export const PosProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
       if (tx.type === 'pay_out') payOuts += tx.amount;
     });
 
-    const expectedCash = currentShift.startingCash + totalCashSales + payIns - payOuts;
+    const includeCredit = !!options?.includeCreditCollectionsInExpectedCash;
+    const expectedCash = Number(
+      (
+        currentShift.startingCash +
+        totalCashSales +
+        payIns -
+        payOuts +
+        (includeCredit ? creditCollectionsCash : 0)
+      ).toFixed(2)
+    );
     const discrepancy = Number((actualCashCounted - expectedCash).toFixed(2));
+    const netSales = Number((grossSales - taxesCollected).toFixed(2));
+    const grossProfit = Number((netSales - totalCostOfGoods).toFixed(2));
+    const netProfit = Number((grossProfit - shiftExpenses).toFixed(2));
+    const retainedFloatForNextDay = Number(
+      Math.max(0, options?.retainedFloatForNextDay ?? 0).toFixed(2)
+    );
+    const merchantWithdrawnCash = Number(
+      Math.max(0, actualCashCounted - retainedFloatForNextDay).toFixed(2)
+    );
 
     const closedShift: Shift = {
       ...currentShift,
@@ -3527,17 +4108,69 @@ export const PosProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
       actualCashCounted,
       expectedCash,
       discrepancy,
-      totalCashSales,
-      totalCardSales,
-      totalApplePaySales,
-      totalCreditSales,
-      grossSales,
-      netSales: grossSales - taxesCollected,
-      taxesCollected
+      totalCashSales: Number(totalCashSales.toFixed(2)),
+      totalCardSales: Number(totalCardSales.toFixed(2)),
+      totalApplePaySales: Number(totalApplePaySales.toFixed(2)),
+      totalCreditSales: Number(totalCreditSales.toFixed(2)),
+      totalRefunds: Number(totalRefunds.toFixed(2)),
+      grossSales: Number(grossSales.toFixed(2)),
+      netSales,
+      taxesCollected: Number(taxesCollected.toFixed(2)),
+      totalCostOfGoods: Number(totalCostOfGoods.toFixed(2)),
+      grossProfit,
+      totalExpenses: Number(shiftExpenses.toFixed(2)),
+      netProfit,
+      creditCollectionsCash: Number(creditCollectionsCash.toFixed(2)),
+      includedCreditInExpectedCash: includeCredit,
+      denominationBreakdown: options?.denominationBreakdown,
+      closingNotes: options?.closingNotes?.trim() || undefined,
+      retainedFloatForNextDay,
+      merchantWithdrawnCash
     };
 
-    setCurrentShift(closedShift);
     setShiftsHistory((prev) => [closedShift, ...prev]);
+
+    if (options?.reopenNextShiftWithRetainedFloat) {
+      const nextShift: Shift = {
+        id: `shift-${Date.now() + 1}`,
+        shiftNumber: (currentShift?.shiftNumber || 100) + 1,
+        cashierName: currentShift.cashierName || 'كاشير كادي',
+        openedAt: new Date().toISOString(),
+        startingCash: retainedFloatForNextDay,
+        status: 'open',
+        cashTransactions: []
+      };
+      setCurrentShift(nextShift);
+    } else {
+      setCurrentShift(closedShift);
+    }
+
+    addActivityLog({
+      category: 'system',
+      title: `إغلاق الصندوق آخر النهار (#${currentShift.shiftNumber})`,
+      description: `المبيعات: ${grossSales.toFixed(2)} ${settings.currencySymbol} | الربح الصافي: ${netProfit.toFixed(2)} ${settings.currencySymbol} | المتوقع: ${expectedCash.toFixed(2)} | المعدود: ${actualCashCounted.toFixed(2)} (${discrepancy === 0 ? 'مقاد 100%' : discrepancy > 0 ? `فائض +${discrepancy.toFixed(2)}` : `عجز ${discrepancy.toFixed(2)}`}) | فوندو الغد: ${retainedFloatForNextDay.toFixed(2)} | مسحوب التاجر: ${merchantWithdrawnCash.toFixed(2)}`,
+      actor: currentUser.name,
+      actorRole: currentUser.role,
+      amount: netProfit,
+      severity: discrepancy < 0 ? 'warning' : 'success'
+    });
+
+    const theftCfg = getTheftConfig();
+    if (
+      theftCfg.enabled &&
+      discrepancy < 0 &&
+      Math.abs(discrepancy) >= theftCfg.cashShortageThreshold
+    ) {
+      const shortage = Math.abs(discrepancy);
+      raiseTheftAlert({
+        category: 'cash_discrepancy',
+        severity: 'critical',
+        title: `عجز خطير في صندوق الوردية #${currentShift.shiftNumber} (-${shortage.toFixed(2)} ${settings.currencySymbol})`,
+        description: `النقد المتوقع: ${expectedCash.toFixed(2)} ${settings.currencySymbol} بينما النقد المعدود الفعلي: ${actualCashCounted.toFixed(2)} ${settings.currencySymbol}. العجز المكتشف: ${shortage.toFixed(2)} ${settings.currencySymbol}.`,
+        amountAtRisk: shortage,
+        playSiren: true
+      });
+    }
 
     if (settings.enableSoundEffects) {
       playSound('drawer');
@@ -3560,6 +4193,22 @@ export const PosProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
       ...prev,
       cashTransactions: [...(prev.cashTransactions || []), newTx]
     }));
+
+    const theftCfg = getTheftConfig();
+    if (
+      theftCfg.enabled &&
+      type === 'pay_out' &&
+      amount >= theftCfg.suspiciousPayoutThreshold
+    ) {
+      raiseTheftAlert({
+        category: 'suspicious_payout',
+        severity: amount >= theftCfg.suspiciousPayoutThreshold * 2 || currentUser.role !== 'manager' ? 'critical' : 'high',
+        title: `سحب نقدي كبير من الصندوق (${amount.toFixed(2)} ${settings.currencySymbol})`,
+        description: `تم سحب مبلغ ${amount.toFixed(2)} ${settings.currencySymbol} من درج النقود. البيان المسجل: ${reason || 'غير محدد'}.`,
+        amountAtRisk: amount,
+        playSiren: amount >= theftCfg.suspiciousPayoutThreshold * 2 || currentUser.role !== 'manager'
+      });
+    }
 
     if (settings.enableSoundEffects) {
       playSound('drawer');
@@ -3944,11 +4593,32 @@ export const PosProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
     if (settings.enableSoundEffects) {
       playSound('drawer');
     }
+
+    const theftCfg = getTheftConfig();
+    if (
+      theftCfg.enabled &&
+      (refundAmount >= theftCfg.suspiciousRefundThreshold ||
+        (currentUser.role !== 'manager' && refundAmount > 0))
+    ) {
+      raiseTheftAlert({
+        category: 'suspicious_refund',
+        severity:
+          refundAmount >= theftCfg.suspiciousRefundThreshold * 2 || currentUser.role !== 'manager'
+            ? 'critical'
+            : 'high',
+        title: `عملية استرجاع فاتورة مشبوهة (${order.orderNumber})`,
+        description: `استرجاع بمبلغ ${refundAmount.toFixed(2)} ${settings.currencySymbol} (${full ? 'كامل الفاتورة' : 'جزئي'}) من طرف ${currentUser.name}.`,
+        amountAtRisk: refundAmount,
+        playSiren: refundAmount >= theftCfg.suspiciousRefundThreshold * 2
+      });
+    }
   };
 
   // Reset to Demo Data
   const resetToDemoData = () => {
     localStorage.clear();
+    stopSecuritySiren();
+    setIsSirenActive(false);
 
     setProducts(initialProducts);
     setCategories(initialCategories);
@@ -3976,6 +4646,9 @@ export const PosProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
     setHeldTickets([]);
     setSelectedCustomer(null);
     setActivityLogs(initialActivityLogs);
+    setTheftAlerts([]);
+    setActiveTheftToasts([]);
+    setStocktakeHistory([]);
   };
 
   // Snapshot & Backup Helpers
@@ -4005,6 +4678,8 @@ export const PosProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
     activeBranchId,
     branchTransfers,
     activityLogs,
+    theftAlerts,
+    stocktakeHistory,
     shiftsHistory: [currentShift, ...shiftsHistory]
   });
 
@@ -4072,6 +4747,12 @@ export const PosProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
       }
       if (data.activityLogs && Array.isArray(data.activityLogs)) {
         setActivityLogs(data.activityLogs);
+      }
+      if (data.theftAlerts && Array.isArray(data.theftAlerts)) {
+        setTheftAlerts(data.theftAlerts);
+      }
+      if (data.stocktakeHistory && Array.isArray(data.stocktakeHistory)) {
+        setStocktakeHistory(data.stocktakeHistory);
       }
       if (data.activeBranchId && typeof data.activeBranchId === 'string') {
         setActiveBranchIdState(data.activeBranchId);
@@ -4142,6 +4823,8 @@ export const PosProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
         importProductsBulk,
         seedLargeCatalogDemo,
         stockMovements,
+        stocktakeHistory,
+        applyStocktakeSession,
         lowStockProducts,
         criticalLowStockProducts,
         expiringSoonProducts,
@@ -4255,6 +4938,18 @@ export const PosProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
         localSnapshotAt,
         saveLocalSnapshot,
         restoreLocalSnapshot,
+        theftAlerts,
+        unresolvedTheftAlerts,
+        activeTheftToasts,
+        isSirenActive,
+        stopActiveSecuritySiren,
+        dismissTheftToast,
+        raiseTheftAlert,
+        triggerPanicTheftAlert,
+        triggerTestTheftAlert,
+        acknowledgeTheftAlert,
+        acknowledgeAllTheftAlerts,
+        clearAcknowledgedTheftAlerts,
         buildFullBackupObject,
         resetToDemoData,
         exportDatabaseJson,

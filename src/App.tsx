@@ -25,7 +25,16 @@ import { AiAssistantView } from './components/ai/AiAssistantView';
 import { FloatingAiChatButton } from './components/ai/FloatingAiChatButton';
 import { VoiceAssistantModal } from './components/voice/VoiceAssistantModal';
 import { StockAlertOverlay } from './components/alerts/StockAlertOverlay';
+import { TheftAlertOverlay } from './components/alerts/TheftAlertOverlay';
+import { TheftSecurityModal } from './components/alerts/TheftSecurityModal';
 import { SettingsView } from './components/settings/SettingsView';
+import { CustomerDisplayView } from './components/pos/CustomerDisplayView';
+import { CustomerDisplayLauncherModal } from './components/pos/CustomerDisplayLauncherModal';
+import {
+  CUSTOMER_DISPLAY_CHANNEL,
+  broadcastCustomerDisplaySnapshot,
+  buildCustomerDisplaySnapshot
+} from './utils/customerDisplaySync';
 import { Order } from './types';
 import { playSound } from './utils/audio';
 import { bluetoothPrinter } from './utils/bluetoothPrinter';
@@ -61,6 +70,11 @@ const PosMainContent: React.FC = () => {
     products,
     addToCart,
     cart,
+    cartSubtotal,
+    cartDiscountTotal,
+    cartTaxTotal,
+    cartGrandTotal,
+    selectedCustomer,
     lowStockProducts,
     language,
     isTabProtected,
@@ -79,6 +93,16 @@ const PosMainContent: React.FC = () => {
     const params = new URLSearchParams(window.location.search);
     return params.get('catalog') === '1';
   });
+
+  const [isCustomerDisplayMode] = useState<boolean>(() => {
+    if (typeof window === 'undefined') return false;
+    const params = new URLSearchParams(window.location.search);
+    return params.get('display') === 'customer';
+  });
+
+  const [showCustomerDisplayModal, setShowCustomerDisplayModal] = useState(false);
+  const [showTheftSecurityModal, setShowTheftSecurityModal] = useState(false);
+  const [lastDisplayOrder, setLastDisplayOrder] = useState<Order | null>(null);
 
   const [showAppPinModal, setShowAppPinModal] = useState(false);
   const [pendingAppTab, setPendingAppTab] = useState<typeof currentTab | null>(null);
@@ -136,6 +160,90 @@ const PosMainContent: React.FC = () => {
       if (timer) clearTimeout(timer);
     };
   }, []);
+
+  // Listen for Customer Display Launcher triggers from Navbar / CartRegister
+  useEffect(() => {
+    const handleOpenCustomerDisplay = () => setShowCustomerDisplayModal(true);
+    window.addEventListener('kadi:open-customer-display', handleOpenCustomerDisplay);
+    return () => window.removeEventListener('kadi:open-customer-display', handleOpenCustomerDisplay);
+  }, []);
+
+  // Listen for Anti-Theft Security Center triggers from Navbar / TheftAlertOverlay / Settings
+  useEffect(() => {
+    const handleOpenTheftSecurity = () => setShowTheftSecurityModal(true);
+    window.addEventListener('kadi:open-theft-security', handleOpenTheftSecurity);
+    return () => window.removeEventListener('kadi:open-theft-security', handleOpenTheftSecurity);
+  }, []);
+
+  // Real-time BroadcastChannel & localStorage sync to any open Customer Display window/tab
+  useEffect(() => {
+    if (isCustomerDisplayMode || isPublicCatalogMode) return;
+
+    const snapshot = buildCustomerDisplaySnapshot({
+      cart,
+      cartSubtotal,
+      cartDiscountTotal,
+      cartTaxTotal,
+      cartGrandTotal,
+      selectedCustomer,
+      settings,
+      currencySymbol,
+      language,
+      completedOrder: cart.length === 0 ? lastDisplayOrder : null
+    });
+    broadcastCustomerDisplaySnapshot(snapshot);
+  }, [
+    isCustomerDisplayMode,
+    isPublicCatalogMode,
+    cart,
+    cartSubtotal,
+    cartDiscountTotal,
+    cartTaxTotal,
+    cartGrandTotal,
+    selectedCustomer,
+    settings,
+    currencySymbol,
+    language,
+    lastDisplayOrder
+  ]);
+
+  // Answer REQUEST_SYNC when a newly opened secondary Customer Display tab asks for initial state
+  useEffect(() => {
+    if (isCustomerDisplayMode || isPublicCatalogMode || typeof BroadcastChannel === 'undefined') return;
+    const channel = new BroadcastChannel(CUSTOMER_DISPLAY_CHANNEL);
+    channel.onmessage = (event) => {
+      const data = event.data as { type?: string };
+      if (data?.type === 'REQUEST_SYNC') {
+        const snapshot = buildCustomerDisplaySnapshot({
+          cart,
+          cartSubtotal,
+          cartDiscountTotal,
+          cartTaxTotal,
+          cartGrandTotal,
+          selectedCustomer,
+          settings,
+          currencySymbol,
+          language,
+          completedOrder: cart.length === 0 ? lastDisplayOrder : null
+        });
+        broadcastCustomerDisplaySnapshot(snapshot);
+      }
+    };
+    return () => channel.close();
+  }, [
+    isCustomerDisplayMode,
+    isPublicCatalogMode,
+    cart,
+    cartSubtotal,
+    cartDiscountTotal,
+    cartTaxTotal,
+    cartGrandTotal,
+    selectedCustomer,
+    settings,
+    currencySymbol,
+    language,
+    lastDisplayOrder
+  ]);
 
   // Optional silent Drive Auto-Backup when user already connected Google Workspace in-session
   useEffect(() => {
@@ -212,6 +320,8 @@ const PosMainContent: React.FC = () => {
     setShowCheckout(false);
     setShowMobileCart(false);
     setActiveReceipt(order);
+    setLastDisplayOrder(order);
+    window.setTimeout(() => setLastDisplayOrder((prev) => (prev?.id === order.id ? null : prev)), 15000);
 
     if (
       settings.autoPrintOnCheckout &&
@@ -238,6 +348,10 @@ const PosMainContent: React.FC = () => {
       setTimeout(() => setPostSaleAlert(null), 5000);
     }
   };
+
+  if (isCustomerDisplayMode) {
+    return <CustomerDisplayView />;
+  }
 
   if (isPublicCatalogMode) {
     return <PublicCatalogView />;
@@ -502,6 +616,22 @@ const PosMainContent: React.FC = () => {
 
       {/* Global Real-Time Low Stock Visual Push Alert Stack */}
       <StockAlertOverlay onNavigateInventory={() => handleProtectedTab('inventory')} />
+
+      {/* Global Real-Time Anti-Theft Visual Alert & Siren Banner */}
+      <TheftAlertOverlay />
+
+      {/* Anti-Theft Security Center Modal */}
+      <TheftSecurityModal
+        isOpen={showTheftSecurityModal}
+        onClose={() => setShowTheftSecurityModal(false)}
+        onOpenSettings={() => handleProtectedTab('settings')}
+      />
+
+      {/* Customer Display (Dual-Screen / Popup Live View) */}
+      <CustomerDisplayLauncherModal
+        isOpen={showCustomerDisplayModal}
+        onClose={() => setShowCustomerDisplayModal(false)}
+      />
     </div>
   );
 };

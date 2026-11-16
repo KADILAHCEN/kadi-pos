@@ -33,7 +33,9 @@ import {
   Sparkles,
   BellRing,
   MessageSquare,
-  Mic
+  Mic,
+  Monitor,
+  ShieldAlert
 } from 'lucide-react';
 import { PinGateModal } from './auth/PinGateModal';
 import { KExecutivePanel } from './KExecutivePanel';
@@ -71,7 +73,9 @@ export const Navbar: React.FC = () => {
     markCpuQuarterPaid,
     allPalettes,
     activePalette,
-    selectPalette
+    selectPalette,
+    unresolvedTheftAlerts,
+    isSirenActive
   } = usePos();
 
   const isAr = language === 'ar';
@@ -112,9 +116,9 @@ export const Navbar: React.FC = () => {
   ];
 
   return (
-    <header className="sticky top-0 z-30 flex items-center justify-between gap-8 px-5 py-3 bg-white dark:bg-slate-900 border-b border-slate-200 dark:border-slate-800 transition-colors">
-      {/* Zone 1: K Quick Overview Button, Wordmark & Branch Switcher */}
-      <div className="flex items-center gap-3 shrink-0 relative">
+    <header className="sticky top-0 z-30 flex flex-wrap md:flex-nowrap items-center justify-between gap-2 xl:gap-4 px-3 sm:px-5 py-2.5 bg-white dark:bg-slate-900 border-b border-slate-200 dark:border-slate-800 transition-colors">
+      {/* Zone 1: K Quick Overview Button, Wordmark, Always-Visible Red EOD Close Button & Branch Switcher */}
+      <div className="flex items-center gap-2 sm:gap-2.5 shrink-0 relative">
         <button
           type="button"
           onClick={() => {
@@ -126,7 +130,7 @@ export const Navbar: React.FC = () => {
           aria-expanded={showKPanel}
           aria-label={isAr ? 'ملخص إدارة المخزون والمبلغ الإجمالي ونسبة الأرباح والأكثر مبيعاً' : 'Inventory, Total Sales, Profit & Best Sellers'}
           title={isAr ? 'إدارة المخزون، المبلغ الإجمالي، نسبة الأرباح والمنتوجات الأكثر مبيعاً' : 'Inventory, Total Sales, Profit % & Top Products'}
-          className={`w-10 h-10 rounded-xl flex items-center justify-center font-extrabold text-lg shadow-sm transition-colors focus:outline-none focus-visible:ring-2 focus-visible:ring-emerald-500 ${
+          className={`w-9 h-9 sm:w-10 sm:h-10 rounded-xl flex items-center justify-center font-extrabold text-base sm:text-lg shadow-sm transition-colors focus:outline-none focus-visible:ring-2 focus-visible:ring-emerald-500 shrink-0 ${
             showKPanel
               ? 'bg-slate-900 dark:bg-emerald-500 text-white ring-2 ring-emerald-500/40'
               : 'bg-emerald-600 hover:bg-emerald-700 text-white'
@@ -144,7 +148,7 @@ export const Navbar: React.FC = () => {
           className="flex items-center text-left rtl:text-right group focus:outline-none"
         >
           <div className="whitespace-nowrap">
-            <span className="text-xl font-bold tracking-tight text-slate-900 dark:text-white font-sans">
+            <span className="text-base sm:text-lg xl:text-xl font-bold tracking-tight text-slate-900 dark:text-white font-sans">
               kadi <span className="text-emerald-600 dark:text-emerald-400">pos</span>
             </span>
           </div>
@@ -161,11 +165,11 @@ export const Navbar: React.FC = () => {
           <button
             type="button"
             onClick={() => setShowBranchDropdown(!showBranchDropdown)}
-            className="flex items-center gap-1.5 px-2.5 py-1 text-xs font-bold rounded-xl border border-emerald-200 dark:border-emerald-800 bg-emerald-50/80 dark:bg-emerald-950/40 text-emerald-800 dark:text-emerald-300 hover:bg-emerald-100 transition-colors shadow-2xs"
+            className="flex items-center gap-1 px-2 py-1 text-xs font-bold rounded-xl border border-emerald-200 dark:border-emerald-800 bg-emerald-50/80 dark:bg-emerald-950/40 text-emerald-800 dark:text-emerald-300 hover:bg-emerald-100 transition-colors shadow-2xs"
             title={isAr ? 'تبديل الفرع النشط' : 'Switch active branch'}
           >
-            <Building2 className="w-3.5 h-3.5 text-emerald-600 dark:text-emerald-400" />
-            <span className="max-w-[130px] sm:max-w-[160px] truncate">{activeBranch.name}</span>
+            <Building2 className="w-3.5 h-3.5 text-emerald-600 dark:text-emerald-400 shrink-0" />
+            <span className="max-w-[72px] sm:max-w-[120px] truncate">{activeBranch.name}</span>
             <ChevronDown className="w-3 h-3 text-emerald-600 dark:text-emerald-400 shrink-0" />
           </button>
 
@@ -231,8 +235,8 @@ export const Navbar: React.FC = () => {
         </div>
       </div>
 
-      {/* Zone 2: 4-5 single-line navigation links */}
-      <nav className="hidden lg:flex items-center gap-1 overflow-x-auto py-1">
+      {/* Zone 2: Scrollable single-line navigation links */}
+      <nav className="hidden lg:flex flex-1 min-w-0 items-center gap-1 overflow-x-auto py-1">
         {navItems.map((item) => {
           const Icon = item.icon;
           const isActive = currentTab === item.id;
@@ -270,8 +274,8 @@ export const Navbar: React.FC = () => {
         })}
       </nav>
 
-      {/* Zone 3: 1 primary action / Shift & Utilities */}
-      <div className="flex items-center gap-2 shrink-0">
+      {/* Zone 3: Shift Status & Utilities */}
+      <div className="flex flex-wrap sm:flex-nowrap items-center justify-end gap-1.5 sm:gap-2 shrink-0 w-full md:w-auto max-w-full">
         {/* Alerts Center (Low Stock & Expiry Tracking) */}
         <div className="relative">
           {(() => {
@@ -632,12 +636,12 @@ export const Navbar: React.FC = () => {
           </button>
         )}
 
-        {/* Shift status button */}
+        {/* Shift status pill */}
         <button
-          onClick={() => setCurrentTab('shifts')}
+          onClick={() => handleTabClick('shifts')}
           className="hidden sm:flex items-center gap-2 px-3 py-1.5 text-xs font-medium rounded-lg border border-slate-200 dark:border-slate-700 hover:bg-slate-50 dark:hover:bg-slate-800 text-slate-700 dark:text-slate-300 transition-colors whitespace-nowrap shrink-0"
         >
-          <span className="w-2 h-2 rounded-full bg-emerald-500"></span>
+          <span className={`w-2 h-2 rounded-full ${currentShift.status === 'open' ? 'bg-emerald-500' : 'bg-slate-400'}`}></span>
           <span>{currentShift.status === 'open' ? (isAr ? `وردية #${currentShift.shiftNumber}` : `Shift #${currentShift.shiftNumber}`) : (isAr ? 'الوردية مغلقة' : 'Shift Closed')}</span>
         </button>
 
@@ -871,6 +875,55 @@ export const Navbar: React.FC = () => {
         {/* Compact Top Install on Phone (PWA) Trigger */}
         <PWAInstallButton variant="navbar" />
 
+        {/* Anti-Theft & Loss Prevention Security Center Button */}
+        <button
+          type="button"
+          onClick={() => {
+            setShowPaletteDropdown(false);
+            setShowBranchDropdown(false);
+            setShowAlertDropdown(false);
+            setShowUserDropdown(false);
+            setShowKPanel(false);
+            window.dispatchEvent(new CustomEvent('kadi:open-theft-security'));
+          }}
+          aria-label={isAr ? 'مركز تنبيهات السرقة والأمان' : 'Anti-Theft Security Center'}
+          title={
+            isAr
+              ? `مركز تنبيهات السرقة (${unresolvedTheftAlerts.length} غير مراجعة)`
+              : `Anti-Theft Security (${unresolvedTheftAlerts.length} open)`
+          }
+          className={`relative p-2 rounded-lg border transition-colors ${
+            isSirenActive || unresolvedTheftAlerts.length > 0
+              ? 'text-white bg-rose-600 border-rose-500 hover:bg-rose-700 ring-2 ring-rose-500/40 animate-pulse'
+              : 'text-rose-600 dark:text-rose-400 bg-rose-50 dark:bg-rose-950/40 border-rose-200/80 dark:border-rose-800/70 hover:bg-rose-100 dark:hover:bg-rose-900/50'
+          }`}
+        >
+          <ShieldAlert className="w-4 h-4" />
+          {unresolvedTheftAlerts.length > 0 && (
+            <span className="absolute -top-1 -end-1 px-1.5 py-0.2 text-[9px] font-black bg-slate-950 text-white border border-rose-300 rounded-full tabular-nums">
+              {unresolvedTheftAlerts.length}
+            </span>
+          )}
+        </button>
+
+        {/* Compact Top Customer Display (Dual Screen) Launcher */}
+        <button
+          type="button"
+          onClick={() => {
+            setShowPaletteDropdown(false);
+            setShowBranchDropdown(false);
+            setShowAlertDropdown(false);
+            setShowUserDropdown(false);
+            setShowKPanel(false);
+            window.dispatchEvent(new CustomEvent('kadi:open-customer-display'));
+          }}
+          aria-label={isAr ? 'شاشة عرض العميل' : 'Customer Display'}
+          title={isAr ? 'شاشة عرض العميل (شاشة ثانية مباشرة)' : 'Customer Display (Dual Screen)'}
+          className="p-2 rounded-lg text-sky-600 dark:text-sky-300 bg-sky-50 dark:bg-sky-950/50 border border-sky-200/80 dark:border-sky-800/70 hover:bg-sky-100 dark:hover:bg-sky-900/60 transition-colors"
+        >
+          <Monitor className="w-4 h-4" />
+        </button>
+
         {/* Compact Top Voice Assistant Trigger */}
         <button
           type="button"
@@ -917,6 +970,57 @@ export const Navbar: React.FC = () => {
         >
           {isDark ? <Sun className="w-4 h-4 text-amber-400" /> : <Moon className="w-4 h-4" />}
         </button>
+
+        {/* Compact Red End-of-Day Cash Closing Button (Left side in RTL) */}
+        {currentShift.status === 'open' ? (
+          <button
+            type="button"
+            onClick={() => {
+              setShowKPanel(false);
+              setShowBranchDropdown(false);
+              sessionStorage.setItem('kadi_open_eod_modal', '1');
+              handleTabClick('shifts');
+              window.setTimeout(() => {
+                window.dispatchEvent(new CustomEvent('kadi:open-eod-closing'));
+              }, 60);
+            }}
+            className="flex items-center gap-1 px-1.5 py-0.5 text-[10px] leading-tight font-bold rounded-md bg-rose-600 hover:bg-rose-700 text-white shadow-2xs transition-colors whitespace-nowrap shrink-0"
+            title={isAr ? 'إغلاق صندوق التاجر في آخر النهار' : 'Merchant End-of-Day Cash Closing'}
+          >
+            <Lock className="w-2.5 h-2.5 shrink-0" />
+            <span>{isAr ? 'إغلاق' : 'Close'}</span>
+          </button>
+        ) : (
+          <div className="flex items-center gap-1 shrink-0">
+            <button
+              type="button"
+              onClick={() => {
+                setShowKPanel(false);
+                handleTabClick('shifts');
+              }}
+              className="flex items-center gap-1 px-1.5 py-0.5 text-[10px] leading-tight font-bold rounded-md bg-emerald-600 hover:bg-emerald-700 text-white shadow-2xs transition-colors whitespace-nowrap shrink-0"
+              title={isAr ? 'فتح الصندوق' : 'Open Drawer'}
+            >
+              <span>{isAr ? 'فتح' : 'Open'}</span>
+            </button>
+            <button
+              type="button"
+              onClick={() => {
+                setShowKPanel(false);
+                sessionStorage.setItem('kadi_open_daily_report', '1');
+                handleTabClick('shifts');
+                window.setTimeout(() => {
+                  window.dispatchEvent(new CustomEvent('kadi:open-daily-report'));
+                }, 60);
+              }}
+              className="flex items-center gap-1 px-1.5 py-0.5 text-[10px] leading-tight font-bold rounded-md bg-rose-600 hover:bg-rose-700 text-white shadow-2xs transition-colors whitespace-nowrap shrink-0"
+              title={isAr ? 'تقرير الإغلاق النهاري' : 'Daily Closing Report'}
+            >
+              <Lock className="w-2.5 h-2.5 shrink-0" />
+              <span>{isAr ? 'إغلاق' : 'EOD'}</span>
+            </button>
+          </div>
+        )}
       </div>
 
       {/* PIN Gate Modal for protected tab navigation */}
@@ -929,12 +1033,23 @@ export const Navbar: React.FC = () => {
         onSuccess={() => {
           if (pendingTab) {
             setCurrentTab(pendingTab);
+            if (pendingTab === 'shifts' && sessionStorage.getItem('kadi_open_eod_modal') === '1') {
+              window.setTimeout(() => {
+                window.dispatchEvent(new CustomEvent('kadi:open-eod-closing'));
+              }, 80);
+            } else if (pendingTab === 'shifts' && sessionStorage.getItem('kadi_open_daily_report') === '1') {
+              window.setTimeout(() => {
+                window.dispatchEvent(new CustomEvent('kadi:open-daily-report'));
+              }, 80);
+            }
             setPendingTab(null);
           }
         }}
         title={
           pendingTab === 'inventory'
             ? (isAr ? 'المخزون محمي برقم سري' : 'Inventory Protected')
+            : pendingTab === 'shifts'
+            ? (isAr ? 'الصندوق محمي برقم سري' : 'Cash Drawer Protected')
             : (isAr ? 'الإعدادات محمية برقم سري' : 'Settings Protected')
         }
         description={

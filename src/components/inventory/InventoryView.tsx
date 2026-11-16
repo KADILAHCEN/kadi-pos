@@ -37,6 +37,7 @@ import { BulkUpdateModal } from './BulkUpdateModal';
 import { EditProductModal } from '../pos/EditProductModal';
 import { BarcodeScannerModal } from '../pos/BarcodeScannerModal';
 import { ExportCatalogGmailModal } from './ExportCatalogGmailModal';
+import { StocktakePanel } from './StocktakePanel';
 import {
   exportInventoryToExcel,
   exportInventoryToPdf,
@@ -44,7 +45,7 @@ import {
   exportReplenishmentPoToPdf,
   ReplenishmentOrderLine
 } from '../../utils/exportReports';
-import { ScanLine, FileText, Brain, ShoppingCart, CheckCircle2, Mail } from 'lucide-react';
+import { ScanLine, FileText, Brain, ShoppingCart, CheckCircle2, Mail, ClipboardCheck } from 'lucide-react';
 
 export const InventoryView: React.FC = () => {
   const {
@@ -72,7 +73,13 @@ export const InventoryView: React.FC = () => {
   type SortField = 'name' | 'stock' | 'price' | 'costPrice' | 'margin';
   type SortOrder = 'asc' | 'desc';
 
-  const [activeTab, setActiveTab] = useState<'catalog' | 'movements' | 'ai_prediction'>('catalog');
+  const [activeTab, setActiveTab] = useState<'catalog' | 'stocktake' | 'movements' | 'ai_prediction'>('catalog');
+
+  React.useEffect(() => {
+    const handleOpenStocktake = () => setActiveTab('stocktake');
+    window.addEventListener('kadi:open-stocktake', handleOpenStocktake);
+    return () => window.removeEventListener('kadi:open-stocktake', handleOpenStocktake);
+  }, []);
   const [selectedPoIds, setSelectedPoIds] = useState<Set<string>>(new Set());
   const [poTargetDays, setPoTargetDays] = useState<number>(14);
   const [searchQuery, setSearchQuery] = useState('');
@@ -534,6 +541,17 @@ export const InventoryView: React.FC = () => {
               <span>{t.catalog_tab}</span>
             </button>
             <button
+              onClick={() => setActiveTab('stocktake')}
+              className={`px-4 py-1.5 text-xs font-bold rounded-lg transition-colors flex items-center gap-2 ${
+                activeTab === 'stocktake'
+                  ? 'bg-emerald-600 text-white shadow-2xs'
+                  : 'text-emerald-700 dark:text-emerald-400 hover:bg-emerald-50 dark:hover:bg-emerald-950/40'
+              }`}
+            >
+              <ClipboardCheck className="w-4 h-4" />
+              <span>{isAr ? 'جرد المخزون الحقيقي' : 'Stocktake'}</span>
+            </button>
+            <button
               onClick={() => setActiveTab('movements')}
               className={`px-4 py-1.5 text-xs font-bold rounded-lg transition-colors flex items-center gap-2 ${
                 activeTab === 'movements'
@@ -673,6 +691,9 @@ export const InventoryView: React.FC = () => {
             )}
           </div>
         </div>
+
+        {/* Tab 1.5: Physical Stocktake Panel */}
+        {activeTab === 'stocktake' && <StocktakePanel />}
 
         {/* Tab 1: Product Catalog Table */}
         {activeTab === 'catalog' && (

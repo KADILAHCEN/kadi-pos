@@ -262,6 +262,16 @@ export interface Shift {
   grossSales?: number;
   netSales?: number;
   taxesCollected?: number;
+  totalCostOfGoods?: number;
+  grossProfit?: number;
+  totalExpenses?: number;
+  netProfit?: number;
+  creditCollectionsCash?: number;
+  includedCreditInExpectedCash?: boolean;
+  denominationBreakdown?: Record<string, number>;
+  closingNotes?: string;
+  retainedFloatForNextDay?: number;
+  merchantWithdrawnCash?: number;
 }
 
 export type UserRole = 'manager' | 'cashier' | 'courier';
@@ -302,7 +312,10 @@ export interface StoreSettings {
   currency: CurrencyCode;
   currencySymbol: string;
   taxRate: number; // e.g. 15 for 15%
+  receiptHeaderMsg?: string;
+  showReceiptHeaderMsg?: boolean;
   receiptFooterMsg: string;
+  showReceiptFooterMsg?: boolean;
   enableSoundEffects: boolean;
   enableCameraScanner: boolean;
   theme: 'light' | 'dark';
@@ -354,6 +367,47 @@ export interface StoreSettings {
   enableLowStockPushNotifications?: boolean;
   enableLowStockVisualAlerts?: boolean;
   enableLowStockAudioAlert?: boolean;
+  // Anti-Theft & Loss Prevention Alert Settings (تنبيه السرقة وحماية الصندوق والمخزون)
+  theftAlertSettings?: TheftAlertSettings;
+}
+
+export type TheftAlertCategory =
+  | 'cash_discrepancy'
+  | 'suspicious_payout'
+  | 'suspicious_refund'
+  | 'price_tampering'
+  | 'stock_shrinkage'
+  | 'cart_void'
+  | 'manual_panic';
+
+export interface TheftAlertSettings {
+  enabled: boolean;
+  enableSirenSound: boolean;
+  enablePushNotification: boolean;
+  requireManagerPinToDismiss: boolean;
+  cashShortageThreshold: number;
+  suspiciousPayoutThreshold: number;
+  suspiciousRefundThreshold: number;
+  highDiscountPercentThreshold: number;
+  stockShrinkageUnitsThreshold: number;
+  cartVoidAmountThreshold: number;
+}
+
+export interface TheftAlertItem {
+  id: string;
+  category: TheftAlertCategory;
+  severity: 'critical' | 'high' | 'medium';
+  title: string;
+  description: string;
+  amountAtRisk?: number;
+  actorName: string;
+  actorRole: UserRole;
+  branchName?: string;
+  timestamp: string;
+  acknowledged: boolean;
+  acknowledgedAt?: string;
+  acknowledgedBy?: string;
+  resolutionNote?: string;
 }
 
 export interface LowStockAlertItem {
@@ -520,4 +574,40 @@ export interface CpuTaxSettings {
   cnssBrackets: CpuCnssBracket[];
 }
 
+// =========================
+// Physical Inventory Stocktake (جرد المخزون الحقيقي)
+// =========================
+export interface StocktakeRecordItem {
+  productId: string;
+  productName: string;
+  sku: string;
+  unitType: UnitType;
+  systemStock: number;
+  countedStock: number;
+  variance: number; // countedStock - systemStock
+  costPrice: number;
+  varianceValue: number; // variance * costPrice
+  note?: string;
+}
+
+export interface StocktakeSessionRecord {
+  id: string;
+  sessionNumber: string;
+  date: string;
+  conductedBy: string;
+  branchId?: string;
+  branchName?: string;
+  totalCatalogProducts: number;
+  totalCountedItems: number;
+  discrepancyItemsCount: number;
+  totalShrinkageUnits: number;
+  totalShrinkageValue: number;
+  totalSurplusUnits: number;
+  totalSurplusValue: number;
+  netVarianceValue: number;
+  totalRealStockCostValue: number;
+  totalRealStockRetailValue: number;
+  notes?: string;
+  items: StocktakeRecordItem[];
+}
 

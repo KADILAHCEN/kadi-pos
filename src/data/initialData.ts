@@ -1,4 +1,4 @@
-import { Category, Customer, Product, Shift, StoreSettings, Branch, BranchTransfer, AppUser, ActivityLogItem, CreditTransaction } from '../types';
+import { Category, Customer, Product, Shift, StoreSettings, Branch, BranchTransfer, AppUser, ActivityLogItem, CreditTransaction, TheftAlertSettings } from '../types';
 import { DEFAULT_CPU_SETTINGS } from '../utils/cpuTax';
 
 export const initialCategories: Category[] = [
@@ -467,6 +467,19 @@ export const initialUsers: AppUser[] = [
   }
 ];
 
+export const DEFAULT_THEFT_ALERT_SETTINGS: TheftAlertSettings = {
+  enabled: true,
+  enableSirenSound: true,
+  enablePushNotification: true,
+  requireManagerPinToDismiss: true,
+  cashShortageThreshold: 20,
+  suspiciousPayoutThreshold: 200,
+  suspiciousRefundThreshold: 100,
+  highDiscountPercentThreshold: 25,
+  stockShrinkageUnitsThreshold: 5,
+  cartVoidAmountThreshold: 50
+};
+
 export const initialSettings: StoreSettings = {
   storeName: 'بقالة صفرو للمواد الغذائية',
   storeNameEn: 'Épicerie Sefrou - Alimentation Générale',
@@ -478,7 +491,10 @@ export const initialSettings: StoreSettings = {
   currency: 'MAD',
   currencySymbol: 'د.م',
   taxRate: 10,
+  receiptHeaderMsg: 'أهلاً وسهلاً بكم! نتمنى لكم تسوقاً سعيداً ومباركاً.',
+  showReceiptHeaderMsg: true,
   receiptFooterMsg: 'شكراً لزيارتكم بقالة صفرو للمواد الغذائية! مرحباً بكم دائماً.',
+  showReceiptFooterMsg: true,
   enableSoundEffects: true,
   enableCameraScanner: true,
   theme: 'dark',
@@ -506,7 +522,8 @@ export const initialSettings: StoreSettings = {
   zakatPayableDebts: 0,
   whatsappBusinessPhone: '+212661234567',
   cpuSettings: DEFAULT_CPU_SETTINGS,
-  monthlyProfitTarget: 6000
+  monthlyProfitTarget: 6000,
+  theftAlertSettings: DEFAULT_THEFT_ALERT_SETTINGS
 };
 
 export const initialShift: Shift = {

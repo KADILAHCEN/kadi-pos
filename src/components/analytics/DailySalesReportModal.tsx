@@ -10,15 +10,34 @@ import {
   X,
   Calendar,
   Building2,
-  TrendingUp,
   CreditCard,
   Award,
-  DollarSign,
-  ShoppingBag,
-  Store,
-  CheckCircle2,
-  Wallet
+  Wallet,
+  Clock,
+  PieChart as PieChartIcon
 } from 'lucide-react';
+import {
+  ResponsiveContainer,
+  BarChart,
+  Bar,
+  PieChart,
+  Pie,
+  Cell,
+  XAxis,
+  YAxis,
+  CartesianGrid,
+  Tooltip
+} from 'recharts';
+
+const REPORT_CHART_COLORS = [
+  '#059669',
+  '#2563EB',
+  '#D97706',
+  '#7C3AED',
+  '#0D9488',
+  '#DB2777',
+  '#64748B'
+];
 
 interface DailySalesReportModalProps {
   isOpen: boolean;
@@ -31,12 +50,13 @@ export const DailySalesReportModal: React.FC<DailySalesReportModalProps> = ({
   onClose,
   defaultDate
 }) => {
-  const { orders, expenses, settings, activeBranch, currentShift, currencySymbol, language } = usePos();
+  const { orders, expenses, products, categories, settings, activeBranch, currentShift, currencySymbol, language } = usePos();
   const isAr = language === 'ar';
   const isFr = language === 'fr';
 
   const todayStr = useMemo(() => new Date().toISOString().slice(0, 10), []);
   const [selectedDate, setSelectedDate] = useState<string>(defaultDate || todayStr);
+  const [chartMode, setChartMode] = useState<'periods' | 'categories'>('periods');
 
   // Filter orders for the selected day
   const dayOrders = useMemo(() => {
@@ -109,6 +129,53 @@ export const DailySalesReportModal: React.FC<DailySalesReportModalProps> = ({
       .sort((a, b) => b.qty - a.qty)
       .slice(0, 8);
 
+    const periods = [
+      { key: 'morning', label: isAr ? 'الصباح' : 'Morning', timeRange: '06-12', sales: 0, profit: 0, count: 0 },
+      { key: 'noon', label: isAr ? 'الظهر' : 'Midday', timeRange: '12-16', sales: 0, profit: 0, count: 0 },
+      { key: 'afternoon', label: isAr ? 'العصر' : 'Afternoon', timeRange: '16-20', sales: 0, profit: 0, count: 0 },
+      { key: 'evening', label: isAr ? 'المساء' : 'Evening', timeRange: '20-06', sales: 0, profit: 0, count: 0 }
+    ];
+
+    const productCatMap = new Map<string, string>();
+    products.forEach((p) => productCatMap.set(p.id, p.categoryId));
+    const catNameMap = new Map<string, string>();
+    categories.forEach((c) => catNameMap.set(c.id, isAr ? c.name : c.nameEn || c.name));
+
+    const categoryTotals = new Map<string, { name: string; sales: number; qty: number }>();
+
+    dayOrders.forEach((o) => {
+      const dt = new Date(o.date);
+      const hr = Number.isNaN(dt.getTime()) ? 12 : dt.getHours();
+      const idx = hr >= 6 && hr < 12 ? 0 : hr >= 12 && hr < 16 ? 1 : hr >= 16 && hr < 20 ? 2 : 3;
+      periods[idx].sales += o.grandTotal || 0;
+      periods[idx].profit += o.profitTotal || 0;
+      periods[idx].count += 1;
+
+      o.items.forEach((it) => {
+        const catId = productCatMap.get(it.productId) || 'other';
+        const catName = catNameMap.get(catId) || (isAr ? 'منتجات متنوعة' : 'Other');
+        const cur = categoryTotals.get(catId) || { name: catName, sales: 0, qty: 0 };
+        cur.sales += it.total || 0;
+        cur.qty += it.quantity || 0;
+        categoryTotals.set(catId, cur);
+      });
+    });
+
+    const periodBuckets = periods.map((p) => ({
+      ...p,
+      sales: Number(p.sales.toFixed(2)),
+      profit: Number(p.profit.toFixed(2))
+    }));
+
+    const categoryBuckets = Array.from(categoryTotals.values())
+      .sort((a, b) => b.sales - a.sales)
+      .map((c, idx) => ({
+        ...c,
+        sales: Number(c.sales.toFixed(2)),
+        sharePct: revenue > 0 ? Number(((c.sales / revenue) * 100).toFixed(1)) : 0,
+        color: REPORT_CHART_COLORS[idx % REPORT_CHART_COLORS.length]
+      }));
+
     const aov = dayOrders.length > 0 ? revenue / dayOrders.length : 0;
     const margin = revenue > 0 ? (profit / revenue) * 100 : 0;
 
@@ -122,9 +189,11 @@ export const DailySalesReportModal: React.FC<DailySalesReportModalProps> = ({
       aov: Number(aov.toFixed(2)),
       margin: Number(margin.toFixed(1)),
       paymentMethods,
-      topProducts
+      topProducts,
+      periodBuckets,
+      categoryBuckets
     };
-  }, [dayOrders]);
+  }, [dayOrders, products, categories, isAr]);
 
   if (!isOpen) return null;
 
@@ -287,7 +356,7 @@ export const DailySalesReportModal: React.FC<DailySalesReportModalProps> = ({
                 </div>
 
                 <div className="p-3 rounded-xl border border-slate-200 bg-slate-50">
-                  <div className="text-[10px] font-bold text-slate-500 uppercase">{isAr ? 'صافي الأرباح' : 'Net Profit'}</div>
+                  <div className="text-[10px] font-bold text-slate-500 uppercase">{isAr ? 'ربح البيع (قبل المصاريف)' : 'Gross Profit'}</div>
                   <div className="text-lg font-black font-mono text-slate-900 mt-0.5">
                     +{summary.profit.toFixed(2)} {currencySymbol}
                   </div>
@@ -333,7 +402,7 @@ export const DailySalesReportModal: React.FC<DailySalesReportModalProps> = ({
                   }`}
                 >
                   <div className="text-[10px] font-bold text-slate-700 uppercase">
-                    {isAr ? 'صافي الربح = إجمالي الأرباح - إجمالي المصاريف' : 'Net Profit = Gross Profit - Expenses'}
+                    {isAr ? 'إجمالي الربح الصافي بعد خصم المصاريف' : 'Net Profit After Expenses'}
                   </div>
                   <div
                     className={`text-base font-black font-mono mt-0.5 ${
@@ -345,6 +414,98 @@ export const DailySalesReportModal: React.FC<DailySalesReportModalProps> = ({
                   </div>
                 </div>
               </div>
+            </div>
+
+            {/* Sales Distribution Chart (Periods vs Categories) */}
+            <div className="p-4 rounded-2xl border border-slate-200 bg-slate-50/60 space-y-3">
+              <div className="flex flex-wrap items-center justify-between gap-2">
+                <h4 className="text-xs font-black uppercase text-slate-700">
+                  {isAr ? 'توزيع المبيعات حسب فترات اليوم وفئات المنتجات' : 'Sales Distribution by Period & Category'}
+                </h4>
+                <div className="no-print flex items-center gap-1 p-0.5 bg-slate-200/80 rounded-lg text-[11px] font-bold">
+                  <button
+                    type="button"
+                    onClick={() => setChartMode('periods')}
+                    className={`flex items-center gap-1 px-2.5 py-1 rounded-md transition-colors whitespace-nowrap shrink-0 ${
+                      chartMode === 'periods' ? 'bg-white text-slate-900 shadow-2xs' : 'text-slate-600'
+                    }`}
+                  >
+                    <Clock className="w-3 h-3" />
+                    <span>{isAr ? 'فترات اليوم' : 'Periods'}</span>
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => setChartMode('categories')}
+                    className={`flex items-center gap-1 px-2.5 py-1 rounded-md transition-colors whitespace-nowrap shrink-0 ${
+                      chartMode === 'categories' ? 'bg-white text-slate-900 shadow-2xs' : 'text-slate-600'
+                    }`}
+                  >
+                    <PieChartIcon className="w-3 h-3" />
+                    <span>{isAr ? 'فئات المنتجات' : 'Categories'}</span>
+                  </button>
+                </div>
+              </div>
+
+              {summary.ordersCount === 0 ? (
+                <div className="py-8 text-center text-xs text-slate-400">
+                  {isAr ? 'لا توجد مبيعات في هذا التاريخ لعرض الرسم البياني' : 'No sales data for this date'}
+                </div>
+              ) : chartMode === 'periods' ? (
+                <div className="w-full h-52 min-w-0">
+                  <ResponsiveContainer width="100%" height="100%">
+                    <BarChart data={summary.periodBuckets} margin={{ top: 8, right: 8, left: 0, bottom: 0 }}>
+                      <CartesianGrid strokeDasharray="3 3" stroke="#e2e8f0" vertical={false} />
+                      <XAxis dataKey="label" tick={{ fontSize: 11, fill: '#334155', fontWeight: 700 }} tickLine={false} />
+                      <YAxis tick={{ fontSize: 10, fill: '#64748b' }} tickLine={false} axisLine={false} width={48} />
+                      <Tooltip
+                        formatter={(val) => [`${Number(val).toFixed(2)} ${currencySymbol}`, isAr ? 'المبلغ' : 'Amount']}
+                      />
+                      <Bar dataKey="sales" name={isAr ? 'المبيعات' : 'Sales'} fill="#059669" radius={[6, 6, 0, 0]} maxBarSize={38} />
+                      <Bar dataKey="profit" name={isAr ? 'ربح البيع' : 'Profit'} fill="#2563EB" radius={[6, 6, 0, 0]} maxBarSize={38} />
+                    </BarChart>
+                  </ResponsiveContainer>
+                </div>
+              ) : (
+                <div className="grid grid-cols-1 sm:grid-cols-12 gap-3 items-center">
+                  <div className="sm:col-span-5 h-44 min-w-0">
+                    <ResponsiveContainer width="100%" height="100%">
+                      <PieChart>
+                        <Pie
+                          data={summary.categoryBuckets}
+                          dataKey="sales"
+                          nameKey="name"
+                          cx="50%"
+                          cy="50%"
+                          innerRadius={38}
+                          outerRadius={68}
+                          paddingAngle={2}
+                        >
+                          {summary.categoryBuckets.map((entry) => (
+                            <Cell key={entry.name} fill={entry.color} />
+                          ))}
+                        </Pie>
+                        <Tooltip
+                          formatter={(val) => [`${Number(val).toFixed(2)} ${currencySymbol}`, isAr ? 'المبيعات' : 'Sales']}
+                        />
+                      </PieChart>
+                    </ResponsiveContainer>
+                  </div>
+                  <div className="sm:col-span-7 space-y-1.5 text-xs">
+                    {summary.categoryBuckets.map((cat) => (
+                      <div key={cat.name} className="flex items-center justify-between gap-2 py-1 border-b border-slate-200/70 last:border-none">
+                        <div className="flex items-center gap-2 min-w-0">
+                          <span className="w-2.5 h-2.5 rounded-xs shrink-0" style={{ backgroundColor: cat.color }} />
+                          <span className="font-bold text-slate-800 truncate">{cat.name}</span>
+                        </div>
+                        <div className="font-mono tabular-nums text-slate-700 shrink-0">
+                          <span className="font-bold">{cat.sales.toFixed(2)} {currencySymbol}</span>
+                          <span className="text-slate-400 ms-1.5">({cat.sharePct}%)</span>
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              )}
             </div>
 
             {/* Payment Method Breakdown Table */}

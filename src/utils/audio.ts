@@ -19,7 +19,23 @@ function getAudioContext(): AudioContext | null {
   return audioCtx;
 }
 
-export const playSound = (type: 'beep' | 'success' | 'drawer' | 'error' | 'click' | 'alert') => {
+let activeSirenInterval: number | null = null;
+let activeSirenTimeout: number | null = null;
+
+export const stopSecuritySiren = () => {
+  if (activeSirenInterval !== null && typeof window !== 'undefined') {
+    window.clearInterval(activeSirenInterval);
+    activeSirenInterval = null;
+  }
+  if (activeSirenTimeout !== null && typeof window !== 'undefined') {
+    window.clearTimeout(activeSirenTimeout);
+    activeSirenTimeout = null;
+  }
+};
+
+export const playSound = (
+  type: 'beep' | 'success' | 'drawer' | 'error' | 'click' | 'alert' | 'siren'
+) => {
   try {
     const ctx = getAudioContext();
     if (!ctx) return;
@@ -125,6 +141,25 @@ export const playSound = (type: 'beep' | 'success' | 'drawer' | 'error' | 'click
         break;
       }
 
+      case 'siren': {
+        // Urgent alternating anti-theft alarm siren pulse
+        const osc = ctx.createOscillator();
+        const gain = ctx.createGain();
+        osc.type = 'sawtooth';
+        osc.frequency.setValueAtTime(920, now);
+        osc.frequency.setValueAtTime(640, now + 0.18);
+        osc.frequency.setValueAtTime(920, now + 0.36);
+        osc.frequency.setValueAtTime(640, now + 0.54);
+        gain.gain.setValueAtTime(0.18, now);
+        gain.gain.exponentialRampToValueAtTime(0.001, now + 0.72);
+
+        osc.connect(gain);
+        gain.connect(ctx.destination);
+        osc.start(now);
+        osc.stop(now + 0.74);
+        break;
+      }
+
       case 'error': {
         // Low buzzy error tone
         const osc = ctx.createOscillator();
@@ -145,3 +180,17 @@ export const playSound = (type: 'beep' | 'success' | 'drawer' | 'error' | 'click
     // Ignore audio permission or playback errors
   }
 };
+
+export const startSecuritySiren = (durationMs = 10000, onAutoStop?: () => void) => {
+  if (typeof window === 'undefined') return;
+  stopSecuritySiren();
+  playSound('siren');
+  activeSirenInterval = window.setInterval(() => {
+    playSound('siren');
+  }, 850);
+  activeSirenTimeout = window.setTimeout(() => {
+    stopSecuritySiren();
+    if (onAutoStop) onAutoStop();
+  }, durationMs);
+};
+

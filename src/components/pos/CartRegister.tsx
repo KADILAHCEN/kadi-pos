@@ -16,7 +16,8 @@ import {
   ChevronDown,
   X,
   CreditCard,
-  Sliders
+  Sliders,
+  Monitor
 } from 'lucide-react';
 import { playSound } from '../../utils/audio';
 
@@ -210,6 +211,16 @@ export const CartRegister: React.FC<CartRegisterProps> = ({
             )}
           </div>
 
+          {/* Customer Display dual-screen trigger */}
+          <button
+            type="button"
+            onClick={() => window.dispatchEvent(new CustomEvent('kadi:open-customer-display'))}
+            className="flex items-center gap-1 px-2.5 py-1.5 text-xs font-bold bg-sky-50 dark:bg-sky-950/50 border border-sky-200 dark:border-sky-800 rounded-xl hover:bg-sky-100 dark:hover:bg-sky-900/60 text-sky-700 dark:text-sky-300 transition-colors shadow-2xs"
+            title={isAr ? 'فتح شاشة عرض العميل (شاشة ثانية)' : 'Open Customer Display'}
+          >
+            <Monitor className="w-3.5 h-3.5" />
+          </button>
+
           {/* Held tickets toggle button */}
           <button
             onClick={onOpenHeldTickets}
@@ -223,7 +234,7 @@ export const CartRegister: React.FC<CartRegisterProps> = ({
           {/* Clear cart */}
           {cart.length > 0 && (
             <button
-              onClick={clearCart}
+              onClick={() => clearCart(true)}
               className="p-1.5 text-slate-400 hover:text-rose-600 dark:hover:text-rose-400 hover:bg-rose-50 dark:hover:bg-rose-950/50 rounded-lg transition-colors"
               title={t.clear_cart}
             >

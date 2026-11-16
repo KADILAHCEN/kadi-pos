@@ -1,7 +1,8 @@
 import React, { useEffect, useState } from 'react';
 import { usePos } from '../../context/PosContext';
 import { getT } from '../../utils/translations';
-import { AppPalette, CurrencyCode, ThemeMode, UserRole } from '../../types';
+import { AppPalette, CurrencyCode, ThemeMode, TheftAlertSettings, UserRole } from '../../types';
+import { DEFAULT_THEFT_ALERT_SETTINGS } from '../../data/initialData';
 import {
   Settings,
   Store,
@@ -37,7 +38,9 @@ import {
   Palette,
   Copy,
   ImagePlus,
-  BellRing
+  BellRing,
+  ShieldAlert,
+  Siren
 } from 'lucide-react';
 import { PWAInstallButton } from '../pwa/PWAInstallButton';
 import { BluetoothScannerModal } from '../scanner/BluetoothScannerModal';
@@ -76,7 +79,9 @@ export const SettingsView: React.FC = () => {
     deleteCustomPalette,
     notificationPermission,
     requestNotificationPermission,
-    triggerTestStockAlert
+    triggerTestStockAlert,
+    triggerTestTheftAlert,
+    unresolvedTheftAlerts
   } = usePos();
 
   const t = getT(language);
@@ -110,7 +115,16 @@ export const SettingsView: React.FC = () => {
   const [currency, setCurrency] = useState<CurrencyCode>(settings.currency);
   const [currencySymbol, setCurrencySymbol] = useState(settings.currencySymbol);
   const [taxRate, setTaxRate] = useState(settings.taxRate);
+  const [receiptHeaderMsg, setReceiptHeaderMsg] = useState(
+    settings.receiptHeaderMsg ?? 'أهلاً وسهلاً بكم! نتمنى لكم تسوقاً سعيداً ومباركاً.'
+  );
+  const [showReceiptHeaderMsg, setShowReceiptHeaderMsg] = useState<boolean>(
+    settings.showReceiptHeaderMsg ?? true
+  );
   const [receiptFooterMsg, setReceiptFooterMsg] = useState(settings.receiptFooterMsg);
+  const [showReceiptFooterMsg, setShowReceiptFooterMsg] = useState<boolean>(
+    settings.showReceiptFooterMsg ?? true
+  );
   const [enableSoundEffects, setEnableSoundEffects] = useState(settings.enableSoundEffects);
   const [enableLowStockPushNotifications, setEnableLowStockPushNotifications] = useState(
     settings.enableLowStockPushNotifications ?? true
@@ -121,6 +135,10 @@ export const SettingsView: React.FC = () => {
   const [enableLowStockAudioAlert, setEnableLowStockAudioAlert] = useState(
     settings.enableLowStockAudioAlert ?? true
   );
+  const [theftSettings, setTheftSettings] = useState<TheftAlertSettings>(() => ({
+    ...DEFAULT_THEFT_ALERT_SETTINGS,
+    ...(settings.theftAlertSettings || {})
+  }));
   const [selectedLang, setSelectedLang] = useState(settings.language);
 
   // Theme & Auto Switching Settings
@@ -267,11 +285,15 @@ export const SettingsView: React.FC = () => {
       currency,
       currencySymbol,
       taxRate: Number(taxRate),
-      receiptFooterMsg,
+      receiptHeaderMsg: receiptHeaderMsg.trim(),
+      showReceiptHeaderMsg,
+      receiptFooterMsg: receiptFooterMsg.trim(),
+      showReceiptFooterMsg,
       enableSoundEffects,
       enableLowStockPushNotifications,
       enableLowStockVisualAlerts,
       enableLowStockAudioAlert,
+      theftAlertSettings: theftSettings,
       language: selectedLang,
       themeMode,
       protectInventoryWithPin,
@@ -770,16 +792,182 @@ export const SettingsView: React.FC = () => {
             </div>
           </div>
 
-          <div>
-            <label className="block text-xs font-semibold text-slate-600 dark:text-slate-400 mb-1">
-              {isAr ? 'رسالة تذييل الفاتورة' : 'Receipt Footer Message'}
-            </label>
-            <input
-              type="text"
-              value={receiptFooterMsg}
-              onChange={(e) => setReceiptFooterMsg(e.target.value)}
-              className="w-full px-3.5 py-2.5 text-xs bg-slate-50 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 rounded-xl"
-            />
+          {/* Receipt Welcome Message & Footer Notes (رسالة ترحيبية وملاحظات أسفل الفاتورة) */}
+          <div className="p-4 rounded-2xl bg-slate-50 dark:bg-slate-800/40 border border-slate-200 dark:border-slate-800 space-y-4">
+            <div className="flex flex-wrap items-center justify-between gap-2">
+              <div className="flex items-center gap-2">
+                <Printer className="w-4 h-4 text-emerald-600" />
+                <div>
+                  <div className="text-xs font-extrabold text-slate-900 dark:text-white">
+                    {isAr
+                      ? 'رسالة ترحيبية وملاحظات أسفل الفاتورة (تظهر تلقائياً في الإيصالات)'
+                      : 'Receipt Welcome Message & Footer Notes'}
+                  </div>
+                  <div className="text-[11px] text-slate-500">
+                    {isAr
+                      ? 'تُطبع تلقائياً في الإيصالات الحرارية (80mm/58mm)، الفواتير المفصلة، وملفات PDF'
+                      : 'Automatically included in thermal prints, detailed invoices, and PDFs'}
+                  </div>
+                </div>
+              </div>
+            </div>
+
+            <div className="grid grid-cols-1 lg:grid-cols-3 gap-4">
+              {/* Inputs Column */}
+              <div className="lg:col-span-2 space-y-3">
+                {/* Welcome / Header Message */}
+                <div className="p-3 rounded-xl bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-700 space-y-2">
+                  <div className="flex items-center justify-between gap-2">
+                    <label className="text-xs font-bold text-slate-700 dark:text-slate-200">
+                      {isAr ? 'رسالة ترحيبية (أعلى الفاتورة)' : 'Welcome Message (Receipt Header)'}
+                    </label>
+                    <label className="flex items-center gap-1.5 text-[11px] font-bold text-emerald-700 dark:text-emerald-400 cursor-pointer">
+                      <input
+                        type="checkbox"
+                        checked={showReceiptHeaderMsg}
+                        onChange={(e) => setShowReceiptHeaderMsg(e.target.checked)}
+                        className="rounded border-slate-300 text-emerald-600"
+                      />
+                      <span>{isAr ? 'تفعيل في المطبوعات' : 'Show on receipts'}</span>
+                    </label>
+                  </div>
+                  <input
+                    type="text"
+                    value={receiptHeaderMsg}
+                    onChange={(e) => setReceiptHeaderMsg(e.target.value)}
+                    disabled={!showReceiptHeaderMsg}
+                    placeholder={
+                      isAr
+                        ? 'مثال: أهلاً وسهلاً بكم! نتمنى لكم تسوقاً سعيداً...'
+                        : 'e.g. Welcome to our store!'
+                    }
+                    className="w-full px-3 py-2 text-xs bg-slate-50 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 rounded-xl disabled:opacity-50"
+                  />
+                  <div className="flex flex-wrap gap-1.5">
+                    {(isAr
+                      ? [
+                          'أهلاً وسهلاً بكم! تسوقاً سعيداً ومباركاً',
+                          'مرحباً بكم في متجرنا · الجودة والخدمة أولاً',
+                          'تخفيضات وعروض جديدة في انتظاركم يومياً'
+                        ]
+                      : [
+                          'Welcome! Thank you for shopping with us.',
+                          'Fresh quality & best prices every day!'
+                        ]
+                    ).map((preset) => (
+                      <button
+                        key={preset}
+                        type="button"
+                        disabled={!showReceiptHeaderMsg}
+                        onClick={() => setReceiptHeaderMsg(preset)}
+                        className="px-2 py-1 rounded-lg text-[10px] font-bold bg-slate-100 dark:bg-slate-800 text-slate-600 dark:text-slate-300 hover:bg-emerald-50 hover:text-emerald-700 dark:hover:bg-emerald-950/40 transition-colors disabled:opacity-40"
+                      >
+                        + {preset}
+                      </button>
+                    ))}
+                  </div>
+                </div>
+
+                {/* Footer Message / Notes */}
+                <div className="p-3 rounded-xl bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-700 space-y-2">
+                  <div className="flex items-center justify-between gap-2">
+                    <label className="text-xs font-bold text-slate-700 dark:text-slate-200">
+                      {isAr ? 'ملاحظات أسفل الفاتورة (تذييل الإيصال)' : 'Footer Notes (Bottom of Receipt)'}
+                    </label>
+                    <label className="flex items-center gap-1.5 text-[11px] font-bold text-emerald-700 dark:text-emerald-400 cursor-pointer">
+                      <input
+                        type="checkbox"
+                        checked={showReceiptFooterMsg}
+                        onChange={(e) => setShowReceiptFooterMsg(e.target.checked)}
+                        className="rounded border-slate-300 text-emerald-600"
+                      />
+                      <span>{isAr ? 'تفعيل في المطبوعات' : 'Show on receipts'}</span>
+                    </label>
+                  </div>
+                  <textarea
+                    rows={2}
+                    value={receiptFooterMsg}
+                    onChange={(e) => setReceiptFooterMsg(e.target.value)}
+                    disabled={!showReceiptFooterMsg}
+                    placeholder={
+                      isAr
+                        ? 'مثال: شكراً لزيارتكم! السلعة المشتراة تُبدّل خلال 48 ساعة مع إحضار الوصل.'
+                        : 'e.g. Thank you for your visit! Returns accepted within 48h with receipt.'
+                    }
+                    className="w-full px-3 py-2 text-xs bg-slate-50 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 rounded-xl disabled:opacity-50"
+                  />
+                  <div className="flex flex-wrap gap-1.5">
+                    {(isAr
+                      ? [
+                          'شكراً لزيارتكم! مرحباً بكم دائماً.',
+                          'يمكن استبدال المنتجات خلال 48 ساعة بإحضار الوصل.',
+                          'للطلب والتوصيل تواصلوا معنا عبر واتساب.'
+                        ]
+                      : [
+                          'Thank you for visiting! See you again.',
+                          'Exchanges accepted within 48 hours with receipt.'
+                        ]
+                    ).map((preset) => (
+                      <button
+                        key={preset}
+                        type="button"
+                        disabled={!showReceiptFooterMsg}
+                        onClick={() =>
+                          setReceiptFooterMsg((prev) =>
+                            prev.trim() ? `${prev.trim()}\n${preset}` : preset
+                          )
+                        }
+                        className="px-2 py-1 rounded-lg text-[10px] font-bold bg-slate-100 dark:bg-slate-800 text-slate-600 dark:text-slate-300 hover:bg-emerald-50 hover:text-emerald-700 dark:hover:bg-emerald-950/40 transition-colors disabled:opacity-40"
+                      >
+                        + {preset}
+                      </button>
+                    ))}
+                  </div>
+                </div>
+              </div>
+
+              {/* Live Mini Receipt Preview */}
+              <div className="p-3 rounded-2xl bg-white text-slate-900 border border-slate-200 shadow-2xs flex flex-col justify-between text-center text-[10px] font-sans">
+                <div>
+                  <div className="text-[9px] font-black text-emerald-700 uppercase tracking-wider mb-1.5">
+                    {isAr ? 'معاينة الإيصال المطبوع' : 'Live Receipt Preview'}
+                  </div>
+                  <div className="font-black text-xs text-slate-900 truncate">
+                    {storeName || settings.storeName}
+                  </div>
+                  <div className="text-[9px] text-slate-500 font-mono">{phone || settings.phone}</div>
+
+                  {showReceiptHeaderMsg && receiptHeaderMsg.trim() && (
+                    <div className="mt-2 px-2 py-1 rounded-lg bg-emerald-50 border border-emerald-200 text-emerald-900 font-bold text-[10px] leading-snug">
+                      {receiptHeaderMsg}
+                    </div>
+                  )}
+
+                  <div className="my-2.5 border-y border-dashed border-slate-300 py-2 space-y-1 text-[9px] text-slate-500">
+                    <div className="flex justify-between">
+                      <span>{isAr ? 'حليب × 2' : 'Item × 2'}</span>
+                      <span className="font-mono font-bold text-slate-800">
+                        16.00 {currencySymbol}
+                      </span>
+                    </div>
+                    <div className="flex justify-between font-black text-slate-900 pt-1 border-t border-slate-100">
+                      <span>{isAr ? 'المجموع' : 'Total'}</span>
+                      <span className="font-mono">16.00 {currencySymbol}</span>
+                    </div>
+                  </div>
+                </div>
+
+                {showReceiptFooterMsg && receiptFooterMsg.trim() ? (
+                  <div className="text-[10px] text-slate-600 whitespace-pre-line leading-relaxed pt-1">
+                    {receiptFooterMsg}
+                  </div>
+                ) : (
+                  <div className="text-[9px] text-slate-400 italic pt-1">
+                    {isAr ? '(لا توجد ملاحظات سفلية مفعّلة)' : '(Footer notes hidden)'}
+                  </div>
+                )}
+              </div>
+            </div>
           </div>
 
           {/* Sound Effects Toggle */}
@@ -895,6 +1083,230 @@ export const SettingsView: React.FC = () => {
                   className="w-4 h-4 text-emerald-600 rounded"
                 />
               </label>
+            </div>
+          </div>
+
+          {/* Anti-Theft & Loss Prevention Configuration */}
+          <div className="pt-4 mt-2 border-t border-rose-200/80 dark:border-rose-900/50 space-y-3">
+            <div className="flex flex-wrap items-center justify-between gap-2">
+              <div className="flex items-center gap-2">
+                <ShieldAlert className="w-5 h-5 text-rose-600 dark:text-rose-400" />
+                <div>
+                  <div className="text-xs font-extrabold text-slate-900 dark:text-white">
+                    {isAr
+                      ? 'نظام تنبيه السرقة وحماية الصندوق والمخزون (Anti-Theft)'
+                      : 'Anti-Theft, Shrinkage & Cash Fraud Alert System'}
+                  </div>
+                  <div className="text-[11px] text-slate-400">
+                    {isAr
+                      ? 'كشف تلقائي لعجز الصندوق، السحوبات النقدية الكبيرة، الخصومات المفرطة، الاسترجاعات المشبوهة وإفراغ الفاتورة'
+                      : 'Auto-detects drawer shortage, large pay-outs, excessive discounts, refunds & cart voids'}
+                  </div>
+                </div>
+              </div>
+
+              <div className="flex flex-wrap items-center gap-2">
+                <button
+                  type="button"
+                  onClick={() => void triggerTestTheftAlert()}
+                  className="px-3 py-1.5 rounded-xl bg-rose-600 hover:bg-rose-700 text-white text-[11px] font-black flex items-center gap-1.5 transition-colors"
+                >
+                  <Siren className="w-3.5 h-3.5" />
+                  <span>{isAr ? 'تجربة تنبيه السرقة والصافرة' : 'Test Theft Siren'}</span>
+                </button>
+                <button
+                  type="button"
+                  onClick={() => window.dispatchEvent(new CustomEvent('kadi:open-theft-security'))}
+                  className="px-3 py-1.5 rounded-xl bg-slate-900 dark:bg-slate-800 hover:bg-slate-800 dark:hover:bg-slate-700 text-white text-[11px] font-bold transition-colors"
+                >
+                  {isAr
+                    ? `مركز الأمان (${unresolvedTheftAlerts.length})`
+                    : `Security Center (${unresolvedTheftAlerts.length})`}
+                </button>
+              </div>
+            </div>
+
+            <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-2.5">
+              <label className="p-3 rounded-2xl bg-rose-50/70 dark:bg-rose-950/30 border border-rose-200 dark:border-rose-900/60 flex items-center justify-between gap-2 cursor-pointer">
+                <span className="text-xs font-bold text-slate-800 dark:text-slate-100">
+                  {isAr ? 'تفعيل مراقبة السرقة' : 'Enable Anti-Theft'}
+                </span>
+                <input
+                  type="checkbox"
+                  checked={theftSettings.enabled}
+                  onChange={(e) =>
+                    setTheftSettings((prev) => ({ ...prev, enabled: e.target.checked }))
+                  }
+                  className="w-4 h-4 text-rose-600 rounded"
+                />
+              </label>
+
+              <label className="p-3 rounded-2xl bg-slate-50 dark:bg-slate-800/70 border border-slate-200 dark:border-slate-700 flex items-center justify-between gap-2 cursor-pointer">
+                <span className="text-xs font-bold text-slate-700 dark:text-slate-200">
+                  {isAr ? 'تشغيل صافرة الإنذار' : 'Enable Siren Sound'}
+                </span>
+                <input
+                  type="checkbox"
+                  checked={theftSettings.enableSirenSound}
+                  onChange={(e) =>
+                    setTheftSettings((prev) => ({ ...prev, enableSirenSound: e.target.checked }))
+                  }
+                  className="w-4 h-4 text-rose-600 rounded"
+                />
+              </label>
+
+              <label className="p-3 rounded-2xl bg-slate-50 dark:bg-slate-800/70 border border-slate-200 dark:border-slate-700 flex items-center justify-between gap-2 cursor-pointer">
+                <span className="text-xs font-bold text-slate-700 dark:text-slate-200">
+                  {isAr ? 'إشعار دفع فوري (Push)' : 'Push Notification'}
+                </span>
+                <input
+                  type="checkbox"
+                  checked={theftSettings.enablePushNotification}
+                  onChange={(e) =>
+                    setTheftSettings((prev) => ({
+                      ...prev,
+                      enablePushNotification: e.target.checked
+                    }))
+                  }
+                  className="w-4 h-4 text-rose-600 rounded"
+                />
+              </label>
+
+              <label className="p-3 rounded-2xl bg-slate-50 dark:bg-slate-800/70 border border-slate-200 dark:border-slate-700 flex items-center justify-between gap-2 cursor-pointer">
+                <span className="text-xs font-bold text-slate-700 dark:text-slate-200">
+                  {isAr ? 'قفل الإغلاق برمز المدير' : 'Require Manager PIN'}
+                </span>
+                <input
+                  type="checkbox"
+                  checked={theftSettings.requireManagerPinToDismiss}
+                  onChange={(e) =>
+                    setTheftSettings((prev) => ({
+                      ...prev,
+                      requireManagerPinToDismiss: e.target.checked
+                    }))
+                  }
+                  className="w-4 h-4 text-rose-600 rounded"
+                />
+              </label>
+            </div>
+
+            <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-3">
+              <div className="p-3 rounded-2xl bg-slate-50 dark:bg-slate-800/60 border border-slate-200 dark:border-slate-700">
+                <label className="block text-[11px] font-bold text-slate-600 dark:text-slate-300 mb-1">
+                  {isAr
+                    ? `حد عجز الصندوق (${currencySymbol})`
+                    : `Cash Shortage Threshold (${currencySymbol})`}
+                </label>
+                <input
+                  type="number"
+                  min="1"
+                  value={theftSettings.cashShortageThreshold}
+                  onChange={(e) =>
+                    setTheftSettings((prev) => ({
+                      ...prev,
+                      cashShortageThreshold: Math.max(1, Number(e.target.value) || 0)
+                    }))
+                  }
+                  className="w-full px-3 py-1.5 rounded-xl bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-700 text-xs font-mono font-bold text-slate-900 dark:text-white"
+                />
+              </div>
+
+              <div className="p-3 rounded-2xl bg-slate-50 dark:bg-slate-800/60 border border-slate-200 dark:border-slate-700">
+                <label className="block text-[11px] font-bold text-slate-600 dark:text-slate-300 mb-1">
+                  {isAr
+                    ? `حد السحب النقدي المشبوه (${currencySymbol})`
+                    : `Large Cash Pay-Out (${currencySymbol})`}
+                </label>
+                <input
+                  type="number"
+                  min="1"
+                  value={theftSettings.suspiciousPayoutThreshold}
+                  onChange={(e) =>
+                    setTheftSettings((prev) => ({
+                      ...prev,
+                      suspiciousPayoutThreshold: Math.max(1, Number(e.target.value) || 0)
+                    }))
+                  }
+                  className="w-full px-3 py-1.5 rounded-xl bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-700 text-xs font-mono font-bold text-slate-900 dark:text-white"
+                />
+              </div>
+
+              <div className="p-3 rounded-2xl bg-slate-50 dark:bg-slate-800/60 border border-slate-200 dark:border-slate-700">
+                <label className="block text-[11px] font-bold text-slate-600 dark:text-slate-300 mb-1">
+                  {isAr
+                    ? `حد تنبيه الاسترجاع (${currencySymbol})`
+                    : `Suspicious Refund (${currencySymbol})`}
+                </label>
+                <input
+                  type="number"
+                  min="1"
+                  value={theftSettings.suspiciousRefundThreshold}
+                  onChange={(e) =>
+                    setTheftSettings((prev) => ({
+                      ...prev,
+                      suspiciousRefundThreshold: Math.max(1, Number(e.target.value) || 0)
+                    }))
+                  }
+                  className="w-full px-3 py-1.5 rounded-xl bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-700 text-xs font-mono font-bold text-slate-900 dark:text-white"
+                />
+              </div>
+
+              <div className="p-3 rounded-2xl bg-slate-50 dark:bg-slate-800/60 border border-slate-200 dark:border-slate-700">
+                <label className="block text-[11px] font-bold text-slate-600 dark:text-slate-300 mb-1">
+                  {isAr ? 'حد الخصم المفرط (%)' : 'Excessive Discount (%)'}
+                </label>
+                <input
+                  type="number"
+                  min="1"
+                  max="100"
+                  value={theftSettings.highDiscountPercentThreshold}
+                  onChange={(e) =>
+                    setTheftSettings((prev) => ({
+                      ...prev,
+                      highDiscountPercentThreshold: Math.min(100, Math.max(1, Number(e.target.value) || 0))
+                    }))
+                  }
+                  className="w-full px-3 py-1.5 rounded-xl bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-700 text-xs font-mono font-bold text-slate-900 dark:text-white"
+                />
+              </div>
+
+              <div className="p-3 rounded-2xl bg-slate-50 dark:bg-slate-800/60 border border-slate-200 dark:border-slate-700">
+                <label className="block text-[11px] font-bold text-slate-600 dark:text-slate-300 mb-1">
+                  {isAr ? 'حد عجز المخزون (وحدات)' : 'Stock Shrinkage (Units)'}
+                </label>
+                <input
+                  type="number"
+                  min="1"
+                  value={theftSettings.stockShrinkageUnitsThreshold}
+                  onChange={(e) =>
+                    setTheftSettings((prev) => ({
+                      ...prev,
+                      stockShrinkageUnitsThreshold: Math.max(1, Number(e.target.value) || 0)
+                    }))
+                  }
+                  className="w-full px-3 py-1.5 rounded-xl bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-700 text-xs font-mono font-bold text-slate-900 dark:text-white"
+                />
+              </div>
+
+              <div className="p-3 rounded-2xl bg-slate-50 dark:bg-slate-800/60 border border-slate-200 dark:border-slate-700">
+                <label className="block text-[11px] font-bold text-slate-600 dark:text-slate-300 mb-1">
+                  {isAr
+                    ? `حد إلغاء السلة الجارية (${currencySymbol})`
+                    : `Cart Void Threshold (${currencySymbol})`}
+                </label>
+                <input
+                  type="number"
+                  min="1"
+                  value={theftSettings.cartVoidAmountThreshold}
+                  onChange={(e) =>
+                    setTheftSettings((prev) => ({
+                      ...prev,
+                      cartVoidAmountThreshold: Math.max(1, Number(e.target.value) || 0)
+                    }))
+                  }
+                  className="w-full px-3 py-1.5 rounded-xl bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-700 text-xs font-mono font-bold text-slate-900 dark:text-white"
+                />
+              </div>
             </div>
           </div>
         </div>

@@ -255,6 +255,13 @@ export const CustomerDebtInvoiceModal: React.FC<CustomerDebtInvoiceModalProps> =
             };">
               ${isAr ? 'فاتورة الدين بتفاصيل المشتريات' : 'Customer Debt Invoice (Itemized)'}
             </div>
+            ${
+              (settings.showReceiptHeaderMsg ?? true) && settings.receiptHeaderMsg?.trim()
+                ? `<div style="margin-top:8px;padding:5px 10px;border-radius:6px;background:#ecfdf5;border:1px solid #a7f3d0;color:#065f46;font-weight:700;font-size:${
+                    isThermal ? '10px' : '12px'
+                  };">${escapeHtml(settings.receiptHeaderMsg)}</div>`
+                : ''
+            }
           </div>
 
           <div style="margin:12px 0;padding:10px;border:1px solid #cbd5e1;border-radius:8px;background:#f8fafc;font-size:${
@@ -357,11 +364,15 @@ export const CustomerDebtInvoiceModal: React.FC<CustomerDebtInvoiceModalProps> =
             </div>
           </div>
 
-          <div style="text-align:center;margin-top:16px;font-size:${
-            isThermal ? '10px' : '11px'
-          };color:#64748b;">
-            ${escapeHtml(settings.receiptFooterMsg || '')}
-          </div>
+          ${
+            (settings.showReceiptFooterMsg ?? true) && settings.receiptFooterMsg?.trim()
+              ? `<div style="text-align:center;margin-top:16px;font-size:${
+                  isThermal ? '10px' : '11px'
+                };color:#64748b;white-space:pre-line;line-height:1.6;">
+                  ${escapeHtml(settings.receiptFooterMsg)}
+                </div>`
+              : ''
+          }
         </div>
       </body>
       </html>`;
@@ -768,6 +779,12 @@ export const CustomerDebtInvoiceModal: React.FC<CustomerDebtInvoiceModalProps> =
                 </div>
               </div>
 
+              {(settings.showReceiptHeaderMsg ?? true) && settings.receiptHeaderMsg?.trim() && (
+                <div className="px-3.5 py-2 rounded-xl bg-emerald-50 border border-emerald-200 text-emerald-900 text-xs font-bold text-center">
+                  {settings.receiptHeaderMsg}
+                </div>
+              )}
+
               {/* Itemized Purchases Table */}
               <div>
                 <div className="flex items-center gap-1.5 text-xs font-black text-slate-900 mb-2">
@@ -891,8 +908,8 @@ export const CustomerDebtInvoiceModal: React.FC<CustomerDebtInvoiceModalProps> =
                 </div>
               </div>
 
-              {settings.receiptFooterMsg && (
-                <div className="text-center text-[11px] text-slate-500 pt-1">
+              {(settings.showReceiptFooterMsg ?? true) && settings.receiptFooterMsg?.trim() && (
+                <div className="text-center text-[11px] text-slate-500 pt-1 whitespace-pre-line leading-relaxed">
                   {settings.receiptFooterMsg}
                 </div>
               )}
@@ -919,6 +936,11 @@ export const CustomerDebtInvoiceModal: React.FC<CustomerDebtInvoiceModalProps> =
                 <div className="mt-1.5 inline-block px-2 py-0.5 rounded bg-slate-900 text-white text-[10px] font-black">
                   {isAr ? 'فاتورة الدين بالمشتريات' : 'DEBT INVOICE'}
                 </div>
+                {(settings.showReceiptHeaderMsg ?? true) && settings.receiptHeaderMsg?.trim() && (
+                  <div className="mt-1.5 px-2 py-1 rounded bg-emerald-50 border border-emerald-200 text-emerald-900 text-[10px] font-bold">
+                    {settings.receiptHeaderMsg}
+                  </div>
+                )}
               </div>
 
               <div className="py-2.5 border-b border-dashed border-slate-400 text-[11px] space-y-0.5">
@@ -998,8 +1020,8 @@ export const CustomerDebtInvoiceModal: React.FC<CustomerDebtInvoiceModalProps> =
                 </div>
               </div>
 
-              {settings.receiptFooterMsg && (
-                <div className="text-center pt-2 border-t border-dashed border-slate-300 text-[9px] text-slate-500">
+              {(settings.showReceiptFooterMsg ?? true) && settings.receiptFooterMsg?.trim() && (
+                <div className="text-center pt-2 border-t border-dashed border-slate-300 text-[9px] text-slate-500 whitespace-pre-line leading-relaxed">
                   {settings.receiptFooterMsg}
                 </div>
               )}

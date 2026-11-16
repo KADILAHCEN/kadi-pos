@@ -400,6 +400,12 @@ export const ReceiptModal: React.FC<ReceiptModalProps> = ({
                 </div>
               </div>
 
+              {(settings.showReceiptHeaderMsg ?? true) && settings.receiptHeaderMsg?.trim() && (
+                <div className="px-4 py-2.5 rounded-xl bg-emerald-50 border border-emerald-200 text-emerald-900 text-xs font-bold text-center">
+                  {settings.receiptHeaderMsg}
+                </div>
+              )}
+
               {/* Customer & Cashier Metadata */}
               <div className="grid grid-cols-2 sm:grid-cols-4 gap-3 p-3.5 rounded-xl bg-slate-50 border border-slate-200 text-xs">
                 <div>
@@ -497,7 +503,9 @@ export const ReceiptModal: React.FC<ReceiptModalProps> = ({
                     <div className="font-bold text-slate-700">
                       {isAr ? 'فاتورة مفصلة معتمدة' : 'Certified Itemized Invoice'}
                     </div>
-                    <div>{settings.receiptFooterMsg}</div>
+                    {(settings.showReceiptFooterMsg ?? true) && settings.receiptFooterMsg?.trim() && (
+                      <div className="whitespace-pre-line leading-relaxed">{settings.receiptFooterMsg}</div>
+                    )}
                   </div>
                 </div>
 
@@ -569,6 +577,11 @@ export const ReceiptModal: React.FC<ReceiptModalProps> = ({
                 <div className="mt-2 inline-block px-2.5 py-0.5 bg-slate-100 text-[10px] font-bold rounded">
                   {t.tax_invoice}
                 </div>
+                {(settings.showReceiptHeaderMsg ?? true) && settings.receiptHeaderMsg?.trim() && (
+                  <div className="mt-2 px-2 py-1 bg-slate-50 border border-slate-200 rounded-lg text-[10px] font-bold text-slate-800 leading-snug">
+                    {settings.receiptHeaderMsg}
+                  </div>
+                )}
               </div>
 
               {/* Meta details */}
@@ -713,9 +726,11 @@ export const ReceiptModal: React.FC<ReceiptModalProps> = ({
             </div>
 
             {/* Footer note */}
-            <div className="text-center pt-2 text-[10px] text-slate-500">
-              {settings.receiptFooterMsg}
-            </div>
+            {(settings.showReceiptFooterMsg ?? true) && settings.receiptFooterMsg?.trim() && (
+              <div className="text-center pt-2 border-t border-dashed border-slate-200 text-[10px] text-slate-600 whitespace-pre-line leading-relaxed">
+                {settings.receiptFooterMsg}
+              </div>
+            )}
           </div>
           )}
         </div>
