@@ -40,8 +40,11 @@ import {
   ImagePlus,
   BellRing,
   ShieldAlert,
-  Siren
+  Siren,
+  QrCode,
+  ExternalLink
 } from 'lucide-react';
+import { OFFICIAL_APP_URL, buildQrImageUrl, openExternalLinkSafely } from '../../utils/remoteCatalog';
 import { PWAInstallButton } from '../pwa/PWAInstallButton';
 import { BluetoothScannerModal } from '../scanner/BluetoothScannerModal';
 import { BluetoothPrinterModal } from '../printer/BluetoothPrinterModal';
@@ -50,6 +53,7 @@ import { ImportProductsModal } from '../inventory/ImportProductsModal';
 import { BranchManagementSection } from './BranchManagementSection';
 import { ActivityLogSection } from './ActivityLogSection';
 import { GoogleWorkspaceSyncSection } from './GoogleWorkspaceSyncSection';
+import { TabCustomizationSection } from './TabCustomizationSection';
 
 export const SettingsView: React.FC = () => {
   const {
@@ -112,6 +116,8 @@ export const SettingsView: React.FC = () => {
   const [commercialRegistration, setCommercialRegistration] = useState(settings.commercialRegistration);
   const [phone, setPhone] = useState(settings.phone);
   const [address, setAddress] = useState(settings.address);
+  const [publicAppUrl, setPublicAppUrl] = useState(settings.publicAppUrl || OFFICIAL_APP_URL);
+  const [copiedStoreQr, setCopiedStoreQr] = useState(false);
   const [currency, setCurrency] = useState<CurrencyCode>(settings.currency);
   const [currencySymbol, setCurrencySymbol] = useState(settings.currencySymbol);
   const [taxRate, setTaxRate] = useState(settings.taxRate);
@@ -306,7 +312,8 @@ export const SettingsView: React.FC = () => {
       goldPricePerGram: Math.max(0, Number(goldPricePerGram) || 0),
       zakatCashOnHand: Math.max(0, Number(zakatCashOnHand) || 0),
       zakatPayableDebts: Math.max(0, Number(zakatPayableDebts) || 0),
-      whatsappBusinessPhone: whatsappBusinessPhone.trim()
+      whatsappBusinessPhone: whatsappBusinessPhone.trim(),
+      publicAppUrl: publicAppUrl.trim() || OFFICIAL_APP_URL
     });
 
     updateCpuSettings({
@@ -436,7 +443,7 @@ export const SettingsView: React.FC = () => {
   };
 
   return (
-    <div className="flex-1 flex flex-col h-full overflow-y-auto bg-slate-50 dark:bg-slate-950 p-6 space-y-6">
+    <div className="flex-1 flex flex-col h-full overflow-y-auto bg-slate-50 dark:bg-slate-950 p-3 sm:p-6 space-y-4 sm:space-y-6">
       {/* Title */}
       <div className="flex items-center justify-between">
         <div>
@@ -565,6 +572,68 @@ export const SettingsView: React.FC = () => {
               onChange={(e) => setAddress(e.target.value)}
               className="w-full px-3.5 py-2.5 text-xs bg-slate-50 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 rounded-xl"
             />
+          </div>
+
+          {/* Store Official App URL & Scannable QR Code */}
+          <div className="pt-4 border-t border-slate-200 dark:border-slate-800 grid grid-cols-1 md:grid-cols-12 gap-4 items-center">
+            <div className="md:col-span-8 space-y-2.5">
+              <label className="flex items-center gap-1.5 text-xs font-extrabold text-slate-800 dark:text-slate-200">
+                <QrCode className="w-4 h-4 text-emerald-600" />
+                <span>{isAr ? 'رابط التطبيق الرسمي ورمز QR المتجر' : 'Official Store App URL & QR Code'}</span>
+              </label>
+              <input
+                type="url"
+                dir="ltr"
+                value={publicAppUrl}
+                onChange={(e) => setPublicAppUrl(e.target.value)}
+                placeholder={OFFICIAL_APP_URL}
+                className="w-full px-3.5 py-2.5 text-xs font-mono bg-slate-50 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 rounded-xl text-slate-800 dark:text-slate-100"
+              />
+              <p className="text-[11px] text-slate-500 dark:text-slate-400 leading-relaxed">
+                {isAr
+                  ? 'يُستخدم هذا الرابط لتوليد رمز QR الحقيقي ومشاركة التطبيق وفتح الكتالوج على هواتف الزبائن.'
+                  : 'Used to generate your scannable store QR code, phone install link, and shared customer catalog.'}
+              </p>
+              <div className="flex flex-wrap items-center gap-2 pt-0.5">
+                <button
+                  type="button"
+                  onClick={async () => {
+                    try {
+                      await navigator.clipboard.writeText(buildQrImageUrl(publicAppUrl || OFFICIAL_APP_URL, 300));
+                      setCopiedStoreQr(true);
+                      setTimeout(() => setCopiedStoreQr(false), 2000);
+                    } catch {
+                      // ignore
+                    }
+                  }}
+                  className="px-3 py-1.5 rounded-xl border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-800 hover:bg-slate-100 text-[11px] font-bold text-slate-700 dark:text-slate-200 flex items-center gap-1.5 whitespace-nowrap"
+                >
+                  {copiedStoreQr ? <Check className="w-3.5 h-3.5 text-emerald-600" /> : <Copy className="w-3.5 h-3.5" />}
+                  <span>{copiedStoreQr ? (isAr ? 'تم نسخ رابط QR' : 'QR URL Copied') : (isAr ? 'نسخ رابط صورة QR' : 'Copy QR Image URL')}</span>
+                </button>
+                <button
+                  type="button"
+                  onClick={() => openExternalLinkSafely(buildQrImageUrl(publicAppUrl || OFFICIAL_APP_URL, 300))}
+                  className="px-3 py-1.5 rounded-xl bg-emerald-600 hover:bg-emerald-700 text-white text-[11px] font-bold flex items-center gap-1.5 whitespace-nowrap"
+                >
+                  <ExternalLink className="w-3.5 h-3.5" />
+                  <span>{isAr ? 'فتح / تحميل QR' : 'Open / Download QR'}</span>
+                </button>
+              </div>
+            </div>
+
+            <div className="md:col-span-4 flex flex-col items-center justify-center">
+              <div className="p-2.5 rounded-2xl bg-white border border-slate-200 shadow-xs">
+                <img
+                  src={buildQrImageUrl(publicAppUrl || OFFICIAL_APP_URL, 300)}
+                  alt={isAr ? 'رمز QR المتجر' : 'Store QR Code'}
+                  width={128}
+                  height={128}
+                  className="w-32 h-32 object-contain rounded-lg"
+                />
+              </div>
+              <span className="mt-1.5 text-[10px] font-bold text-slate-500">300 × 300 QR</span>
+            </div>
           </div>
         </div>
 
@@ -2493,6 +2562,9 @@ export const SettingsView: React.FC = () => {
             </div>
           </div>
         </div>
+
+        {/* POS Tab Icons & Colors Customization */}
+        <TabCustomizationSection />
 
         {/* PWA Application Installation (تحميل التطبيق على الهاتف والكمبيوتر) */}
         <div className="space-y-2">

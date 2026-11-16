@@ -24,7 +24,7 @@ export const StockAlertOverlay: React.FC<StockAlertOverlayProps> = ({ onNavigate
 
   return (
     <div
-      className="fixed bottom-20 lg:bottom-5 end-4 z-[65] w-[calc(100vw-2rem)] sm:w-[390px] space-y-2.5 pointer-events-none"
+      className="fixed bottom-36 lg:bottom-5 end-3 sm:end-4 z-[65] w-[calc(100vw-1.5rem)] sm:w-[390px] space-y-2.5 pointer-events-none"
       role="region"
       aria-live="assertive"
       aria-label={isAr ? 'تنبيهات انخفاض المخزون الفورية' : 'Real-time Low Stock Alerts'}

@@ -1,37 +1,17 @@
 import React, { useState } from 'react';
 import { usePos } from '../context/PosContext';
-import { Product } from '../types';
 import {
-  Store,
-  Layers,
-  Receipt,
-  Clock,
-  Users,
-  TrendingUp,
-  Settings,
   Sun,
   Moon,
   Globe,
   PauseCircle,
   Bell,
-  AlertTriangle,
-  ArrowRight,
-  PackageCheck,
   Building2,
   ChevronDown,
   Check,
-  Calendar,
   Lock,
-  UserCheck,
-  Scale,
-  Wallet,
-  Send,
-  Landmark,
-  CheckCircle2,
   Palette,
   Plus,
-  Sparkles,
-  BellRing,
   MessageSquare,
   Mic,
   Monitor,
@@ -40,6 +20,7 @@ import {
 import { PinGateModal } from './auth/PinGateModal';
 import { KExecutivePanel } from './KExecutivePanel';
 import { PWAInstallButton } from './pwa/PWAInstallButton';
+import { POS_TAB_CATALOG, resolveTabVisual } from '../utils/tabCustomization';
 
 export const Navbar: React.FC = () => {
   const {
@@ -49,14 +30,10 @@ export const Navbar: React.FC = () => {
     heldTickets,
     lowStockProducts,
     expiringSoonProducts,
-    adjustStock,
     branches,
     activeBranch,
     setActiveBranchId,
     criticalLowStockProducts,
-    notificationPermission,
-    requestNotificationPermission,
-    triggerTestStockAlert,
     isDark,
     toggleTheme,
     language,
@@ -67,10 +44,8 @@ export const Navbar: React.FC = () => {
     isTabProtected,
     settings,
     zakatSummary,
-    currencySymbol,
     remoteOrders,
     cpuAlerts,
-    markCpuQuarterPaid,
     allPalettes,
     activePalette,
     selectPalette,
@@ -84,8 +59,6 @@ export const Navbar: React.FC = () => {
   const newRemoteOrdersCount = remoteOrders.filter((r) => r.status === 'new').length;
 
   const [showKPanel, setShowKPanel] = useState(false);
-  const [showAlertDropdown, setShowAlertDropdown] = useState(false);
-  const [alertTab, setAlertTab] = useState<'low_stock' | 'expiring' | 'zakat' | 'cpu'>('low_stock');
   const [showBranchDropdown, setShowBranchDropdown] = useState(false);
   const [showUserDropdown, setShowUserDropdown] = useState(false);
   const [showPaletteDropdown, setShowPaletteDropdown] = useState(false);
@@ -101,36 +74,24 @@ export const Navbar: React.FC = () => {
     }
   };
 
-  const navItems = [
-    { id: 'pos' as const, label: isAr ? 'نقطة البيع' : 'POS Register', icon: Store },
-    { id: 'inventory' as const, label: isAr ? 'إدارة المخزون والتتبع' : 'Inventory & Stock', icon: Layers },
-    { id: 'orders' as const, label: isAr ? 'الفواتير والمبيعات' : 'Receipts', icon: Receipt },
-    { id: 'shifts' as const, label: isAr ? 'الورديات والصندوق' : 'Shifts & Cash', icon: Clock },
-    { id: 'customers' as const, label: isAr ? 'كناش الكريدي والعملاء' : 'Credit Ledger & Customers', icon: Users },
-    { id: 'expenses' as const, label: isAr ? 'المصاريف' : isFr ? 'Dépenses' : 'Expenses', icon: Wallet },
-    { id: 'remote_sales' as const, label: isAr ? 'البيع عن بعد' : isFr ? 'Vente à distance' : 'Remote & WA', icon: Send },
-    { id: 'cpu_tax' as const, label: isAr ? 'ضرائبي CPU' : isFr ? 'Impôt CPU' : 'CPU Tax', icon: Landmark },
-    { id: 'analytics' as const, label: isAr ? 'التقارير والأرباح' : 'Analytics & Profit', icon: TrendingUp },
-    { id: 'ai_assistant' as const, label: isAr ? 'مساعد الذكاء الاصطناعي' : isFr ? 'Assistant IA' : 'AI Assistant', icon: Sparkles },
-    { id: 'settings' as const, label: isAr ? 'الإعدادات' : 'Settings', icon: Settings },
-  ];
+  const navItems = POS_TAB_CATALOG.filter((t) => t.showInTopNav !== false);
 
   return (
-    <header className="sticky top-0 z-30 flex flex-wrap md:flex-nowrap items-center justify-between gap-2 xl:gap-4 px-3 sm:px-5 py-2.5 bg-white dark:bg-slate-900 border-b border-slate-200 dark:border-slate-800 transition-colors">
+    <header className="sticky top-0 z-30 flex flex-nowrap items-center justify-between gap-2 xl:gap-3 px-2.5 sm:px-4 py-1.5 bg-white dark:bg-slate-900 border-b border-slate-200 dark:border-slate-800 transition-colors">
       {/* Zone 1: K Quick Overview Button, Wordmark, Always-Visible Red EOD Close Button & Branch Switcher */}
-      <div className="flex items-center gap-2 sm:gap-2.5 shrink-0 relative">
+      <div className="flex items-center gap-1.5 sm:gap-2 shrink-0 relative">
         <button
           type="button"
           onClick={() => {
             setShowKPanel((prev) => !prev);
             setShowBranchDropdown(false);
-            setShowAlertDropdown(false);
             setShowUserDropdown(false);
+            setShowPaletteDropdown(false);
           }}
           aria-expanded={showKPanel}
           aria-label={isAr ? 'ملخص إدارة المخزون والمبلغ الإجمالي ونسبة الأرباح والأكثر مبيعاً' : 'Inventory, Total Sales, Profit & Best Sellers'}
           title={isAr ? 'إدارة المخزون، المبلغ الإجمالي، نسبة الأرباح والمنتوجات الأكثر مبيعاً' : 'Inventory, Total Sales, Profit % & Top Products'}
-          className={`w-9 h-9 sm:w-10 sm:h-10 rounded-xl flex items-center justify-center font-extrabold text-base sm:text-lg shadow-sm transition-colors focus:outline-none focus-visible:ring-2 focus-visible:ring-emerald-500 shrink-0 ${
+          className={`w-8 h-8 sm:w-9 sm:h-9 rounded-xl flex items-center justify-center font-extrabold text-sm sm:text-base shadow-sm transition-colors focus:outline-none focus-visible:ring-2 focus-visible:ring-emerald-500 shrink-0 ${
             showKPanel
               ? 'bg-slate-900 dark:bg-emerald-500 text-white ring-2 ring-emerald-500/40'
               : 'bg-emerald-600 hover:bg-emerald-700 text-white'
@@ -148,7 +109,7 @@ export const Navbar: React.FC = () => {
           className="flex items-center text-left rtl:text-right group focus:outline-none"
         >
           <div className="whitespace-nowrap">
-            <span className="text-base sm:text-lg xl:text-xl font-bold tracking-tight text-slate-900 dark:text-white font-sans">
+            <span className="text-sm sm:text-base xl:text-lg font-bold tracking-tight text-slate-900 dark:text-white font-sans">
               kadi <span className="text-emerald-600 dark:text-emerald-400">pos</span>
             </span>
           </div>
@@ -161,7 +122,7 @@ export const Navbar: React.FC = () => {
         />
 
         {/* Branch Switcher Dropdown */}
-        <div className="relative">
+        <div className="relative hidden sm:block">
           <button
             type="button"
             onClick={() => setShowBranchDropdown(!showBranchDropdown)}
@@ -236,23 +197,24 @@ export const Navbar: React.FC = () => {
       </div>
 
       {/* Zone 2: Scrollable single-line navigation links */}
-      <nav className="hidden lg:flex flex-1 min-w-0 items-center gap-1 overflow-x-auto py-1">
+      <nav className="hidden lg:flex flex-1 min-w-0 items-center gap-1 overflow-x-auto py-0.5">
         {navItems.map((item) => {
-          const Icon = item.icon;
+          const { IconComponent, colorPreset } = resolveTabVisual(item.id, settings.tabCustomizations);
           const isActive = currentTab === item.id;
           const isProtected = isTabProtected(item.id);
+          const label = isAr ? item.labelAr : isFr ? item.labelFr : item.labelEn;
           return (
             <button
               key={item.id}
               onClick={() => handleTabClick(item.id)}
-              className={`flex items-center gap-2 px-3.5 py-2 text-xs font-semibold rounded-lg transition-colors whitespace-nowrap shrink-0 ${
+              className={`flex items-center gap-1.5 px-2.5 py-1.5 text-xs font-semibold rounded-lg transition-colors whitespace-nowrap shrink-0 ${
                 isActive
-                  ? 'bg-emerald-50 dark:bg-emerald-950/70 text-emerald-700 dark:text-emerald-300 border border-emerald-200/70 dark:border-emerald-700/60 font-bold'
+                  ? colorPreset.activeNavClass
                   : 'text-slate-600 dark:text-slate-300 hover:text-slate-900 dark:hover:text-white hover:bg-slate-100 dark:hover:bg-slate-800/80'
               }`}
             >
-              <Icon className="w-4 h-4 shrink-0" />
-              <span>{item.label}</span>
+              <IconComponent className={`w-3.5 h-3.5 shrink-0 ${isActive ? '' : colorPreset.iconTintClass}`} />
+              <span>{label}</span>
               {isProtected && (
                 <Lock className="w-3 h-3 text-amber-500 opacity-80" />
               )}
@@ -275,360 +237,59 @@ export const Navbar: React.FC = () => {
       </nav>
 
       {/* Zone 3: Shift Status & Utilities */}
-      <div className="flex flex-wrap sm:flex-nowrap items-center justify-end gap-1.5 sm:gap-2 shrink-0 w-full md:w-auto max-w-full">
-        {/* Alerts Center (Low Stock & Expiry Tracking) */}
-        <div className="relative">
-          {(() => {
-            const zakatAlertCount = zakatSummary.hasReachedNisab ? 1 : 0;
-            const totalAlerts = lowStockProducts.length + expiringSoonProducts.length + zakatAlertCount + cpuAlerts.length;
-            const hasAlerts = totalAlerts > 0;
-            const hasCritical = criticalLowStockProducts.length > 0;
-            return (
-              <>
-                <button
-                  onClick={() => setShowAlertDropdown(!showAlertDropdown)}
-                  className={`relative p-2 rounded-xl transition-all ${
-                    hasCritical
-                      ? 'bg-rose-50 dark:bg-rose-950/60 text-rose-600 dark:text-rose-400 border border-rose-200 dark:border-rose-800 ring-2 ring-rose-400/25'
-                      : hasAlerts
-                      ? 'bg-amber-50 dark:bg-amber-950/60 text-amber-600 dark:text-amber-400 border border-amber-200 dark:border-amber-800 ring-2 ring-amber-400/20'
-                      : 'text-slate-600 dark:text-slate-300 hover:bg-slate-100 dark:hover:bg-slate-800'
-                  }`}
-                  title={isAr ? `مركز التنبيهات (${totalAlerts})` : `Alerts Center (${totalAlerts})`}
-                >
-                  <Bell className="w-4 h-4" />
-                  {hasAlerts && (
-                    <span className="absolute -top-1 -right-1 rtl:-right-auto rtl:-left-1 px-1.5 py-0.2 text-[9px] font-black bg-rose-500 text-white rounded-full shadow-xs animate-pulse">
-                      {totalAlerts}
-                    </span>
-                  )}
-                </button>
+      <div className="flex flex-nowrap items-center justify-end gap-1.5 sm:gap-2 shrink-0">
+        {/* Alerts Center Button -> Navigates directly to in-app AlertsView page */}
+        {(() => {
+          const zakatAlertCount = zakatSummary.hasReachedNisab ? 1 : 0;
+          const totalAlerts =
+            lowStockProducts.length +
+            expiringSoonProducts.length +
+            zakatAlertCount +
+            cpuAlerts.length +
+            unresolvedTheftAlerts.length;
+          const hasAlerts = totalAlerts > 0;
+          const hasCritical = criticalLowStockProducts.length > 0;
+          const alertsVisual = resolveTabVisual('alerts', settings.tabCustomizations);
+          const AlertsIcon = alertsVisual.IconComponent;
+          const isAlertsActive = currentTab === 'alerts';
 
-                {/* Dropdown Drawer */}
-                {showAlertDropdown && (
-                  <div className="absolute top-full right-0 rtl:right-auto rtl:left-0 z-50 mt-2 w-84 bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-2xl shadow-2xl overflow-hidden animate-in fade-in slide-in-from-top-1">
-                    {/* Header Tabs */}
-                    <div className="p-2 border-b border-slate-100 dark:border-slate-800 bg-slate-50 dark:bg-slate-800/50 flex items-center gap-1">
-                      <button
-                        type="button"
-                        onClick={() => setAlertTab('low_stock')}
-                        className={`flex-1 py-1.5 px-2 text-xs font-bold rounded-xl transition-colors flex items-center justify-center gap-1.5 ${
-                          alertTab === 'low_stock'
-                            ? 'bg-amber-500 text-white shadow-2xs'
-                            : 'text-slate-600 dark:text-slate-400 hover:bg-slate-200/60 dark:hover:bg-slate-700/60'
-                        }`}
-                      >
-                        <AlertTriangle className="w-3.5 h-3.5" />
-                        <span>{isAr ? 'المخزون' : 'Stock'}</span>
-                        <span className="px-1.5 py-0.2 rounded-full text-[9px] bg-white/20">
-                          {lowStockProducts.length}
-                        </span>
-                      </button>
-
-                      <button
-                        type="button"
-                        onClick={() => setAlertTab('expiring')}
-                        className={`flex-1 py-1.5 px-2 text-xs font-bold rounded-xl transition-colors flex items-center justify-center gap-1.5 ${
-                          alertTab === 'expiring'
-                            ? 'bg-rose-500 text-white shadow-2xs'
-                            : 'text-slate-600 dark:text-slate-400 hover:bg-slate-200/60 dark:hover:bg-slate-700/60'
-                        }`}
-                      >
-                        <Calendar className="w-3.5 h-3.5" />
-                        <span>{isAr ? 'الصلاحية' : 'Expiry'}</span>
-                        <span className="px-1.5 py-0.2 rounded-full text-[9px] bg-white/20">
-                          {expiringSoonProducts.length}
-                        </span>
-                      </button>
-
-                      <button
-                        type="button"
-                        onClick={() => setAlertTab('zakat')}
-                        className={`flex-1 py-1.5 px-2 text-xs font-bold rounded-xl transition-colors flex items-center justify-center gap-1.5 ${
-                          alertTab === 'zakat'
-                            ? 'bg-emerald-600 text-white shadow-2xs'
-                            : 'text-slate-600 dark:text-slate-400 hover:bg-slate-200/60 dark:hover:bg-slate-700/60'
-                        }`}
-                      >
-                        <Scale className="w-3.5 h-3.5" />
-                        <span>{isAr ? 'الزكاة' : 'Zakat'}</span>
-                        {zakatSummary.hasReachedNisab && (
-                          <span className="w-2 h-2 rounded-full bg-amber-400 shrink-0" />
-                        )}
-                      </button>
-
-                      <button
-                        type="button"
-                        onClick={() => setAlertTab('cpu')}
-                        className={`flex-1 py-1.5 px-2 text-xs font-bold rounded-xl transition-colors flex items-center justify-center gap-1.5 ${
-                          alertTab === 'cpu'
-                            ? 'bg-indigo-600 text-white shadow-2xs'
-                            : 'text-slate-600 dark:text-slate-400 hover:bg-slate-200/60 dark:hover:bg-slate-700/60'
-                        }`}
-                      >
-                        <Landmark className="w-3.5 h-3.5" />
-                        <span>CPU</span>
-                        {cpuAlerts.length > 0 && (
-                          <span className="px-1.5 py-0.2 rounded-full text-[9px] bg-amber-400 text-slate-950 font-black">
-                            {cpuAlerts.length}
-                          </span>
-                        )}
-                      </button>
-                    </div>
-
-                    <div className="max-h-64 overflow-y-auto divide-y divide-slate-100 dark:divide-slate-800">
-                      {alertTab === 'low_stock' ? (
-                        <div>
-                          {notificationPermission !== 'unsupported' && (
-                            <div className="p-2.5 bg-rose-50/90 dark:bg-rose-950/40 border-b border-rose-200 dark:border-rose-800/80 flex items-center justify-between gap-2">
-                              <div className="text-[11px] font-bold text-rose-800 dark:text-rose-200 leading-snug">
-                                {notificationPermission === 'granted'
-                                  ? isAr
-                                    ? 'إشعارات الدفع (Push) مفعّلة لأي منتج يقل عن الحد الأدنى ✓'
-                                    : 'Low-stock Push alerts active ✓'
-                                  : isAr
-                                  ? 'تفعيل إشعارات الدفع الفورية عند نزول أي منتج تحت الحد الأدنى'
-                                  : 'Enable Push Alerts when any item drops below minimum'}
-                              </div>
-                              <div className="flex items-center gap-1.5 shrink-0">
-                                {notificationPermission !== 'granted' ? (
-                                  <button
-                                    type="button"
-                                    onClick={() => void requestNotificationPermission()}
-                                    className="px-2.5 py-1 rounded-lg bg-rose-600 hover:bg-rose-700 text-white text-[10px] font-black flex items-center gap-1 transition-colors"
-                                  >
-                                    <BellRing className="w-3 h-3" />
-                                    <span>{isAr ? 'تفعيل' : 'Enable'}</span>
-                                  </button>
-                                ) : (
-                                  <button
-                                    type="button"
-                                    onClick={() => void triggerTestStockAlert()}
-                                    className="px-2.5 py-1 rounded-lg bg-emerald-600 hover:bg-emerald-700 text-white text-[10px] font-black transition-colors"
-                                  >
-                                    {isAr ? 'تجربة التنبيه' : 'Test Alert'}
-                                  </button>
-                                )}
-                              </div>
-                            </div>
-                          )}
-
-                          {lowStockProducts.length === 0 ? (
-                            <div className="p-6 text-center text-xs text-slate-400 flex flex-col items-center">
-                              <PackageCheck className="w-8 h-8 text-emerald-500 mb-1 opacity-70" />
-                              <span>{isAr ? 'جميع المنتجات فوق الحد الأدنى' : 'All stock levels healthy'}</span>
-                            </div>
-                          ) : (
-                            lowStockProducts.map((p: Product) => {
-                              const isCritical =
-                                p.lowStockThreshold > 0 && p.stock <= p.lowStockThreshold * 0.2;
-                              return (
-                                <div
-                                  key={p.id}
-                                  className={`p-3 flex items-center justify-between gap-2.5 transition-colors ${
-                                    isCritical
-                                      ? 'bg-rose-50/70 dark:bg-rose-950/30 hover:bg-rose-100/70 dark:hover:bg-rose-950/50'
-                                      : 'hover:bg-slate-50 dark:hover:bg-slate-800/50'
-                                  }`}
-                                >
-                                  <div className="min-w-0">
-                                    <div className="flex items-center gap-1.5">
-                                      <span className="font-bold text-xs text-slate-900 dark:text-white truncate">
-                                        {p.name}
-                                      </span>
-                                      {isCritical && (
-                                        <span className="px-1.5 py-0.2 rounded text-[9px] font-black bg-rose-600 text-white shrink-0">
-                                          {isAr ? 'حرج < 20%' : 'Critical <20%'}
-                                        </span>
-                                      )}
-                                    </div>
-                                    <div
-                                      className={`text-[11px] font-medium ${
-                                        isCritical
-                                          ? 'text-rose-600 dark:text-rose-400'
-                                          : 'text-amber-600 dark:text-amber-400'
-                                      }`}
-                                    >
-                                      {isAr ? 'المتبقي:' : 'Stock:'}{' '}
-                                      <span className="font-bold font-mono tabular-nums">{p.stock}</span> (
-                                      {isAr ? 'حد التنبيه:' : 'Min:'} {p.lowStockThreshold})
-                                    </div>
-                                  </div>
-                                  <button
-                                    onClick={() => {
-                                      adjustStock(p.id, 20, 'توريد سريع عبر تنبيه المخزون', 'restock');
-                                      setShowAlertDropdown(false);
-                                    }}
-                                    className="px-2 py-1 text-[10px] font-bold bg-emerald-600 hover:bg-emerald-700 text-white rounded-lg transition-colors whitespace-nowrap shrink-0"
-                                  >
-                                    +20 {isAr ? 'توريد' : 'Restock'}
-                                  </button>
-                                </div>
-                              );
-                            })
-                          )}
-                        </div>
-                      ) : alertTab === 'expiring' ? (
-                        expiringSoonProducts.length === 0 ? (
-                          <div className="p-6 text-center text-xs text-slate-400 flex flex-col items-center">
-                            <PackageCheck className="w-8 h-8 text-emerald-500 mb-1 opacity-70" />
-                            <span>{isAr ? 'لا توجد منتجات قريبة من انتهاء الصلاحية' : 'No expiring products'}</span>
-                          </div>
-                        ) : (
-                          expiringSoonProducts.map((p: Product) => {
-                            const today = new Date();
-                            today.setHours(0, 0, 0, 0);
-                            const exp = p.expiryDate ? new Date(p.expiryDate) : null;
-                            const diffDays = exp ? Math.round((exp.getTime() - today.getTime()) / (1000 * 60 * 60 * 24)) : 0;
-                            const isExpired = diffDays < 0;
-
-                            return (
-                              <div key={p.id} className="p-3 hover:bg-slate-50 dark:hover:bg-slate-800/50 flex items-center justify-between gap-2.5">
-                                <div className="min-w-0">
-                                  <div className="font-bold text-xs text-slate-900 dark:text-white truncate">
-                                    {p.name}
-                                  </div>
-                                  <div className="text-[11px] font-medium mt-0.5 flex items-center gap-1.5">
-                                    <span className={`px-1.5 py-0.2 rounded text-[10px] font-black ${
-                                      isExpired
-                                        ? 'bg-rose-100 text-rose-700 dark:bg-rose-950 dark:text-rose-300'
-                                        : 'bg-amber-100 text-amber-700 dark:bg-amber-950 dark:text-amber-300'
-                                    }`}>
-                                      {isExpired ? (isAr ? 'منتهي الصلاحية' : 'Expired') : (isAr ? `ينتهي خلال ${diffDays} يوم` : `${diffDays}d left`)}
-                                    </span>
-                                    <span className="text-slate-400 font-mono text-[10px]">
-                                      {p.expiryDate}
-                                    </span>
-                                  </div>
-                                </div>
-                                <button
-                                  onClick={() => {
-                                    setCurrentTab('inventory');
-                                    setShowAlertDropdown(false);
-                                  }}
-                                  className="px-2 py-1 text-[10px] font-bold bg-slate-100 dark:bg-slate-800 hover:bg-slate-200 text-slate-700 dark:text-slate-300 rounded-lg transition-colors whitespace-nowrap shrink-0"
-                                >
-                                  {isAr ? 'معاينة' : 'Inspect'}
-                                </button>
-                              </div>
-                            );
-                          })
-                        )
-                      ) : alertTab === 'zakat' ? (
-                        <div className="p-4 space-y-3 text-xs">
-                          <div className="flex items-center justify-between">
-                            <span className="font-black text-slate-900 dark:text-white">
-                              {zakatSummary.hasReachedNisab
-                                ? (isAr ? '✅ تم تجاوز نصاب 85 جم ذهب' : '✅ 85g Gold Nisab Exceeded')
-                                : (isAr ? '⏳ لم يبلغ النصاب بعد' : '⏳ Below 85g Nisab')}
-                            </span>
-                            <span className="font-mono text-[10px] text-amber-600 dark:text-amber-400 font-bold">
-                              {zakatSummary.nisabProgressPct}%
-                            </span>
-                          </div>
-                          <div className="p-3 rounded-xl bg-slate-50 dark:bg-slate-800/70 border border-slate-200 dark:border-slate-700 space-y-1.5">
-                            <div className="flex justify-between">
-                              <span className="text-slate-500">{isAr ? 'الوعاء الزكوي:' : 'Zakatable Base:'}</span>
-                              <span className="font-mono font-bold text-slate-900 dark:text-white">
-                                {zakatSummary.zakatableBase.toFixed(2)} {currencySymbol}
-                              </span>
-                            </div>
-                            <div className="flex justify-between">
-                              <span className="text-slate-500">{isAr ? 'النصاب (85g ذهب):' : 'Nisab (85g):'}</span>
-                              <span className="font-mono font-bold text-amber-600 dark:text-amber-400">
-                                {zakatSummary.nisabValue.toFixed(2)} {currencySymbol}
-                              </span>
-                            </div>
-                            <div className="pt-1.5 border-t border-slate-200 dark:border-slate-700 flex justify-between items-center">
-                              <span className="font-bold text-slate-700 dark:text-slate-300">
-                                {isAr ? 'الزكاة الواجبة (2.5%):' : 'Auto Zakat (2.5%):'}
-                              </span>
-                              <span className="font-mono font-black text-sm text-emerald-600 dark:text-emerald-400">
-                                {zakatSummary.zakatDue.toFixed(2)} {currencySymbol}
-                              </span>
-                            </div>
-                          </div>
-                          <button
-                            type="button"
-                            onClick={() => {
-                              setCurrentTab('analytics');
-                              setShowAlertDropdown(false);
-                            }}
-                            className="w-full py-2 rounded-xl bg-emerald-600 hover:bg-emerald-700 text-white font-bold text-xs transition-colors"
-                          >
-                            {isAr ? 'فتح حاسبة وتفاصيل الزكاة' : 'Open Zakat Calculator'}
-                          </button>
-                        </div>
-                      ) : (
-                        cpuAlerts.length === 0 ? (
-                          <div className="p-6 text-center text-xs text-slate-400 flex flex-col items-center gap-2">
-                            <CheckCircle2 className="w-8 h-8 text-emerald-500 opacity-70" />
-                            <span>{isAr ? 'لا توجد دفعات CPU مستحقة خلال 7 أيام' : 'No CPU payments due within 7 days'}</span>
-                            <button
-                              type="button"
-                              onClick={() => {
-                                setCurrentTab('cpu_tax');
-                                setShowAlertDropdown(false);
-                              }}
-                              className="px-3 py-1.5 rounded-lg bg-emerald-600 text-white font-bold text-[11px]"
-                            >
-                              {isAr ? 'فتح ضرائبي CPU' : 'Open CPU Tax'}
-                            </button>
-                          </div>
-                        ) : (
-                          <div className="divide-y divide-slate-100 dark:divide-slate-800">
-                            {cpuAlerts.map((al) => (
-                              <div key={al.recordId} className="p-3 flex items-center justify-between gap-2 text-xs">
-                                <div className="min-w-0">
-                                  <div className="font-black text-slate-900 dark:text-white">
-                                    CPU {al.year}-{al.quarter} · {al.totalDue.toFixed(2)} {currencySymbol}
-                                  </div>
-                                  <div className={`text-[11px] font-bold ${al.isOverdue ? 'text-rose-600' : 'text-amber-600'}`}>
-                                    {al.isOverdue
-                                      ? (isAr ? `متأخر بـ ${Math.abs(al.daysLeft)} يوم` : `Overdue ${Math.abs(al.daysLeft)}d`)
-                                      : (isAr ? `باقي ${al.daysLeft} يوم للدفع (${al.dueDate})` : `${al.daysLeft}d left`)}
-                                  </div>
-                                </div>
-                                <button
-                                  type="button"
-                                  onClick={() => {
-                                    markCpuQuarterPaid(al.recordId, true);
-                                    setShowAlertDropdown(false);
-                                  }}
-                                  className="px-2.5 py-1 rounded-lg bg-emerald-600 hover:bg-emerald-700 text-white text-[10px] font-black shrink-0"
-                                >
-                                  {isAr ? 'لقد دفعت' : 'I Paid'}
-                                </button>
-                              </div>
-                            ))}
-                          </div>
-                        )
-                      )}
-                    </div>
-
-                    <div className="p-2.5 border-t border-slate-100 dark:border-slate-800 bg-slate-50 dark:bg-slate-800/50 text-center">
-                      <button
-                        onClick={() => {
-                          setCurrentTab('inventory');
-                          setShowAlertDropdown(false);
-                        }}
-                        className="text-xs font-bold text-emerald-600 dark:text-emerald-400 hover:underline"
-                      >
-                        {isAr ? 'الانتقال إلى إدارة وتتبع المخزون ←' : 'Go to Inventory & Tracking →'}
-                      </button>
-                    </div>
-                  </div>
-                )}
-              </>
-            );
-          })()}
-        </div>
+          return (
+            <button
+              type="button"
+              onClick={() => {
+                setShowKPanel(false);
+                setShowBranchDropdown(false);
+                setShowUserDropdown(false);
+                setShowPaletteDropdown(false);
+                setCurrentTab('alerts');
+              }}
+              aria-current={isAlertsActive ? 'page' : undefined}
+              className={`relative p-2 rounded-xl transition-all ${
+                isAlertsActive
+                  ? `${alertsVisual.colorPreset.activeNavClass} ${alertsVisual.colorPreset.ringClass}`
+                  : hasCritical
+                  ? 'bg-rose-50 dark:bg-rose-950/60 text-rose-600 dark:text-rose-400 border border-rose-200 dark:border-rose-800 ring-2 ring-rose-400/25'
+                  : hasAlerts
+                  ? 'bg-amber-50 dark:bg-amber-950/60 text-amber-600 dark:text-amber-400 border border-amber-200 dark:border-amber-800 ring-2 ring-amber-400/20'
+                  : 'text-slate-600 dark:text-slate-300 hover:bg-slate-100 dark:hover:bg-slate-800'
+              }`}
+              title={isAr ? `مركز التنبيهات (${totalAlerts})` : `Alerts Center (${totalAlerts})`}
+            >
+              <AlertsIcon className="w-4 h-4" />
+              {hasAlerts && (
+                <span className="absolute -top-1 -end-1 px-1.5 py-0.2 text-[9px] font-black bg-rose-500 text-white rounded-full shadow-xs tabular-nums">
+                  {totalAlerts}
+                </span>
+              )}
+            </button>
+          );
+        })()}
 
         {/* Held Orders quick trigger */}
         {heldTickets.length > 0 && (
           <button
             onClick={() => setCurrentTab('pos')}
-            className="flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium bg-amber-50 dark:bg-amber-950/40 text-amber-700 dark:text-amber-400 border border-amber-200 dark:border-amber-900/60 rounded-lg hover:bg-amber-100 dark:hover:bg-amber-900/40 transition-colors whitespace-nowrap shrink-0"
+            className="hidden sm:flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium bg-amber-50 dark:bg-amber-950/40 text-amber-700 dark:text-amber-400 border border-amber-200 dark:border-amber-900/60 rounded-lg hover:bg-amber-100 dark:hover:bg-amber-900/40 transition-colors whitespace-nowrap shrink-0"
             title={isAr ? 'الطلبات المعلقة' : 'Held Tickets'}
           >
             <PauseCircle className="w-3.5 h-3.5" />
@@ -646,7 +307,7 @@ export const Navbar: React.FC = () => {
         </button>
 
         {/* User Profile & Role Switcher */}
-        <div className="relative">
+        <div className="relative hidden md:block">
           <button
             type="button"
             onClick={() => setShowUserDropdown(!showUserDropdown)}
@@ -759,7 +420,7 @@ export const Navbar: React.FC = () => {
         {/* Language switch */}
         <button
           onClick={toggleLanguage}
-          className="p-2 text-xs font-medium rounded-lg text-slate-600 dark:text-slate-300 hover:bg-slate-100 dark:hover:bg-slate-800 transition-colors flex items-center gap-1"
+          className="hidden sm:flex p-2 text-xs font-medium rounded-lg text-slate-600 dark:text-slate-300 hover:bg-slate-100 dark:hover:bg-slate-800 transition-colors items-center gap-1"
           title={isAr ? 'تغيير اللغة' : 'Switch Language'}
         >
           <Globe className="w-4 h-4" />
@@ -767,13 +428,12 @@ export const Navbar: React.FC = () => {
         </button>
 
         {/* App Palette Quick Switcher */}
-        <div className="relative">
+        <div className="relative hidden md:block">
           <button
             type="button"
             onClick={() => {
               setShowPaletteDropdown((prev) => !prev);
               setShowBranchDropdown(false);
-              setShowAlertDropdown(false);
               setShowUserDropdown(false);
               setShowKPanel(false);
             }}
@@ -873,7 +533,9 @@ export const Navbar: React.FC = () => {
         </div>
 
         {/* Compact Top Install on Phone (PWA) Trigger */}
-        <PWAInstallButton variant="navbar" />
+        <div className="hidden md:block">
+          <PWAInstallButton variant="navbar" />
+        </div>
 
         {/* Anti-Theft & Loss Prevention Security Center Button */}
         <button
@@ -881,7 +543,6 @@ export const Navbar: React.FC = () => {
           onClick={() => {
             setShowPaletteDropdown(false);
             setShowBranchDropdown(false);
-            setShowAlertDropdown(false);
             setShowUserDropdown(false);
             setShowKPanel(false);
             window.dispatchEvent(new CustomEvent('kadi:open-theft-security'));
@@ -895,7 +556,7 @@ export const Navbar: React.FC = () => {
           className={`relative p-2 rounded-lg border transition-colors ${
             isSirenActive || unresolvedTheftAlerts.length > 0
               ? 'text-white bg-rose-600 border-rose-500 hover:bg-rose-700 ring-2 ring-rose-500/40 animate-pulse'
-              : 'text-rose-600 dark:text-rose-400 bg-rose-50 dark:bg-rose-950/40 border-rose-200/80 dark:border-rose-800/70 hover:bg-rose-100 dark:hover:bg-rose-900/50'
+              : 'hidden sm:inline-flex text-rose-600 dark:text-rose-400 bg-rose-50 dark:bg-rose-950/40 border-rose-200/80 dark:border-rose-800/70 hover:bg-rose-100 dark:hover:bg-rose-900/50'
           }`}
         >
           <ShieldAlert className="w-4 h-4" />
@@ -912,14 +573,13 @@ export const Navbar: React.FC = () => {
           onClick={() => {
             setShowPaletteDropdown(false);
             setShowBranchDropdown(false);
-            setShowAlertDropdown(false);
             setShowUserDropdown(false);
             setShowKPanel(false);
             window.dispatchEvent(new CustomEvent('kadi:open-customer-display'));
           }}
           aria-label={isAr ? 'شاشة عرض العميل' : 'Customer Display'}
           title={isAr ? 'شاشة عرض العميل (شاشة ثانية مباشرة)' : 'Customer Display (Dual Screen)'}
-          className="p-2 rounded-lg text-sky-600 dark:text-sky-300 bg-sky-50 dark:bg-sky-950/50 border border-sky-200/80 dark:border-sky-800/70 hover:bg-sky-100 dark:hover:bg-sky-900/60 transition-colors"
+          className="hidden md:inline-flex p-2 rounded-lg text-sky-600 dark:text-sky-300 bg-sky-50 dark:bg-sky-950/50 border border-sky-200/80 dark:border-sky-800/70 hover:bg-sky-100 dark:hover:bg-sky-900/60 transition-colors"
         >
           <Monitor className="w-4 h-4" />
         </button>
@@ -930,7 +590,6 @@ export const Navbar: React.FC = () => {
           onClick={() => {
             setShowPaletteDropdown(false);
             setShowBranchDropdown(false);
-            setShowAlertDropdown(false);
             setShowUserDropdown(false);
             setShowKPanel(false);
             window.dispatchEvent(new CustomEvent('kadi:toggle-voice-assistant'));
@@ -949,14 +608,13 @@ export const Navbar: React.FC = () => {
           onClick={() => {
             setShowPaletteDropdown(false);
             setShowBranchDropdown(false);
-            setShowAlertDropdown(false);
             setShowUserDropdown(false);
             setShowKPanel(false);
             window.dispatchEvent(new CustomEvent('kadi:toggle-ai-chat'));
           }}
           aria-label={isAr ? 'محادثة الذكاء الاصطناعي' : 'AI Chat'}
           title={isAr ? 'محادثة الذكاء الاصطناعي' : 'Quick AI Chat'}
-          className="relative p-2 rounded-lg text-violet-600 dark:text-violet-300 bg-violet-50 dark:bg-violet-950/50 border border-violet-200/80 dark:border-violet-800/70 hover:bg-violet-100 dark:hover:bg-violet-900/60 transition-colors"
+          className="hidden sm:inline-flex relative p-2 rounded-lg text-violet-600 dark:text-violet-300 bg-violet-50 dark:bg-violet-950/50 border border-violet-200/80 dark:border-violet-800/70 hover:bg-violet-100 dark:hover:bg-violet-900/60 transition-colors"
         >
           <MessageSquare className="w-4 h-4" />
           <span className="absolute -top-0.5 -end-0.5 w-2 h-2 rounded-full bg-emerald-500 border border-white dark:border-slate-900" />

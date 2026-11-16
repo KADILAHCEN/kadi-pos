@@ -1,4 +1,4 @@
-import React, { useMemo, useState } from 'react';
+import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { usePos } from '../../context/PosContext';
 import {
   Sparkles,
@@ -26,10 +26,17 @@ import {
   Check,
   Eye,
   Trash2,
-  SearchCode
+  SearchCode,
+  Volume2,
+  VolumeX,
+  Square,
+  Mic,
+  MicOff,
+  Loader2
 } from 'lucide-react';
 import { Product } from '../../types';
 import { exportAiFinancialTaxPdf } from '../../utils/exportReports';
+import { speakAiText, stopAiSpeech, transcribeAudioWithServer } from '../../utils/aiVoice';
 
 interface GeminiRecommendation {
   title: string;
@@ -121,6 +128,44 @@ export const AiAssistantView: React.FC = () => {
   const [isSendingChat, setIsSendingChat] = useState(false);
   const [chatError, setChatError] = useState<string | null>(null);
   const [copiedIdx, setCopiedIdx] = useState<number | null>(null);
+
+  // Voice + Text AI state
+  const [autoSpeak, setAutoSpeak] = useState(true);
+  const [speakingKey, setSpeakingKey] = useState<string | null>(null);
+  const [isListeningMic, setIsListeningMic] = useState(false);
+  const [isRecordingClip, setIsRecordingClip] = useState(false);
+  const [isTranscribing, setIsTranscribing] = useState(false);
+
+  const speechRecRef = useRef<{
+    lang: string;
+    continuous: boolean;
+    interimResults: boolean;
+    onresult: ((e: { results: ArrayLike<{ isFinal: boolean; 0: { transcript: string } }> }) => void) | null;
+    onerror: ((e: { error?: string }) => void) | null;
+    onend: (() => void) | null;
+    start: () => void;
+    stop: () => void;
+  } | null>(null);
+  const mediaRecorderRef = useRef<MediaRecorder | null>(null);
+  const mediaStreamRef = useRef<MediaStream | null>(null);
+  const audioChunksRef = useRef<BlobPart[]>([]);
+
+  useEffect(() => {
+    return () => {
+      stopAiSpeech();
+      try {
+        speechRecRef.current?.stop();
+      } catch {
+        // ignore
+      }
+      if (mediaRecorderRef.current && mediaRecorderRef.current.state !== 'inactive') {
+        mediaRecorderRef.current.stop();
+      }
+      if (mediaStreamRef.current) {
+        mediaStreamRef.current.getTracks().forEach((t) => t.stop());
+      }
+    };
+  }, []);
 
   // Core Financial & Operational Snapshots
   const metrics = useMemo(() => {
@@ -640,6 +685,18 @@ export const AiAssistantView: React.FC = () => {
     }
   };
 
+  const handleToggleSpeak = (text: string, key: string) => {
+    if (speakingKey === key) {
+      stopAiSpeech();
+      setSpeakingKey(null);
+      return;
+    }
+    void speakAiText(text, language, {
+      onStart: () => setSpeakingKey(key),
+      onEnd: () => setSpeakingKey((curr) => (curr === key ? null : curr))
+    });
+  };
+
   const handleSendChat = async (customQuestion?: string, overrideMode?: ChatMode) => {
     const q = (customQuestion ?? chatInput).trim();
     if (!q || isSendingChat) return;
@@ -675,11 +732,160 @@ export const AiAssistantView: React.FC = () => {
         }
         throw new Error(data?.error || 'Failed to get AI response');
       }
-      setChatHistory([...nextHistory, { role: 'assistant', text: data.reply || '', mode: activeMode }]);
+      const replyText = (data.reply || '').trim();
+      const updated = [...nextHistory, { role: 'assistant' as const, text: replyText, mode: activeMode }];
+      setChatHistory(updated);
+      if (autoSpeak && replyText) {
+        const key = `msg-${updated.length - 1}`;
+        void speakAiText(replyText, language, {
+          onStart: () => setSpeakingKey(key),
+          onEnd: () => setSpeakingKey((curr) => (curr === key ? null : curr))
+        });
+      }
     } catch (err) {
       setChatError(err instanceof Error ? err.message : 'Chat request failed');
     } finally {
       setIsSendingChat(false);
+    }
+  };
+
+  const startVoiceClipRecorder = async () => {
+    try {
+      if (!navigator.mediaDevices?.getUserMedia || typeof MediaRecorder === 'undefined') {
+        setChatError(isAr ? 'تسجيل الصوت غير مدعوم في هذا المتصفح.' : 'Audio recording is unsupported.');
+        return;
+      }
+      const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+      mediaStreamRef.current = stream;
+      audioChunksRef.current = [];
+      const mimeType = MediaRecorder.isTypeSupported('audio/webm') ? 'audio/webm' : 'audio/mp4';
+      const recorder = new MediaRecorder(stream, { mimeType });
+
+      recorder.ondataavailable = (ev) => {
+        if (ev.data.size > 0) audioChunksRef.current.push(ev.data);
+      };
+
+      recorder.onstop = () => {
+        stream.getTracks().forEach((t) => t.stop());
+        mediaStreamRef.current = null;
+        const blob = new Blob(audioChunksRef.current, { type: recorder.mimeType || 'audio/webm' });
+        const reader = new FileReader();
+        reader.onloadend = async () => {
+          const dataUrl = reader.result as string;
+          const base64 = dataUrl.split(',')[1];
+          if (!base64) return;
+          setIsTranscribing(true);
+          try {
+            const transcript = await transcribeAudioWithServer(base64, blob.type || 'audio/webm', language);
+            if (transcript) {
+              setChatInput(transcript);
+              void handleSendChat(transcript);
+            }
+          } catch (err) {
+            setChatError(err instanceof Error ? err.message : 'Failed to transcribe audio');
+          } finally {
+            setIsTranscribing(false);
+          }
+        };
+        reader.readAsDataURL(blob);
+      };
+
+      mediaRecorderRef.current = recorder;
+      recorder.start();
+      setIsRecordingClip(true);
+    } catch {
+      setChatError(isAr ? 'تعذر الوصول للميكروفون.' : 'Microphone access denied.');
+      setIsRecordingClip(false);
+    }
+  };
+
+  const handleToggleChatMic = () => {
+    setChatError(null);
+    stopAiSpeech();
+    setSpeakingKey(null);
+
+    if (isListeningMic) {
+      try {
+        speechRecRef.current?.stop();
+      } catch {
+        // ignore
+      }
+      setIsListeningMic(false);
+      return;
+    }
+
+    if (isRecordingClip) {
+      if (mediaRecorderRef.current && mediaRecorderRef.current.state !== 'inactive') {
+        mediaRecorderRef.current.stop();
+      }
+      setIsRecordingClip(false);
+      return;
+    }
+
+    const SpeechCtor =
+      (
+        window as unknown as {
+          SpeechRecognition?: new () => NonNullable<typeof speechRecRef.current>;
+          webkitSpeechRecognition?: new () => NonNullable<typeof speechRecRef.current>;
+        }
+      ).SpeechRecognition ||
+      (
+        window as unknown as {
+          SpeechRecognition?: new () => NonNullable<typeof speechRecRef.current>;
+          webkitSpeechRecognition?: new () => NonNullable<typeof speechRecRef.current>;
+        }
+      ).webkitSpeechRecognition;
+
+    if (!SpeechCtor) {
+      void startVoiceClipRecorder();
+      return;
+    }
+
+    try {
+      const rec = new SpeechCtor();
+      rec.lang = isAr ? 'ar-MA' : isFr ? 'fr-FR' : 'en-US';
+      rec.continuous = false;
+      rec.interimResults = true;
+
+      let latestFinal = '';
+      let latestCombined = '';
+
+      rec.onresult = (evt) => {
+        let combined = '';
+        for (let i = 0; i < evt.results.length; i += 1) {
+          const item = evt.results[i];
+          combined += `${item[0].transcript} `;
+          if (item.isFinal) {
+            latestFinal = combined.trim();
+          }
+        }
+        latestCombined = combined.trim();
+        setChatInput(latestCombined);
+      };
+
+      rec.onerror = (evt) => {
+        setIsListeningMic(false);
+        if (evt.error === 'not-allowed') {
+          setChatError(isAr ? 'المرجو السماح بإذن الميكروفون في المتصفح.' : 'Microphone permission denied.');
+        } else {
+          void startVoiceClipRecorder();
+        }
+      };
+
+      rec.onend = () => {
+        setIsListeningMic(false);
+        const toSend = (latestFinal || latestCombined).trim();
+        if (toSend) {
+          void handleSendChat(toSend);
+        }
+      };
+
+      speechRecRef.current = rec;
+      rec.start();
+      setIsListeningMic(true);
+    } catch {
+      setIsListeningMic(false);
+      void startVoiceClipRecorder();
     }
   };
 
@@ -835,7 +1041,7 @@ export const AiAssistantView: React.FC = () => {
   };
 
   return (
-    <div className="flex-1 flex flex-col h-full overflow-y-auto bg-slate-50 dark:bg-slate-950 p-6 space-y-6">
+    <div className="flex-1 flex flex-col h-full overflow-y-auto bg-slate-50 dark:bg-slate-950 p-3 sm:p-6 space-y-4 sm:space-y-6">
       {/* Header + Action Buttons */}
       <div className="flex flex-wrap items-center justify-between gap-4">
         <div className="flex items-center gap-3">
@@ -1362,8 +1568,27 @@ export const AiAssistantView: React.FC = () => {
               </span>
             </h2>
             {analysisResult && (
-              <div className="px-3 py-1 rounded-xl bg-violet-50 dark:bg-violet-950/60 border border-violet-200 dark:border-violet-800 text-xs font-black text-violet-700 dark:text-violet-300 font-mono">
-                {isAr ? 'مؤشر الصحة المالية:' : 'Health Score:'} {analysisResult.healthScore}/100
+              <div className="flex items-center gap-2">
+                <button
+                  type="button"
+                  onClick={() =>
+                    handleToggleSpeak(
+                      `${analysisResult.executiveSummary}. ${analysisResult.taxAdvisory}. ${analysisResult.growthForecast}`,
+                      'report'
+                    )
+                  }
+                  className={`px-3 py-1 rounded-xl text-xs font-black flex items-center gap-1.5 border transition-colors ${
+                    speakingKey === 'report'
+                      ? 'bg-emerald-600 text-white border-emerald-500'
+                      : 'bg-emerald-50 dark:bg-emerald-950/50 text-emerald-700 dark:text-emerald-300 border-emerald-200 dark:border-emerald-800 hover:bg-emerald-100'
+                  }`}
+                >
+                  {speakingKey === 'report' ? <Square className="w-3.5 h-3.5 fill-current" /> : <Volume2 className="w-3.5 h-3.5" />}
+                  <span>{speakingKey === 'report' ? (isAr ? 'إيقاف القراءة' : 'Stop') : isAr ? 'قراءة التقرير بالصوت' : 'Listen Report'}</span>
+                </button>
+                <div className="px-3 py-1 rounded-xl bg-violet-50 dark:bg-violet-950/60 border border-violet-200 dark:border-violet-800 text-xs font-black text-violet-700 dark:text-violet-300 font-mono">
+                  {isAr ? 'مؤشر الصحة المالية:' : 'Health Score:'} {analysisResult.healthScore}/100
+                </div>
               </div>
             )}
           </div>
@@ -1480,19 +1705,58 @@ export const AiAssistantView: React.FC = () => {
               <div className="flex items-center gap-2">
                 <MessageSquare className="w-4 h-4 text-emerald-600" />
                 <h2 className="text-xs font-black text-slate-900 dark:text-white">
-                  {isAr ? 'الشات والتشطيب مع الذكاء الاصطناعي' : 'Interactive AI Chat & Polish'}
+                  {isAr ? 'الشات والتشطيب (صوت وكتابة)' : 'AI Chat (Voice & Text)'}
                 </h2>
               </div>
-              {chatHistory.length > 0 && (
+              <div className="flex items-center gap-1">
+                {speakingKey !== null && (
+                  <button
+                    type="button"
+                    onClick={() => {
+                      stopAiSpeech();
+                      setSpeakingKey(null);
+                    }}
+                    title={isAr ? 'إيقاف الصوت' : 'Stop Speaking'}
+                    className="p-1.5 rounded-lg bg-rose-600 text-white hover:bg-rose-700"
+                  >
+                    <Square className="w-3 h-3 fill-current" />
+                  </button>
+                )}
                 <button
                   type="button"
-                  onClick={() => setChatHistory([])}
-                  className="p-1 text-slate-400 hover:text-rose-500"
-                  title={isAr ? 'مسح المحادثة' : 'Clear Chat'}
+                  onClick={() => {
+                    const nextVal = !autoSpeak;
+                    setAutoSpeak(nextVal);
+                    if (!nextVal) {
+                      stopAiSpeech();
+                      setSpeakingKey(null);
+                    }
+                  }}
+                  title={autoSpeak ? (isAr ? 'الرد الصوتي مفعّل' : 'Voice Reply On') : isAr ? 'الرد الصوتي متوقف' : 'Voice Reply Muted'}
+                  className={`px-2 py-1 rounded-lg text-[10px] font-black flex items-center gap-1 border transition-colors ${
+                    autoSpeak
+                      ? 'bg-emerald-50 dark:bg-emerald-950/60 border-emerald-200 dark:border-emerald-800 text-emerald-700 dark:text-emerald-300'
+                      : 'bg-slate-100 dark:bg-slate-800 border-slate-200 dark:border-slate-700 text-slate-500'
+                  }`}
                 >
-                  <Trash2 className="w-3.5 h-3.5" />
+                  {autoSpeak ? <Volume2 className="w-3.5 h-3.5" /> : <VolumeX className="w-3.5 h-3.5" />}
+                  <span>{isAr ? (autoSpeak ? 'صوت+كتابة' : 'كتابة فقط') : autoSpeak ? 'Voice+Text' : 'Text'}</span>
                 </button>
-              )}
+                {chatHistory.length > 0 && (
+                  <button
+                    type="button"
+                    onClick={() => {
+                      stopAiSpeech();
+                      setSpeakingKey(null);
+                      setChatHistory([]);
+                    }}
+                    className="p-1 text-slate-400 hover:text-rose-500"
+                    title={isAr ? 'مسح المحادثة' : 'Clear Chat'}
+                  >
+                    <Trash2 className="w-3.5 h-3.5" />
+                  </button>
+                )}
+              </div>
             </div>
 
             {/* Mode Switcher Inside Chat */}
@@ -1570,30 +1834,62 @@ export const AiAssistantView: React.FC = () => {
               >
                 <div>{m.text}</div>
                 {m.role === 'assistant' && (
-                  <button
-                    type="button"
-                    onClick={() => handleCopyText(m.text, idx)}
-                    className="mt-2 inline-flex items-center gap-1 text-[10px] font-bold text-slate-500 hover:text-violet-600"
-                  >
-                    {copiedIdx === idx ? (
-                      <>
-                        <Check className="w-3 h-3 text-emerald-500" />
-                        <span>{isAr ? 'تم النسخ' : 'Copied'}</span>
-                      </>
-                    ) : (
-                      <>
-                        <Copy className="w-3 h-3" />
-                        <span>{isAr ? 'نسخ النص' : 'Copy'}</span>
-                      </>
-                    )}
-                  </button>
+                  <div className="mt-2 flex items-center gap-3">
+                    <button
+                      type="button"
+                      onClick={() => handleToggleSpeak(m.text, `msg-${idx}`)}
+                      className={`inline-flex items-center gap-1 text-[10px] font-bold ${
+                        speakingKey === `msg-${idx}`
+                          ? 'text-emerald-600 dark:text-emerald-400'
+                          : 'text-slate-500 hover:text-violet-600'
+                      }`}
+                    >
+                      {speakingKey === `msg-${idx}` ? (
+                        <>
+                          <Square className="w-3 h-3 fill-current" />
+                          <span>{isAr ? 'إيقاف الصوت' : 'Stop'}</span>
+                        </>
+                      ) : (
+                        <>
+                          <Volume2 className="w-3.5 h-3.5" />
+                          <span>{isAr ? 'استماع بالصوت' : 'Listen'}</span>
+                        </>
+                      )}
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => handleCopyText(m.text, idx)}
+                      className="inline-flex items-center gap-1 text-[10px] font-bold text-slate-500 hover:text-violet-600"
+                    >
+                      {copiedIdx === idx ? (
+                        <>
+                          <Check className="w-3 h-3 text-emerald-500" />
+                          <span>{isAr ? 'تم النسخ' : 'Copied'}</span>
+                        </>
+                      ) : (
+                        <>
+                          <Copy className="w-3 h-3" />
+                          <span>{isAr ? 'نسخ النص' : 'Copy'}</span>
+                        </>
+                      )}
+                    </button>
+                  </div>
                 )}
               </div>
             ))}
 
-            {isSendingChat && (
-              <div className="p-3 rounded-2xl bg-slate-100 dark:bg-slate-800 text-xs text-slate-500 me-6">
-                {isAr ? 'جاري التحليل والكتابة...' : 'Thinking...'}
+            {(isSendingChat || isTranscribing) && (
+              <div className="p-3 rounded-2xl bg-slate-100 dark:bg-slate-800 text-xs text-slate-500 me-6 flex items-center gap-2">
+                <Loader2 className="w-3.5 h-3.5 animate-spin text-violet-600" />
+                <span>
+                  {isTranscribing
+                    ? isAr
+                      ? 'جاري تحويل صوتك إلى نص...'
+                      : 'Transcribing voice...'
+                    : isAr
+                    ? 'جاري التحليل والكتابة والصوت...'
+                    : 'Thinking...'}
+                </span>
               </div>
             )}
 
@@ -1609,31 +1905,48 @@ export const AiAssistantView: React.FC = () => {
               e.preventDefault();
               void handleSendChat();
             }}
-            className="pt-3 border-t border-slate-200 dark:border-slate-800 flex items-center gap-2"
+            className="pt-3 border-t border-slate-200 dark:border-slate-800 flex items-center gap-1.5"
           >
+            <button
+              type="button"
+              onClick={handleToggleChatMic}
+              disabled={isSendingChat || isTranscribing}
+              title={isAr ? 'اسأل بالصوت' : 'Ask by Voice'}
+              className={`p-2.5 rounded-xl transition-colors shrink-0 ${
+                isListeningMic || isRecordingClip
+                  ? 'bg-rose-600 text-white animate-pulse'
+                  : 'bg-emerald-600 hover:bg-emerald-700 text-white disabled:opacity-50'
+              }`}
+            >
+              {isListeningMic || isRecordingClip ? <MicOff className="w-4 h-4" /> : <Mic className="w-4 h-4" />}
+            </button>
             <input
               type="text"
               value={chatInput}
               onChange={(e) => setChatInput(e.target.value)}
               placeholder={
-                chatMode === 'tutor'
+                isListeningMic || isRecordingClip
                   ? isAr
-                    ? 'اسأل المعلم المالي والضريبي...'
-                    : 'Ask the Financial & Tax Tutor...'
+                    ? 'جاري الاستماع لصوتك...'
+                    : 'Listening...'
+                  : chatMode === 'tutor'
+                  ? isAr
+                    ? 'اسأل المعلم المالي بالصوت أو الكتابة...'
+                    : 'Ask the Financial Tutor...'
                   : chatMode === 'investigator'
                   ? isAr
-                    ? 'اسأل المحقق السري عن التجاوزات...'
+                    ? 'اسأل المحقق السري بالصوت أو الكتابة...'
                     : 'Ask the Secret Auditor...'
                   : isAr
-                  ? 'دردش أو اطلب تشطيب تقرير مالي...'
-                  : 'Chat or polish a financial report...'
+                  ? 'تكلم أو اكتب ليُجيبك الذكاء صوتاً وكتابة...'
+                  : 'Speak or type for Voice + Text reply...'
               }
-              className="flex-1 px-3 py-2 text-xs bg-slate-50 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 rounded-xl"
+              className="flex-1 min-w-0 px-3 py-2 text-xs bg-slate-50 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 rounded-xl"
             />
             <button
               type="submit"
-              disabled={!chatInput.trim() || isSendingChat}
-              className="p-2.5 rounded-xl bg-violet-600 hover:bg-violet-700 text-white disabled:opacity-50"
+              disabled={!chatInput.trim() || isSendingChat || isTranscribing}
+              className="p-2.5 rounded-xl bg-violet-600 hover:bg-violet-700 text-white disabled:opacity-50 shrink-0"
             >
               <Send className="w-4 h-4" />
             </button>

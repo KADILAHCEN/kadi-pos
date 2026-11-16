@@ -73,6 +73,7 @@ import {
   safeLocalStorageSet
 } from '../utils/storage';
 import { getExpenseCategoryLabel } from '../utils/expenses';
+import { matchEntityByName } from '../utils/darijaVoiceParser';
 import { generate2000MoroccanProducts } from '../utils/catalogGenerator';
 import { calculateTradeZakatSummary, ZakatSummary } from '../utils/zakat';
 import { DEFAULT_DELIVERY_ZONES, REMOTE_ORDERS_CHANNEL } from '../utils/remoteCatalog';
@@ -98,6 +99,7 @@ export type AppTabId =
   | 'cpu_tax'
   | 'analytics'
   | 'ai_assistant'
+  | 'alerts'
   | 'settings';
 
 interface PosContextType {
@@ -196,14 +198,21 @@ interface PosContextType {
   completeCheckout: (paymentMethod: PaymentMethod, splitDetails?: SplitPaymentDetail, amountTendered?: number, note?: string) => Order | null;
   recordVoiceSale: (params: {
     customerName: string;
-    productName: string;
-    priceDirham: number;
+    productName?: string;
+    priceDirham?: number;
     quantity?: number;
+    items?: Array<{
+      productName: string;
+      priceDirham: number;
+      quantity?: number;
+    }>;
     paymentMethod?: 'credit' | 'cash';
     note?: string;
   }) => {
     product: Product;
     createdProduct: boolean;
+    productsList: Product[];
+    createdProductsCount: number;
     customer: Customer;
     createdCustomer: boolean;
     order: Order;
@@ -855,70 +864,114 @@ export const PosProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
 
   const recordVoiceSale = (params: {
     customerName: string;
-    productName: string;
-    priceDirham: number;
+    productName?: string;
+    priceDirham?: number;
     quantity?: number;
+    items?: Array<{
+      productName: string;
+      priceDirham: number;
+      quantity?: number;
+    }>;
     paymentMethod?: 'credit' | 'cash';
     note?: string;
   }) => {
-    const cleanProdName = params.productName.trim() || 'منتج جديد';
     const cleanCustName = params.customerName.trim() || 'زبون عام';
-    const qty = Math.max(1, Number(params.quantity || 1));
-    const totalPrice = Math.max(0.01, Number(params.priceDirham));
-    const unitPrice = Number((totalPrice / qty).toFixed(2));
+    const rawItems =
+      params.items && params.items.length > 0
+        ? params.items
+        : [
+            {
+              productName: (params.productName || 'سلعة جديدة').trim() || 'سلعة جديدة',
+              priceDirham: Number(params.priceDirham || 0),
+              quantity: Number(params.quantity || 1)
+            }
+          ];
+
     const payMethod: PaymentMethod = params.paymentMethod === 'cash' ? 'cash' : 'credit';
     const nowIso = new Date().toISOString();
 
-    // 1. Find or auto-create Product
-    const normProd = cleanProdName.toLowerCase();
-    let targetProd = products.find(
-      (p) =>
-        p.name.trim().toLowerCase() === normProd ||
-        p.name.toLowerCase().includes(normProd) ||
-        normProd.includes(p.name.trim().toLowerCase())
-    );
-    let createdProduct = false;
+    // 1. Find or auto-create all Products atomically
+    let workingProducts = [...products];
+    const resolvedItems: Array<{
+      product: Product;
+      created: boolean;
+      prevStock: number;
+      qty: number;
+      unitPrice: number;
+      lineTotal: number;
+    }> = [];
 
-    if (!targetProd) {
-      createdProduct = true;
-      targetProd = {
-        id: `prod-${Date.now()}-${Math.random().toString(36).slice(2, 5)}`,
-        name: cleanProdName,
-        nameEn: cleanProdName,
-        sku: `VC-${Date.now().toString().slice(-5)}`,
-        barcode: '',
-        categoryId: categories[0]?.id || 'cat-1',
-        price: unitPrice,
-        costPrice: 0,
-        stock: Math.max(0, 20 - qty),
-        lowStockThreshold: 5,
-        unitType: 'piece'
-      };
-      setProducts((prev) => [targetProd!, ...prev]);
-    } else {
-      const nextStock = Math.max(0, Number((targetProd.stock - qty).toFixed(2)));
-      const updatedProd: Product = {
-        ...targetProd,
-        stock: nextStock,
-        price: unitPrice > 0 ? unitPrice : targetProd.price
-      };
-      setProducts((prev) => prev.map((p) => (p.id === targetProd!.id ? updatedProd : p)));
-      targetProd = updatedProd;
-    }
+    rawItems.forEach((rawIt, idx) => {
+      const cleanProdName = rawIt.productName.trim() || 'سلعة جديدة';
+      const qty = rawIt.quantity && Number(rawIt.quantity) > 0 ? Number(rawIt.quantity) : 1;
+      const matched = matchEntityByName(workingProducts, cleanProdName);
+      const rawPrice = Number(rawIt.priceDirham || 0);
+      const lineTotal =
+        rawPrice > 0
+          ? Number(rawPrice.toFixed(2))
+          : matched && matched.price > 0
+          ? Number((matched.price * qty).toFixed(2))
+          : 0;
+      const unitPrice = lineTotal > 0 ? Number((lineTotal / qty).toFixed(2)) : 0;
 
-    // 2. Find or auto-create Customer
-    const normCust = cleanCustName.toLowerCase();
-    let targetCust = customers.find(
-      (c) =>
-        c.name.trim().toLowerCase() === normCust ||
-        c.name.toLowerCase().includes(normCust) ||
-        normCust.includes(c.name.trim().toLowerCase())
+      if (!matched) {
+        const newProd: Product = {
+          id: `prod-${Date.now()}-${idx}-${Math.random().toString(36).slice(2, 5)}`,
+          name: cleanProdName,
+          nameEn: cleanProdName,
+          sku: `VC-${Date.now().toString().slice(-5)}-${idx + 1}`,
+          barcode: '',
+          categoryId: categories[0]?.id || 'cat-1',
+          price: unitPrice,
+          costPrice: 0,
+          stock: Math.max(0, Number((20 - qty).toFixed(2))),
+          lowStockThreshold: 5,
+          unitType: 'piece'
+        };
+        workingProducts = [newProd, ...workingProducts];
+        resolvedItems.push({
+          product: newProd,
+          created: true,
+          prevStock: 20,
+          qty,
+          unitPrice,
+          lineTotal
+        });
+      } else {
+        const prevStock = matched.stock;
+        const nextStock = Math.max(0, Number((matched.stock - qty).toFixed(2)));
+        const updatedProd: Product = {
+          ...matched,
+          stock: nextStock,
+          price: unitPrice > 0 ? unitPrice : matched.price
+        };
+        workingProducts = workingProducts.map((p) => (p.id === matched.id ? updatedProd : p));
+        resolvedItems.push({
+          product: updatedProd,
+          created: false,
+          prevStock,
+          qty,
+          unitPrice,
+          lineTotal
+        });
+      }
+    });
+
+    setProducts(workingProducts);
+
+    const totalPrice = Number(
+      resolvedItems.reduce((sum, item) => sum + item.lineTotal, 0).toFixed(2)
     );
+    const createdProductsCount = resolvedItems.filter((it) => it.created).length;
+    const primaryProduct = resolvedItems[0].product;
+
+    // 2. Find or auto-create Customer (supports any spoken name)
+    let targetCust = matchEntityByName(customers, cleanCustName);
     let createdCustomer = false;
 
     if (!targetCust) {
       createdCustomer = true;
-      const newBalance = payMethod === 'credit' ? Number(totalPrice.toFixed(2)) : 0;
+      const newBalance = payMethod === 'credit' ? totalPrice : 0;
       targetCust = {
         id: `cust-${Date.now()}-${Math.random().toString(36).slice(2, 5)}`,
         name: cleanCustName,
@@ -926,7 +979,7 @@ export const PosProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
         points: Math.floor(totalPrice / 10),
         balance: newBalance,
         tier: 'Silver',
-        totalSpent: Number(totalPrice.toFixed(2)),
+        totalSpent: totalPrice,
         ordersCount: 1,
         createdAt: nowIso.split('T')[0],
         notes: 'تم إنشاؤه تلقائياً عبر التسجيل الصوتي'
@@ -934,7 +987,10 @@ export const PosProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
       setCustomers((prev) => [targetCust!, ...prev]);
     } else {
       const nextTotalSpent = Number((targetCust.totalSpent + totalPrice).toFixed(2));
-      const nextBal = payMethod === 'credit' ? Number((targetCust.balance + totalPrice).toFixed(2)) : targetCust.balance;
+      const nextBal =
+        payMethod === 'credit'
+          ? Number((targetCust.balance + totalPrice).toFixed(2))
+          : targetCust.balance;
       const nextTier: Customer['tier'] =
         nextTotalSpent >= 3000 ? 'Platinum' : nextTotalSpent >= 1000 ? 'Gold' : targetCust.tier;
       const updatedCust: Customer = {
@@ -949,9 +1005,11 @@ export const PosProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
       targetCust = updatedCust;
     }
 
-    // 3. Record completed Order
+    // 3. Record completed Order with all spoken items
     const orderNum = `#KD-${1000 + orders.length + 1}`;
-    const itemCost = Number((targetProd.costPrice * qty).toFixed(2));
+    const itemCost = Number(
+      resolvedItems.reduce((sum, it) => sum + it.product.costPrice * it.qty, 0).toFixed(2)
+    );
     const itemProfit = Number((totalPrice - itemCost).toFixed(2));
     const zatcaQr = generateZatcaTlvBase64(
       settings.storeName,
@@ -967,26 +1025,24 @@ export const PosProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
       date: nowIso,
       branchId: activeBranch.id,
       branchName: activeBranch.name,
-      items: [
-        {
-          productId: targetProd.id,
-          productName: targetProd.name,
-          price: unitPrice,
-          costPrice: targetProd.costPrice,
-          quantity: qty,
-          unitType: targetProd.unitType,
-          total: Number(totalPrice.toFixed(2)),
-          discount: 0
-        }
-      ],
-      subtotal: Number(totalPrice.toFixed(2)),
+      items: resolvedItems.map((it) => ({
+        productId: it.product.id,
+        productName: it.product.name,
+        price: it.unitPrice,
+        costPrice: it.product.costPrice,
+        quantity: it.qty,
+        unitType: it.product.unitType,
+        total: it.lineTotal,
+        discount: 0
+      })),
+      subtotal: totalPrice,
       discountTotal: 0,
       taxTotal: 0,
-      grandTotal: Number(totalPrice.toFixed(2)),
+      grandTotal: totalPrice,
       costTotal: itemCost,
       profitTotal: itemProfit,
       paymentMethod: payMethod,
-      amountTendered: payMethod === 'cash' ? Number(totalPrice.toFixed(2)) : 0,
+      amountTendered: payMethod === 'cash' ? totalPrice : 0,
       changeAmount: 0,
       cashierName: currentShift.cashierName || currentUser.name,
       customerId: targetCust.id,
@@ -1001,22 +1057,26 @@ export const PosProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
 
     setOrders((prev) => [newOrder, ...prev]);
 
-    // 4. Record Stock Movement
-    const mov: StockMovement = {
-      id: `mov-${Date.now()}-${targetProd.id}`,
-      productId: targetProd.id,
-      productName: targetProd.name,
+    // 4. Record Stock Movements for every spoken product
+    const newMovements: StockMovement[] = resolvedItems.map((it, idx) => ({
+      id: `mov-${Date.now()}-${idx}-${it.product.id}`,
+      productId: it.product.id,
+      productName: it.product.name,
       date: nowIso,
       type: 'sale',
-      quantityChange: -qty,
-      previousStock: createdProduct ? 20 : targetProd.stock + qty,
-      newStock: targetProd.stock,
-      unit: targetProd.unitType || 'piece',
-      costPerUnit: targetProd.costPrice,
+      quantityChange: -it.qty,
+      previousStock: it.prevStock,
+      newStock: it.product.stock,
+      unit: it.product.unitType || 'piece',
+      costPerUnit: it.product.costPrice,
       orderNumber: orderNum,
-      reason: `مبيعة صوتية (${targetCust.name})`
-    };
-    setStockMovements((prev) => [mov, ...prev]);
+      reason: `مبيعة صوتية (${targetCust!.name})`
+    }));
+    setStockMovements((prev) => [...newMovements, ...prev]);
+
+    const itemsSummaryText = resolvedItems
+      .map((it) => `${it.product.name}${it.qty > 1 ? ` ×${it.qty}` : ''}`)
+      .join(' + ');
 
     // 5. Record CreditTransaction when on credit
     if (payMethod === 'credit') {
@@ -1026,9 +1086,9 @@ export const PosProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
         customerId: targetCust.id,
         customerName: targetCust.name,
         type: 'debt',
-        amount: Number(totalPrice.toFixed(2)),
+        amount: totalPrice,
         date: nowIso,
-        notes: `${cleanProdName} (${qty}) - مسجل بالصوت`,
+        notes: `${itemsSummaryText} - مسجل بالصوت`,
         receiptNumber: orderNum,
         previousBalance: prevBal,
         newBalance: targetCust.balance,
@@ -1039,8 +1099,8 @@ export const PosProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
 
     addActivityLog({
       category: 'credit_ledger',
-      title: `تسجيل صوتي: ${targetCust.name} - ${targetProd.name}`,
-      description: `أخذ ${targetCust.name} منتج "${targetProd.name}" بمبلغ ${totalPrice.toFixed(2)} ${settings.currencySymbol} (${payMethod === 'credit' ? 'كريدي' : 'نقداً'}).`,
+      title: `تسجيل صوتي: ${targetCust.name} - ${itemsSummaryText}`,
+      description: `أخذ ${targetCust.name} (${itemsSummaryText}) بمبلغ ${totalPrice.toFixed(2)} ${settings.currencySymbol} (${payMethod === 'credit' ? 'كريدي' : 'نقداً'}).`,
       actor: currentUser.name,
       actorRole: currentUser.role,
       amount: totalPrice,
@@ -1049,8 +1109,10 @@ export const PosProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
 
     playSound('beep');
     return {
-      product: targetProd,
-      createdProduct,
+      product: primaryProduct,
+      createdProduct: createdProductsCount > 0,
+      productsList: resolvedItems.map((it) => it.product),
+      createdProductsCount,
       customer: targetCust,
       createdCustomer,
       order: newOrder
@@ -1062,15 +1124,9 @@ export const PosProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
     costPriceDirham: number
   ) => {
     const cleanName = productName.trim() || 'منتج';
-    const norm = cleanName.toLowerCase();
     const cleanCost = Math.max(0, Number(costPriceDirham.toFixed(2)));
 
-    let targetProd = products.find(
-      (p) =>
-        p.name.trim().toLowerCase() === norm ||
-        p.name.toLowerCase().includes(norm) ||
-        norm.includes(p.name.trim().toLowerCase())
-    );
+    let targetProd = matchEntityByName(products, cleanName);
     let createdProduct = false;
 
     if (!targetProd) {

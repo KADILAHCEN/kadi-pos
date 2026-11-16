@@ -9,6 +9,8 @@ const __dirname = path.dirname(__filename);
 
 const PORT = 3000;
 const GEMINI_MODEL = 'gemini-4-hydrogen';
+const GEMINI_TTS_MODEL = 'gemini-3.8-flash-lite-tts';
+const GEMINI_TRANSCRIBE_MODEL = 'gemini-3.5-transcribe';
 
 function createGeminiClient(): GoogleGenAI | null {
   const apiKey = process.env.GEMINI_API_KEY;
@@ -204,28 +206,35 @@ Keep every point specific to the actual metrics provided, concise, and practical
         return res.status(400).json({ error: 'Transcript or audio is required' });
       }
 
-      const systemInstruction = `You are a Moroccan Darija & Arabic Voice POS Parser for Kadi POS.
-Convert spoken Moroccan Darija commands (from text OR audio) into strict structured JSON.
+      const systemInstruction = `You are a Moroccan Darija, Arabic, and French Voice POS Parser for Kadi POS.
+Convert spoken Moroccan Darija commands (from text OR audio) into strict structured JSON with ZERO unnecessary rejections.
+UNRESTRICTED RECORDING RULES:
+- Accept ANY spoken customer name and ANY spoken product/item name (Moroccan Darija, Standard Arabic, Amazigh, French, English, brand names, weights, decimals like 0.5 or 1.5).
+- NEVER reject an entry just because a price was omitted ("محمد خدا التيد" -> intent "record_sale", amountDirham: 0, let POS use catalog price).
+- If the merchant speaks a free-form reminder, memo, name, or note that is not a structured transaction ("خصنا السكر غدا", "حسن بنعلي"), use intent "record_note" with "transcript" and "explanation" — NEVER return "unknown" unless the audio/text is completely empty!
+- Support recording MULTIPLE products in one sentence via the "items" array.
+
 CRITICAL CURRENCY RULE:
 - Moroccan Riyal (ريال): 1 Dirham = 20 Riyal, so 100 Riyal = 5 Dirham (divide Riyal amount by 20 to get amountDirham).
 - Example: "100 ريال" -> originalAmount: 100, originalCurrency: "riyal", amountDirham: 5.
-- Example: "1000 ريال" -> originalAmount: 1000, originalCurrency: "riyal", amountDirham: 50.
 - Example: "25 درهم" -> originalAmount: 25, originalCurrency: "dirham", amountDirham: 25.
 
 SUPPORTED INTENTS:
-1) "record_sale": e.g. "محمد خدا التيد ب 100 ريال" or "فاطمة خدات 2 كيلو سكر ب 20 درهم" -> extract customerName, productName, quantity (default 1), amountDirham, originalAmount, originalCurrency, paymentMethod ("cash" if explicitly paid/cash/خلص/نقداً, else "credit").
+1) "record_sale": Any purchase/credit/sale ("محمد خدا التيد ب 100 ريال", "فاطمة خدات 2 كيلو سكر ب 20 درهم والحليب ب 5 درهم", "محمد خدا التيد", "حليب 5 درهم").
 2) "record_payment": e.g. "محمد خلص 200 ريال" -> customerName + amountDirham.
-3) "set_cost_price": e.g. "التيد شريتو ب 60 ريال" or "السكر ثمن الشراء 8 درهم" -> productName + amountDirham (purchase cost).
-4) "capture_photo": e.g. "زيد تصويرة ل التيد" or "صور السكر" -> productName.
-5) "invoice_daily": e.g. "عطيني فاكتورة اليوم".
-6) "invoice_monthly": e.g. "عطيني فاكتورة الشهر".
-7) "invoice_customer": e.g. "عطيني فاكتورة محمد" -> customerName.
-8) "unknown": if unclear.
+3) "set_cost_price": e.g. "التيد شريتو ب 60 ريال" -> productName + amountDirham.
+4) "add_product": e.g. "زيد سلعة عصير ب 10 درهم" -> productName + optional amountDirham.
+5) "add_customer": e.g. "زيد زبون رشيد بنعلي" -> customerName.
+6) "record_note": Any free-form spoken memo, reminder, name, or unstructured voice entry.
+7) "capture_photo": e.g. "زيد تصويرة ل التيد" -> productName.
+8) "invoice_daily": e.g. "عطيني فاكتورة اليوم".
+9) "invoice_monthly": e.g. "عطيني فاكتورة الشهر".
+10) "invoice_customer": e.g. "عطيني فاكتورة محمد" -> customerName.
+11) "ask_ai": Any question or request for advice/analysis/answer from the AI ("شحال ربحت اليوم؟", "شنو خاصني نشري؟", "واش عندي شي مشكل فالمخزون؟", "عطيني نصيحة", "كيفاش نحسب الضريبة؟"). Put the cleaned question in "transcript".
 
-Match existing product/customer names when close:
-Known products: ${existingProducts.slice(0, 60).join(', ')}
-Known customers: ${existingCustomers.slice(0, 60).join(', ')}
-If audio is provided, transcribe what was said into "transcript" in Arabic/Darija script.`;
+Known products (hint only, new goods allowed): ${existingProducts.slice(0, 500).join(', ')}
+Known customers (hint only, new names allowed): ${existingCustomers.slice(0, 500).join(', ')}
+If audio is provided, transcribe what was said verbatim into "transcript" in Arabic/Darija script.`;
 
       const parts: Array<{ text: string } | { inlineData: { data: string; mimeType: string } }> = [];
       if (audioBase64 && audioMimeType) {
@@ -239,7 +248,7 @@ If audio is provided, transcribe what was said into "transcript" in Arabic/Darij
       if (transcript?.trim()) {
         parts.push({ text: `Spoken command transcript: ${transcript.trim()}` });
       } else {
-        parts.push({ text: 'Transcribe and parse the Moroccan Darija voice command from the audio.' });
+        parts.push({ text: 'Transcribe and parse the Moroccan Darija voice recording without restrictions.' });
       }
 
       const response = await ai.models.generateContent({
@@ -254,7 +263,7 @@ If audio is provided, transcribe what was said into "transcript" in Arabic/Darij
               intent: {
                 type: Type.STRING,
                 description:
-                  'One of: record_sale, record_payment, set_cost_price, capture_photo, invoice_daily, invoice_monthly, invoice_customer, unknown'
+                  'One of: record_sale, record_payment, set_cost_price, add_product, add_customer, record_note, capture_photo, invoice_daily, invoice_monthly, invoice_customer, ask_ai, unknown'
               },
               transcript: { type: Type.STRING },
               customerName: { type: Type.STRING },
@@ -264,7 +273,20 @@ If audio is provided, transcribe what was said into "transcript" in Arabic/Darij
               originalAmount: { type: Type.NUMBER },
               originalCurrency: { type: Type.STRING, description: 'riyal or dirham' },
               paymentMethod: { type: Type.STRING, description: 'credit or cash' },
-              explanation: { type: Type.STRING, description: 'Short Arabic summary of understood action' }
+              items: {
+                type: Type.ARRAY,
+                items: {
+                  type: Type.OBJECT,
+                  properties: {
+                    productName: { type: Type.STRING },
+                    quantity: { type: Type.NUMBER },
+                    amountDirham: { type: Type.NUMBER },
+                    originalAmount: { type: Type.NUMBER },
+                    originalCurrency: { type: Type.STRING }
+                  }
+                }
+              },
+              explanation: { type: Type.STRING, description: 'Short Arabic summary of understood action or note' }
             }
           }
         }
@@ -275,6 +297,108 @@ If audio is provided, transcribe what was said into "transcript" in Arabic/Darij
     } catch (error) {
       const message = error instanceof Error ? error.message : 'Failed to parse voice command';
       console.error('Gemini voice command error:', error);
+      return res.status(500).json({ error: message });
+    }
+  });
+
+  app.post('/api/ai/tts', async (req, res) => {
+    const ai = createGeminiClient();
+    if (!ai) {
+      return res.status(503).json({
+        error: 'Gemini API key is not configured on the server.',
+        code: 'MISSING_API_KEY'
+      });
+    }
+
+    try {
+      const { text, voiceName = 'Kore' } = req.body as {
+        text?: string;
+        voiceName?: string;
+      };
+
+      const cleaned = (text || '')
+        .replace(/[`*_#>-]+/g, ' ')
+        .replace(/\s+/g, ' ')
+        .trim()
+        .slice(0, 1400);
+
+      if (!cleaned) {
+        return res.status(400).json({ error: 'Text is required for TTS' });
+      }
+
+      const response = await ai.models.generateContent({
+        model: GEMINI_TTS_MODEL,
+        contents: cleaned,
+        config: {
+          responseModalities: ['AUDIO'],
+          speechConfig: {
+            voiceConfig: {
+              prebuiltVoiceConfig: { voiceName }
+            }
+          }
+        }
+      });
+
+      const part = response.candidates?.[0]?.content?.parts?.[0];
+      const audioBase64 = part?.inlineData?.data;
+      const mimeType = part?.inlineData?.mimeType || 'audio/wav';
+
+      if (!audioBase64) {
+        return res.status(500).json({ error: 'No audio returned from Gemini TTS' });
+      }
+
+      return res.json({ audioBase64, mimeType });
+    } catch (error) {
+      const message = error instanceof Error ? error.message : 'Failed to synthesize AI speech';
+      console.error('Gemini TTS error:', error);
+      return res.status(500).json({ error: message });
+    }
+  });
+
+  app.post('/api/ai/transcribe', async (req, res) => {
+    const ai = createGeminiClient();
+    if (!ai) {
+      return res.status(503).json({
+        error: 'Gemini API key is not configured on the server.',
+        code: 'MISSING_API_KEY'
+      });
+    }
+
+    try {
+      const { audioBase64, audioMimeType = 'audio/webm', language = 'ar' } = req.body as {
+        audioBase64?: string;
+        audioMimeType?: string;
+        language?: 'ar' | 'fr' | 'en';
+      };
+
+      if (!audioBase64) {
+        return res.status(400).json({ error: 'audioBase64 is required' });
+      }
+
+      const promptText =
+        language === 'ar'
+          ? 'فرّغ هذا التسجيل الصوتي نصياً بدقة بالدارجة المغربية أو العربية الفصحى كما نطق به المتحدث دون إضافة تعليقات.'
+          : language === 'fr'
+          ? 'Transcris fidèlement cet audio en texte sans commentaire.'
+          : 'Transcribe this audio accurately into text without extra commentary.';
+
+      const response = await ai.models.generateContent({
+        model: GEMINI_TRANSCRIBE_MODEL,
+        contents: [
+          {
+            inlineData: {
+              mimeType: audioMimeType,
+              data: audioBase64
+            }
+          },
+          { text: promptText }
+        ]
+      });
+
+      return res.json({ transcript: (response.text || '').trim() });
+    } catch (error) {
+      const message = error instanceof Error ? error.message : 'Failed to transcribe audio';
+      console.error('Gemini transcribe error:', error);
       return res.status(500).json({ error: message });
     }
   });

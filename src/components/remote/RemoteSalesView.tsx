@@ -8,9 +8,11 @@ import {
   RemoteOrderStatus
 } from '../../types';
 import {
+  OFFICIAL_APP_URL,
   buildCatalogLink,
   buildCatalogShareWhatsAppUrl,
   buildOrderStatusWhatsAppUrl,
+  buildQrImageUrl,
   openExternalLinkSafely,
   parseWhatsAppOrderMessage
 } from '../../utils/remoteCatalog';
@@ -49,7 +51,8 @@ import {
   Download,
   Newspaper,
   Image as ImageIcon,
-  Loader2
+  Loader2,
+  ExternalLink
 } from 'lucide-react';
 
 type RemoteTab = 'orders' | 'catalog' | 'flyer' | 'zones';
@@ -87,6 +90,9 @@ export const RemoteSalesView: React.FC = () => {
   const [generatedUrl, setGeneratedUrl] = useState<string>('');
   const [copiedLink, setCopiedLink] = useState(false);
   const [copiedStatusText, setCopiedStatusText] = useState(false);
+  const [copiedQrImage, setCopiedQrImage] = useState(false);
+  const [qrMode, setQrMode] = useState<'app' | 'catalog'>('app');
+  const [qrImgFailed, setQrImgFailed] = useState(false);
   const [showCatalogPreview, setShowCatalogPreview] = useState(false);
   const [waPhoneInput, setWaPhoneInput] = useState(settings.whatsappBusinessPhone || settings.phone || '');
 
@@ -140,7 +146,10 @@ export const RemoteSalesView: React.FC = () => {
   }, [products, deliveryZones, settings, currencySymbol]);
 
   const effectiveCatalogUrl = generatedUrl || catalogData.url;
-  const catalogQrMatrix = useMemo(() => generateQRMatrix(effectiveCatalogUrl, 25), [effectiveCatalogUrl]);
+  const storeAppUrl = (settings.publicAppUrl || OFFICIAL_APP_URL).trim();
+  const activeQrTargetUrl = qrMode === 'app' ? storeAppUrl : effectiveCatalogUrl;
+  const activeQrImageUrl = useMemo(() => buildQrImageUrl(activeQrTargetUrl, 300), [activeQrTargetUrl]);
+  const catalogQrMatrix = useMemo(() => generateQRMatrix(activeQrTargetUrl, 25), [activeQrTargetUrl]);
   const sharePayload = useMemo(
     () =>
       buildCatalogShareWhatsAppUrl(
@@ -1073,28 +1082,108 @@ export const RemoteSalesView: React.FC = () => {
 
           {/* QR Code Card */}
           <div className="lg:col-span-5 p-6 rounded-3xl bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 flex flex-col items-center text-center space-y-4 shadow-xs">
-            <div className="text-sm font-black text-slate-900 dark:text-white">
-              {isAr ? 'رمز QR للكتالوج (للملصقات والستاتوس)' : 'Catalog QR Code'}
+            <div className="w-full flex items-center justify-between gap-2 flex-wrap">
+              <div className="text-sm font-black text-slate-900 dark:text-white flex items-center gap-1.5">
+                <QrCode className="w-4 h-4 text-emerald-600" />
+                <span>{isAr ? 'رمز QR المتجر الحقيقي' : 'Scannable Store QR'}</span>
+              </div>
+              <div className="inline-flex rounded-xl bg-slate-100 dark:bg-slate-800 p-1 text-[11px] font-bold">
+                <button
+                  type="button"
+                  onClick={() => {
+                    setQrMode('app');
+                    setQrImgFailed(false);
+                  }}
+                  className={`px-2.5 py-1 rounded-lg transition-colors whitespace-nowrap ${
+                    qrMode === 'app'
+                      ? 'bg-emerald-600 text-white shadow-xs'
+                      : 'text-slate-600 dark:text-slate-300 hover:text-slate-900'
+                  }`}
+                >
+                  {isAr ? 'التطبيق المباشر' : 'Store App'}
+                </button>
+                <button
+                  type="button"
+                  onClick={() => {
+                    setQrMode('catalog');
+                    setQrImgFailed(false);
+                  }}
+                  className={`px-2.5 py-1 rounded-lg transition-colors whitespace-nowrap ${
+                    qrMode === 'catalog'
+                      ? 'bg-emerald-600 text-white shadow-xs'
+                      : 'text-slate-600 dark:text-slate-300 hover:text-slate-900'
+                  }`}
+                >
+                  {isAr ? 'رابط الكتالوج' : 'Catalog Link'}
+                </button>
+              </div>
             </div>
+
             <div className="p-4 rounded-2xl bg-white border border-slate-200 shadow-xs">
-              <svg
-                viewBox={`0 0 ${catalogQrMatrix.length} ${catalogQrMatrix.length}`}
-                className="w-48 h-48"
-                shapeRendering="crispEdges"
-              >
-                {catalogQrMatrix.map((row, rIdx) =>
-                  row.map((cell, cIdx) =>
-                    cell ? (
-                      <rect key={`${rIdx}-${cIdx}`} x={cIdx} y={rIdx} width="1" height="1" fill="#0f172a" />
-                    ) : null
-                  )
-                )}
-              </svg>
+              {!qrImgFailed ? (
+                <img
+                  src={activeQrImageUrl}
+                  alt={isAr ? 'رمز QR متجر كادي بوس' : 'Kadi POS Store QR Code'}
+                  width={192}
+                  height={192}
+                  onError={() => setQrImgFailed(true)}
+                  className="w-48 h-48 object-contain rounded-lg"
+                />
+              ) : (
+                <svg
+                  viewBox={`0 0 ${catalogQrMatrix.length} ${catalogQrMatrix.length}`}
+                  className="w-48 h-48"
+                  shapeRendering="crispEdges"
+                >
+                  {catalogQrMatrix.map((row, rIdx) =>
+                    row.map((cell, cIdx) =>
+                      cell ? (
+                        <rect key={`${rIdx}-${cIdx}`} x={cIdx} y={rIdx} width="1" height="1" fill="#0f172a" />
+                      ) : null
+                    )
+                  )}
+                </svg>
+              )}
             </div>
+
+            <div
+              dir="ltr"
+              className="w-full px-3 py-1.5 rounded-xl bg-slate-50 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 text-[11px] font-mono text-slate-600 dark:text-slate-300 truncate"
+            >
+              {activeQrTargetUrl}
+            </div>
+
+            <div className="w-full grid grid-cols-2 gap-2">
+              <button
+                type="button"
+                onClick={async () => {
+                  try {
+                    await navigator.clipboard.writeText(activeQrImageUrl);
+                    setCopiedQrImage(true);
+                    setTimeout(() => setCopiedQrImage(false), 2000);
+                  } catch {
+                    // ignore
+                  }
+                }}
+                className="py-2 px-3 rounded-xl border border-slate-200 dark:border-slate-700 bg-slate-50 dark:bg-slate-800 hover:bg-slate-100 text-xs font-bold text-slate-800 dark:text-slate-200 flex items-center justify-center gap-1.5 whitespace-nowrap"
+              >
+                {copiedQrImage ? <Check className="w-3.5 h-3.5 text-emerald-600" /> : <Copy className="w-3.5 h-3.5" />}
+                <span>{copiedQrImage ? (isAr ? 'تم نسخ QR' : 'QR Copied') : (isAr ? 'نسخ رابط QR' : 'Copy QR URL')}</span>
+              </button>
+              <button
+                type="button"
+                onClick={() => openExternalLinkSafely(activeQrImageUrl)}
+                className="py-2 px-3 rounded-xl bg-emerald-600 hover:bg-emerald-700 text-white text-xs font-bold flex items-center justify-center gap-1.5 whitespace-nowrap"
+              >
+                <ExternalLink className="w-3.5 h-3.5" />
+                <span>{isAr ? 'فتح / تحميل QR' : 'Open QR'}</span>
+              </button>
+            </div>
+
             <p className="text-xs text-slate-500 max-w-xs leading-relaxed">
               {isAr
-                ? 'يمكن للزبون مسح هذا الرمز بكاميرا الهاتف لفتح كتالوجك واختيار السلع وإرسال الطلب واتساب مباشرة.'
-                : 'Customers can scan this QR code to browse prices, select products & order on WhatsApp.'}
+                ? 'يمكن للزبون مسح هذا الرمز بكاميرا الهاتف لفتح التطبيق أو كتالوج متجرك مباشرة.'
+                : 'Customers can scan this QR code with their phone camera to open your store directly.'}
             </p>
           </div>
         </div>

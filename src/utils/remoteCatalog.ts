@@ -106,6 +106,18 @@ export function decodeCatalogFromHash(): SharedCatalogPayload | null {
   }
 }
 
+export const OFFICIAL_APP_URL = 'https://kadi-pos-r433.vercel.app';
+export const DEFAULT_APP_QR_IMAGE_URL =
+  'https://api.qrserver.com/v1/create-qr-code/?size=300x300&data=https://kadi-pos-r433.vercel.app';
+
+export function buildQrImageUrl(targetUrl: string, size = 300): string {
+  const cleanUrl = (targetUrl || OFFICIAL_APP_URL).trim();
+  if (cleanUrl === OFFICIAL_APP_URL && size === 300) {
+    return DEFAULT_APP_QR_IMAGE_URL;
+  }
+  return `https://api.qrserver.com/v1/create-qr-code/?size=${size}x${size}&data=${encodeURIComponent(cleanUrl)}`;
+}
+
 export function buildCatalogLink(
   products: Product[],
   zones: DeliveryZone[],
@@ -142,9 +154,18 @@ export function buildCatalogLink(
     // ignore storage quota
   }
 
-  let baseUrl = 'https://kadi-pos.app';
-  if (typeof window !== 'undefined' && window.location) {
-    baseUrl = `${window.location.origin}${window.location.pathname}`;
+  let baseUrl = OFFICIAL_APP_URL;
+  if (settings.publicAppUrl?.trim()) {
+    baseUrl = settings.publicAppUrl.trim().replace(/\/+$/, '');
+  } else if (typeof window !== 'undefined' && window.location) {
+    const origin = window.location.origin;
+    const isLocalOrPreview =
+      origin.includes('localhost') ||
+      origin.includes('127.0.0.1') ||
+      origin.includes('run.app');
+    if (!isLocalOrPreview) {
+      baseUrl = `${origin}${window.location.pathname}`;
+    }
   }
 
   // Embed compact payload in hash (#cat=...) so link works on any customer phone

@@ -383,7 +383,7 @@ export const AnalyticsView: React.FC = () => {
   );
 
   return (
-    <div className="flex-1 flex flex-col h-full overflow-y-auto bg-slate-50 dark:bg-slate-950 p-6 space-y-6">
+    <div className="flex-1 flex flex-col h-full overflow-y-auto bg-slate-50 dark:bg-slate-950 p-3 sm:p-6 space-y-4 sm:space-y-6">
       {/* Title & Daily Report Button */}
       <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4">
         <div>

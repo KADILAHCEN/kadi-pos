@@ -6,6 +6,7 @@ import { BrowserMultiFormatReader, BrowserCodeReader, IScannerControls } from '@
 import { BarcodeFormat, DecodeHintType } from '@zxing/library';
 import {
   Barcode,
+  QrCode,
   Camera,
   X,
   Check,
@@ -17,34 +18,88 @@ import {
   ScanLine
 } from 'lucide-react';
 
+type ScanFormatMode = 'all' | 'barcode' | 'qr';
+
 interface BarcodeScannerModalProps {
   onClose: () => void;
   onScanned: (code: string) => void;
   mode?: 'pos' | 'field';
   title?: string;
+  defaultScanFormat?: ScanFormatMode;
+}
+
+function resolveScannedPayload(rawText: string): string {
+  const trimmed = rawText.trim();
+  if (!trimmed) return '';
+
+  // Support JSON product QR payloads: {"barcode":"...","sku":"...","code":"..."}
+  if (trimmed.startsWith('{') && trimmed.endsWith('}')) {
+    try {
+      const parsed = JSON.parse(trimmed) as Record<string, unknown>;
+      const candidate = parsed.barcode ?? parsed.sku ?? parsed.code ?? parsed.id;
+      if (typeof candidate === 'string' && candidate.trim()) {
+        return candidate.trim();
+      }
+      if (typeof candidate === 'number') {
+        return String(candidate);
+      }
+    } catch {
+      // Not valid JSON; treat as literal code
+    }
+  }
+
+  // Support URL product QR payloads containing barcode/sku/code/product query param
+  if (/^https?:\/\//i.test(trimmed)) {
+    try {
+      const url = new URL(trimmed);
+      const paramCode =
+        url.searchParams.get('barcode') ||
+        url.searchParams.get('sku') ||
+        url.searchParams.get('code') ||
+        url.searchParams.get('product');
+      if (paramCode && paramCode.trim()) {
+        return paramCode.trim();
+      }
+    } catch {
+      // Invalid URL; keep literal string
+    }
+  }
+
+  return trimmed;
 }
 
 export const BarcodeScannerModal: React.FC<BarcodeScannerModalProps> = ({
   onClose,
   onScanned,
   mode = 'pos',
-  title
+  title,
+  defaultScanFormat = 'all'
 }) => {
   const { products, language, settings } = usePos();
   const t = getT(language);
   const isAr = language === 'ar';
 
+  const [scanFormatMode, setScanFormatMode] = useState<ScanFormatMode>(defaultScanFormat);
   const [manualCode, setManualCode] = useState('');
   const [cameraActive, setCameraActive] = useState(false);
   const [cameraError, setCameraError] = useState<string | null>(null);
   const [continuousMode, setContinuousMode] = useState(false);
   const [sessionHistory, setSessionHistory] = useState<
-    { id: string; code: string; productName?: string; found: boolean; scannedAt: string; count: number }[]
+    {
+      id: string;
+      code: string;
+      productName?: string;
+      found: boolean;
+      scannedAt: string;
+      count: number;
+      isQr?: boolean;
+    }[]
   >([]);
   const [lastScannedBanner, setLastScannedBanner] = useState<{
     code: string;
     productName?: string;
     found: boolean;
+    isQr?: boolean;
   } | null>(null);
 
   const [devices, setDevices] = useState<MediaDeviceInfo[]>([]);
@@ -61,10 +116,9 @@ export const BarcodeScannerModal: React.FC<BarcodeScannerModalProps> = ({
   const lastScanRef = useRef<{ code: string; time: number }>({ code: '', time: 0 });
   const isClosingRef = useRef(false);
 
-  // Build ZXing MultiFormatReader configured for 1D grocery barcodes + QR
+  // Build ZXing MultiFormatReader configured according to selected scan format mode
   const createReader = useCallback(() => {
-    const hints = new Map();
-    hints.set(DecodeHintType.POSSIBLE_FORMATS, [
+    const linearFormats = [
       BarcodeFormat.EAN_13,
       BarcodeFormat.EAN_8,
       BarcodeFormat.UPC_A,
@@ -73,16 +127,30 @@ export const BarcodeScannerModal: React.FC<BarcodeScannerModalProps> = ({
       BarcodeFormat.CODE_39,
       BarcodeFormat.CODE_93,
       BarcodeFormat.ITF,
-      BarcodeFormat.CODABAR,
+      BarcodeFormat.CODABAR
+    ];
+    const qrFormats = [
       BarcodeFormat.QR_CODE,
-      BarcodeFormat.DATA_MATRIX
-    ]);
+      BarcodeFormat.DATA_MATRIX,
+      BarcodeFormat.AZTEC,
+      BarcodeFormat.PDF_417
+    ];
+
+    const formats =
+      scanFormatMode === 'barcode'
+        ? linearFormats
+        : scanFormatMode === 'qr'
+        ? qrFormats
+        : [...linearFormats, ...qrFormats];
+
+    const hints = new Map();
+    hints.set(DecodeHintType.POSSIBLE_FORMATS, formats);
     hints.set(DecodeHintType.TRY_HARDER, true);
     return new BrowserMultiFormatReader(hints, {
       delayBetweenScanAttempts: 180,
       delayBetweenScanSuccess: 900
     });
-  }, []);
+  }, [scanFormatMode]);
 
   const stopScanner = useCallback(() => {
     try {
@@ -102,9 +170,15 @@ export const BarcodeScannerModal: React.FC<BarcodeScannerModalProps> = ({
   }, []);
 
   const handleDetectedCode = useCallback(
-    (rawCode: string) => {
-      const code = rawCode.trim();
-      if (!code || isClosingRef.current) return;
+    (rawCode: string, format?: BarcodeFormat) => {
+      const literal = rawCode.trim();
+      if (!literal || isClosingRef.current) return;
+
+      const directMatch = products.find(
+        (p) => p.barcode === literal || p.sku.toLowerCase() === literal.toLowerCase()
+      );
+      const code = directMatch ? literal : resolveScannedPayload(literal);
+      if (!code) return;
 
       const now = Date.now();
       // Cooldown prevents scanning the exact same frame repeatedly
@@ -114,9 +188,20 @@ export const BarcodeScannerModal: React.FC<BarcodeScannerModalProps> = ({
       }
       lastScanRef.current = { code, time: now };
 
-      const matched = products.find(
-        (p) => p.barcode === code || p.sku.toLowerCase() === code.toLowerCase()
-      );
+      const matched =
+        directMatch ||
+        products.find(
+          (p) =>
+            p.barcode === code ||
+            p.sku.toLowerCase() === code.toLowerCase() ||
+            p.id === code
+        );
+
+      const isQr =
+        format === BarcodeFormat.QR_CODE ||
+        format === BarcodeFormat.DATA_MATRIX ||
+        format === BarcodeFormat.AZTEC ||
+        scanFormatMode === 'qr';
 
       // Distinct crisp audio chime + haptic pulse for every successful scan in Smart Reader Mode or when sounds enabled
       if (continuousMode || settings.enableSoundEffects) {
@@ -131,7 +216,8 @@ export const BarcodeScannerModal: React.FC<BarcodeScannerModalProps> = ({
       setLastScannedBanner({
         code,
         productName,
-        found: !!matched
+        found: !!matched,
+        isQr
       });
 
       if (continuousMode) {
@@ -158,14 +244,15 @@ export const BarcodeScannerModal: React.FC<BarcodeScannerModalProps> = ({
               productName,
               found: !!matched,
               scannedAt: timeLabel,
-              count: 1
+              count: 1,
+              isQr
             },
             ...prev
           ];
         });
       }
 
-      onScanned(code);
+      onScanned(matched ? matched.barcode || matched.sku || code : code);
 
       if (!continuousMode || mode === 'field') {
         isClosingRef.current = true;
@@ -175,7 +262,7 @@ export const BarcodeScannerModal: React.FC<BarcodeScannerModalProps> = ({
         }, 180);
       }
     },
-    [continuousMode, mode, isAr, onClose, onScanned, products, settings.enableSoundEffects, stopScanner]
+    [continuousMode, mode, isAr, onClose, onScanned, products, scanFormatMode, settings.enableSoundEffects, stopScanner]
   );
 
   // Keep latest callback ref so ZXing continuous loop doesn't restart unnecessarily
@@ -232,7 +319,7 @@ export const BarcodeScannerModal: React.FC<BarcodeScannerModalProps> = ({
             if (!mounted || !result) return;
             const text = result.getText();
             if (text) {
-              detectedCallbackRef.current(text);
+              detectedCallbackRef.current(text, result.getBarcodeFormat?.());
             }
           }
         );
@@ -314,10 +401,14 @@ export const BarcodeScannerModal: React.FC<BarcodeScannerModalProps> = ({
       const result = await reader.decodeFromImageUrl(objectUrl);
       const text = result.getText();
       if (text) {
-        handleDetectedCode(text);
+        handleDetectedCode(text, result.getBarcodeFormat?.());
       } else {
         playSound('error');
-        setImageScanMsg(isAr ? 'لم يتم العثور على باركود واضح في الصورة.' : 'No barcode detected in image.');
+        setImageScanMsg(
+          isAr
+            ? 'لم يتم العثور على باركود أو رمز QR واضح في الصورة.'
+            : 'No barcode or QR code detected in image.'
+        );
       }
     } catch {
       playSound('error');
@@ -355,7 +446,16 @@ export const BarcodeScannerModal: React.FC<BarcodeScannerModalProps> = ({
             </div>
             <div>
               <h3 className="font-black text-slate-900 dark:text-white text-sm sm:text-base flex items-center gap-2">
-                <span>{title || (isAr ? 'الماسح الضوئي الذكي للباركود' : t.scan_barcode)}</span>
+                <span>
+                  {title ||
+                    (scanFormatMode === 'qr'
+                      ? isAr
+                        ? 'ماسح رموز QR للمنتجات'
+                        : 'Product QR Code Scanner'
+                      : isAr
+                      ? 'الماسح الضوئي الذكي (باركود و QR)'
+                      : t.scan_barcode)}
+                </span>
                 {continuousMode && (
                   <span className="px-2 py-0.5 rounded-full text-[10px] font-black bg-emerald-500 text-white">
                     {isAr ? 'متتالي' : 'SMART'}
@@ -364,8 +464,8 @@ export const BarcodeScannerModal: React.FC<BarcodeScannerModalProps> = ({
               </h3>
               <p className="text-[11px] text-slate-500 dark:text-slate-400">
                 {isAr
-                  ? 'يدعم EAN-13 و Code-128 و QR مع صوت تنبيه فوري لكل مسح ناجح'
-                  : 'Supports EAN-13, Code-128 & QR with chime per scan'}
+                  ? 'يدعم الباركود الخطي (EAN-13 / Code-128) ورموز QR للمنتجات'
+                  : 'Supports linear barcodes (EAN-13, Code-128) & product QR codes'}
               </p>
             </div>
           </div>
@@ -382,6 +482,46 @@ export const BarcodeScannerModal: React.FC<BarcodeScannerModalProps> = ({
         </div>
 
         <div className="p-5 space-y-4 overflow-y-auto">
+          {/* Scan Format Mode Selector: All / Linear Barcode / Product QR Code */}
+          <div className="grid grid-cols-3 gap-1.5 p-1 rounded-2xl bg-slate-100 dark:bg-slate-800 border border-slate-200 dark:border-slate-700">
+            <button
+              type="button"
+              onClick={() => setScanFormatMode('all')}
+              className={`py-2 px-2 rounded-xl text-[11px] font-black flex items-center justify-center gap-1.5 transition-all ${
+                scanFormatMode === 'all'
+                  ? 'bg-white dark:bg-slate-900 text-emerald-700 dark:text-emerald-400 shadow-xs'
+                  : 'text-slate-600 dark:text-slate-300 hover:text-slate-900 dark:hover:text-white'
+              }`}
+            >
+              <ScanLine className="w-3.5 h-3.5 shrink-0" />
+              <span>{isAr ? 'باركود + QR' : 'All Codes'}</span>
+            </button>
+            <button
+              type="button"
+              onClick={() => setScanFormatMode('barcode')}
+              className={`py-2 px-2 rounded-xl text-[11px] font-black flex items-center justify-center gap-1.5 transition-all ${
+                scanFormatMode === 'barcode'
+                  ? 'bg-white dark:bg-slate-900 text-emerald-700 dark:text-emerald-400 shadow-xs'
+                  : 'text-slate-600 dark:text-slate-300 hover:text-slate-900 dark:hover:text-white'
+              }`}
+            >
+              <Barcode className="w-3.5 h-3.5 shrink-0" />
+              <span>{isAr ? 'باركود خطي' : '1D Barcode'}</span>
+            </button>
+            <button
+              type="button"
+              onClick={() => setScanFormatMode('qr')}
+              className={`py-2 px-2 rounded-xl text-[11px] font-black flex items-center justify-center gap-1.5 transition-all ${
+                scanFormatMode === 'qr'
+                  ? 'bg-white dark:bg-slate-900 text-indigo-700 dark:text-indigo-400 shadow-xs'
+                  : 'text-slate-600 dark:text-slate-300 hover:text-slate-900 dark:hover:text-white'
+              }`}
+            >
+              <QrCode className="w-3.5 h-3.5 shrink-0" />
+              <span>{isAr ? 'رمز QR للمنتجات' : 'Product QR'}</span>
+            </button>
+          </div>
+
           {/* Smart Reader Continuous Mode Banner Pill (POS Mode) */}
           {mode === 'pos' && (
             <button
@@ -453,24 +593,50 @@ export const BarcodeScannerModal: React.FC<BarcodeScannerModalProps> = ({
               </div>
             )}
 
-            {/* Targeting Frame & Scanning Laser */}
+            {/* Targeting Frame & Scanning Laser (adapts between wide Barcode and square QR reticle) */}
             {cameraActive && (
               <>
-                <div className="absolute inset-6 sm:inset-8 border-2 border-emerald-400/70 rounded-2xl pointer-events-none shadow-[0_0_0_9999px_rgba(2,6,23,0.38)]" />
-                <div className="absolute inset-x-10 top-1/2 -translate-y-1/2 h-0.5 bg-rose-500 shadow-[0_0_12px_#f43f5e] animate-pulse pointer-events-none" />
+                {scanFormatMode === 'qr' ? (
+                  <div className="absolute inset-0 flex items-center justify-center pointer-events-none">
+                    <div className="relative w-44 h-44 sm:w-48 sm:h-48 border-2 border-indigo-400/80 rounded-2xl shadow-[0_0_0_9999px_rgba(2,6,23,0.45)] flex items-center justify-center">
+                      <QrCode className="w-10 h-10 text-indigo-300/40" />
+                    </div>
+                  </div>
+                ) : (
+                  <>
+                    <div className="absolute inset-6 sm:inset-8 border-2 border-emerald-400/70 rounded-2xl pointer-events-none shadow-[0_0_0_9999px_rgba(2,6,23,0.38)]" />
+                    <div className="absolute inset-x-10 top-1/2 -translate-y-1/2 h-0.5 bg-rose-500 shadow-[0_0_12px_#f43f5e] animate-pulse pointer-events-none" />
+                  </>
+                )}
 
                 {/* Top status & controls overlay */}
                 <div className="absolute top-3 inset-x-3 flex items-center justify-between gap-2">
-                  <span className="px-2.5 py-1 rounded-full bg-slate-950/75 text-emerald-300 text-[10px] font-bold flex items-center gap-1.5 backdrop-blur-xs">
-                    <span className="w-2 h-2 rounded-full bg-emerald-400 animate-ping" />
+                  <span
+                    className={`px-2.5 py-1 rounded-full bg-slate-950/75 text-[10px] font-bold flex items-center gap-1.5 backdrop-blur-xs ${
+                      scanFormatMode === 'qr' ? 'text-indigo-300' : 'text-emerald-300'
+                    }`}
+                  >
+                    <span
+                      className={`w-2 h-2 rounded-full animate-ping ${
+                        scanFormatMode === 'qr' ? 'bg-indigo-400' : 'bg-emerald-400'
+                      }`}
+                    />
                     <span>
                       {continuousMode
                         ? isAr
                           ? `القارئ الذكي نشط (${totalSessionScans} ممسوح)`
                           : `Smart Scan (${totalSessionScans} scanned)`
+                        : scanFormatMode === 'qr'
+                        ? isAr
+                          ? 'وجّه الكاميرا نحو رمز QR للمنتج'
+                          : 'Point camera at product QR code'
+                        : scanFormatMode === 'barcode'
+                        ? isAr
+                          ? 'وجّه الكاميرا نحو الباركود الخطي'
+                          : 'Point camera at 1D barcode'
                         : isAr
-                        ? 'وجّه الكاميرا نحو الباركود'
-                        : 'Point camera at barcode'}
+                        ? 'وجّه الكاميرا نحو الباركود أو رمز QR'
+                        : 'Point camera at barcode or QR code'}
                     </span>
                   </span>
 
@@ -528,7 +694,12 @@ export const BarcodeScannerModal: React.FC<BarcodeScannerModalProps> = ({
                     : `${isAr ? 'تم التقاط الكود:' : 'Code read:'} ${lastScannedBanner.code}`}
                 </div>
               </div>
-              <span className="font-mono text-[11px] shrink-0">{lastScannedBanner.code}</span>
+              <div className="flex items-center gap-1.5 shrink-0">
+                <span className="px-1.5 py-0.5 rounded bg-slate-900/10 dark:bg-white/10 text-[9px] font-black">
+                  {lastScannedBanner.isQr ? 'QR' : '1D'}
+                </span>
+                <span className="font-mono text-[11px]">{lastScannedBanner.code}</span>
+              </div>
             </div>
           )}
 
@@ -584,7 +755,15 @@ export const BarcodeScannerModal: React.FC<BarcodeScannerModalProps> = ({
               className="px-3.5 py-2 rounded-xl bg-slate-100 dark:bg-slate-800 hover:bg-slate-200/80 dark:hover:bg-slate-700 text-slate-800 dark:text-slate-200 text-xs font-bold flex items-center gap-1.5 transition-colors"
             >
               <ImagePlus className="w-4 h-4 text-emerald-600" />
-              <span>{isAr ? 'مسح باركود من صورة / ملف' : 'Scan from Photo / File'}</span>
+              <span>
+                {scanFormatMode === 'qr'
+                  ? isAr
+                    ? 'مسح رمز QR من صورة / ملف'
+                    : 'Scan QR from Photo / File'
+                  : isAr
+                  ? 'مسح باركود / QR من صورة'
+                  : 'Scan Barcode / QR from Photo'}
+              </span>
             </button>
 
             <input
@@ -623,14 +802,22 @@ export const BarcodeScannerModal: React.FC<BarcodeScannerModalProps> = ({
               type="text"
               value={manualCode}
               onChange={(e) => setManualCode(e.target.value)}
-              placeholder={isAr ? 'أو أدخل رقم الباركود يدوياً (مثال: 628100001001)' : 'Or enter barcode manually...'}
+              placeholder={
+                scanFormatMode === 'qr'
+                  ? isAr
+                    ? 'أو الصق محتوى رمز QR للمنتج هنا...'
+                    : 'Or paste product QR payload/code...'
+                  : isAr
+                  ? 'أو أدخل رقم الباركود أو QR يدوياً...'
+                  : 'Or enter barcode / QR code manually...'
+              }
               className="flex-1 px-3.5 py-2.5 text-sm font-mono bg-slate-50 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 rounded-xl focus:outline-none focus:ring-2 focus:ring-emerald-500 text-slate-900 dark:text-white"
             />
             <button
               type="submit"
               className="px-4 py-2.5 text-xs font-bold text-white bg-emerald-600 hover:bg-emerald-700 rounded-xl transition-colors shrink-0 flex items-center gap-1.5"
             >
-              <Barcode className="w-4 h-4" />
+              {scanFormatMode === 'qr' ? <QrCode className="w-4 h-4" /> : <Barcode className="w-4 h-4" />}
               <span>{isAr ? 'تطبيق' : 'Apply'}</span>
             </button>
           </form>

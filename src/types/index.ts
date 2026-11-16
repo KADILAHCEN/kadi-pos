@@ -347,6 +347,7 @@ export interface StoreSettings {
   zakatIncludeReceivables?: boolean;
   // Remote Sales & WhatsApp Catalog Settings
   whatsappBusinessPhone?: string;
+  publicAppUrl?: string;
   // Backup & Snapshot Tracking
   lastBackupAt?: string;
   autoBackupEnabled?: boolean;
@@ -369,6 +370,8 @@ export interface StoreSettings {
   enableLowStockAudioAlert?: boolean;
   // Anti-Theft & Loss Prevention Alert Settings (تنبيه السرقة وحماية الصندوق والمخزون)
   theftAlertSettings?: TheftAlertSettings;
+  // Custom Icons & Colors per POS Navigation Tab
+  tabCustomizations?: Record<string, { icon?: string; color?: string }>;
 }
 
 export type TheftAlertCategory =

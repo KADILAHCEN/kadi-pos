@@ -188,7 +188,7 @@ export const OrdersView: React.FC = () => {
   };
 
   return (
-    <div className="flex-1 flex flex-col h-full overflow-hidden bg-slate-50 dark:bg-slate-950 p-6">
+    <div className="flex-1 flex flex-col h-full overflow-hidden bg-slate-50 dark:bg-slate-950 p-3 sm:p-6">
       {/* Header toolbar */}
       <div className="flex flex-wrap items-center justify-between gap-3 mb-4 shrink-0">
         <div>

@@ -27,9 +27,11 @@ import { VoiceAssistantModal } from './components/voice/VoiceAssistantModal';
 import { StockAlertOverlay } from './components/alerts/StockAlertOverlay';
 import { TheftAlertOverlay } from './components/alerts/TheftAlertOverlay';
 import { TheftSecurityModal } from './components/alerts/TheftSecurityModal';
+import { AlertsView } from './components/alerts/AlertsView';
 import { SettingsView } from './components/settings/SettingsView';
 import { CustomerDisplayView } from './components/pos/CustomerDisplayView';
 import { CustomerDisplayLauncherModal } from './components/pos/CustomerDisplayLauncherModal';
+import { MobileBottomNav } from './components/MobileBottomNav';
 import {
   CUSTOMER_DISPLAY_CHANNEL,
   broadcastCustomerDisplaySnapshot,
@@ -45,17 +47,9 @@ import {
   uploadFileToDriveFolder
 } from './utils/googleWorkspace';
 import {
-  Store,
-  Layers,
-  Receipt,
-  Clock,
-  Users,
-  TrendingUp,
-  Settings,
   ShoppingBag,
   AlertTriangle,
   X,
-  ArrowRight,
   Download,
   BellRing
 } from 'lucide-react';
@@ -380,7 +374,7 @@ const PosMainContent: React.FC = () => {
 
       {/* Persistent Download Recovery Banner for PDF / Excel inside Sandboxed iFrames */}
       {pdfReadyToast && (
-        <div className="fixed bottom-5 left-5 z-50 px-4 py-3 rounded-2xl bg-slate-900 dark:bg-slate-800 text-white border border-emerald-500/60 shadow-2xl flex items-center gap-3 text-xs animate-in fade-in slide-in-from-bottom-2">
+        <div className="fixed bottom-20 lg:bottom-5 left-3 right-3 sm:right-auto sm:left-5 z-50 px-4 py-3 rounded-2xl bg-slate-900 dark:bg-slate-800 text-white border border-emerald-500/60 shadow-2xl flex items-center gap-3 text-xs animate-in fade-in slide-in-from-bottom-2">
           <Download className="w-4 h-4 text-emerald-400 shrink-0" />
           <div className="min-w-0">
             <div className="font-black truncate max-w-[200px]">{pdfReadyToast.filename}</div>
@@ -421,25 +415,26 @@ const PosMainContent: React.FC = () => {
         </div>
       )}
 
-      {/* Persistent Visual Low Stock Alert Banner (Shown across all screens outside Inventory) */}
+      {/* Persistent Visual Low Stock Alert Banner (Shown across all screens outside Inventory & Alerts) */}
       {settings.enableLowStockVisualAlerts !== false &&
         !isBannerDismissed &&
         lowStockProducts.length > 0 &&
-        currentTab !== 'inventory' && (
-          <div className="bg-amber-50 dark:bg-amber-950/75 border-b border-amber-200 dark:border-amber-800/80 px-5 py-2.5 flex items-center justify-between gap-4 text-xs shrink-0 transition-colors">
-            <div className="flex items-center gap-2.5 min-w-0">
-              <span className="p-1.5 rounded-lg bg-rose-600 text-white shrink-0 animate-pulse">
-                <AlertTriangle className="w-3.5 h-3.5" />
+        currentTab !== 'inventory' &&
+        currentTab !== 'alerts' && (
+          <div className="bg-amber-50 dark:bg-amber-950/75 border-b border-amber-200 dark:border-amber-800/80 px-2.5 sm:px-4 py-1 flex flex-nowrap items-center justify-between gap-2 text-[11px] shrink-0 transition-colors">
+            <div className="flex items-center gap-1.5 min-w-0 flex-1">
+              <span className="p-1 rounded-md bg-rose-600 text-white shrink-0 animate-pulse">
+                <AlertTriangle className="w-3 h-3" />
               </span>
               <div className="truncate">
                 <span className="font-extrabold text-amber-950 dark:text-amber-200">
                   {isAr
-                    ? `تنبيه المخزون (${lowStockProducts.length} منتجات تحت الحد الأدنى): `
+                    ? `تنبيه المخزون (${lowStockProducts.length} منتجات): `
                     : isFr
-                    ? `Alerte Stock (${lowStockProducts.length} articles sous le seuil): `
-                    : `Stock Alert (${lowStockProducts.length} items at/below min): `}
+                    ? `Alerte Stock (${lowStockProducts.length}): `
+                    : `Stock Alert (${lowStockProducts.length}): `}
                 </span>
-                <span className="text-amber-800 dark:text-amber-300 font-medium">
+                <span className="hidden sm:inline text-amber-800 dark:text-amber-300 font-medium">
                   {lowStockProducts
                     .slice(0, 3)
                     .map((p) => `${p.name} (${p.stock}/${p.lowStockThreshold})`)
@@ -449,12 +444,12 @@ const PosMainContent: React.FC = () => {
               </div>
             </div>
 
-            <div className="flex items-center gap-2 shrink-0">
+            <div className="flex items-center gap-1.5 shrink-0">
               {notificationPermission === 'default' && (
                 <button
                   type="button"
                   onClick={() => void requestNotificationPermission()}
-                  className="px-2.5 py-1 rounded-lg bg-rose-600 hover:bg-rose-700 text-white font-bold text-[11px] flex items-center gap-1 transition-colors shadow-2xs"
+                  className="hidden sm:flex px-2 py-0.5 rounded-md bg-rose-600 hover:bg-rose-700 text-white font-bold text-[10px] items-center gap-1 transition-colors shadow-2xs"
                 >
                   <BellRing className="w-3 h-3" />
                   <span>{isAr ? 'تفعيل Push' : 'Enable Push'}</span>
@@ -462,25 +457,25 @@ const PosMainContent: React.FC = () => {
               )}
               <button
                 type="button"
-                onClick={() => handleProtectedTab('inventory')}
-                className="px-3 py-1 rounded-lg bg-amber-600 hover:bg-amber-700 text-white font-bold text-[11px] transition-colors shadow-2xs"
+                onClick={() => setCurrentTab('alerts')}
+                className="px-2 py-0.5 rounded-md bg-amber-600 hover:bg-amber-700 text-white font-bold text-[10px] transition-colors shadow-2xs whitespace-nowrap"
               >
-                {isAr ? 'عرض وتعديل المخزون' : isFr ? 'Gérer les stocks' : 'View & Restock'}
+                {isAr ? 'عرض التنبيهات' : isFr ? 'Alertes' : 'View Alerts'}
               </button>
               <button
                 type="button"
                 onClick={() => setDismissedLowStockSignature(currentLowStockSignature)}
-                className="p-1 text-amber-700 hover:text-amber-900 dark:text-amber-400 dark:hover:text-amber-200"
+                className="p-0.5 text-amber-700 hover:text-amber-900 dark:text-amber-400 dark:hover:text-amber-200"
                 title={isAr ? 'إخفاء مؤقتاً' : 'Dismiss'}
               >
-                <X className="w-4 h-4" />
+                <X className="w-3.5 h-3.5" />
               </button>
             </div>
           </div>
         )}
 
       {/* Main View Area */}
-      <main className="flex-1 flex overflow-hidden relative">
+      <main className="flex-1 flex overflow-hidden relative pb-16 lg:pb-0">
         {currentTab === 'pos' && (
           <div className="flex-1 flex w-full h-full overflow-hidden">
             {/* Left: Visual Product Grid ("واجهة للفئة بالصور") */}
@@ -496,19 +491,23 @@ const PosMainContent: React.FC = () => {
               />
             </div>
 
-            {/* Mobile Floating Cart Trigger */}
-            <div className="lg:hidden fixed bottom-4 left-4 right-4 z-20">
+            {/* Permanent Compact Mobile Invoice Trigger (عرض الفاتورة دائم) */}
+            <div className="lg:hidden fixed bottom-[60px] left-1/2 -translate-x-1/2 w-[min(82vw,260px)] z-30">
               <button
+                type="button"
                 onClick={() => setShowMobileCart(true)}
-                className="w-full py-3.5 px-5 bg-emerald-600 text-white font-extrabold rounded-2xl shadow-xl flex items-center justify-between"
+                className="w-full min-h-[38px] py-1.5 px-3 bg-emerald-600 hover:bg-emerald-700 text-white text-[11px] font-extrabold rounded-xl shadow-lg flex items-center justify-between transition-transform active:scale-[0.99]"
               >
-                <div className="flex items-center gap-2">
-                  <ShoppingBag className="w-5 h-5" />
+                <div className="flex items-center gap-1.5">
+                  <ShoppingBag className="w-3.5 h-3.5 shrink-0" />
                   <span>{isAr ? 'عرض الفاتورة' : isFr ? 'Voir le panier' : 'View Ticket'}</span>
-                  <span className="px-2 py-0.5 bg-emerald-700 rounded-full text-xs">
+                  <span className="px-1.5 py-0.2 bg-emerald-700 rounded-full text-[10px] tabular-nums">
                     {cart.reduce((s, i) => s + i.quantity, 0)}
                   </span>
                 </div>
+                <span className="font-mono text-[11px] font-black tabular-nums">
+                  {cartGrandTotal.toFixed(2)} {currencySymbol}
+                </span>
               </button>
             </div>
 
@@ -516,11 +515,14 @@ const PosMainContent: React.FC = () => {
             {showMobileCart && (
               <div className="lg:hidden fixed inset-0 z-50 flex flex-col justify-end bg-slate-950/60 backdrop-blur-xs">
                 <div className="w-full h-[88vh] bg-white dark:bg-slate-900 rounded-t-3xl shadow-2xl flex flex-col overflow-hidden">
+                  <div className="pt-2 flex justify-center shrink-0">
+                    <div className="w-10 h-1 rounded-full bg-slate-300 dark:bg-slate-700" />
+                  </div>
                   <div className="p-3 border-b border-slate-200 dark:border-slate-800 flex justify-between items-center">
                     <span className="font-bold text-sm text-slate-900 dark:text-white">{isAr ? 'الفاتورة الحالية' : 'Current Order'}</span>
                     <button
                       onClick={() => setShowMobileCart(false)}
-                      className="text-xs font-bold px-3 py-1 bg-slate-100 dark:bg-slate-800 text-slate-700 dark:text-slate-200 hover:bg-slate-200 dark:hover:bg-slate-700 rounded-lg transition-colors"
+                      className="min-h-[38px] text-xs font-bold px-3 py-1 bg-slate-100 dark:bg-slate-800 text-slate-700 dark:text-slate-200 hover:bg-slate-200 dark:hover:bg-slate-700 rounded-lg transition-colors"
                     >
                       {isAr ? 'إغلاق' : 'Close'}
                     </button>
@@ -552,8 +554,12 @@ const PosMainContent: React.FC = () => {
         {currentTab === 'cpu_tax' && <CpuTaxView />}
         {currentTab === 'analytics' && <AnalyticsView />}
         {currentTab === 'ai_assistant' && <AiAssistantView />}
+        {currentTab === 'alerts' && <AlertsView />}
         {currentTab === 'settings' && <SettingsView />}
       </main>
+
+      {/* Mobile Bottom Tab Bar & Module Sheet */}
+      <MobileBottomNav onSelectProtectedTab={handleProtectedTab} />
 
       {/* Global Modals */}
       {showCheckout && (

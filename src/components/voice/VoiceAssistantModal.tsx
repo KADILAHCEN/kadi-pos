@@ -10,16 +10,24 @@ import {
   Send,
   Sparkles,
   Volume2,
+  VolumeX,
+  Square,
   X,
   AlertCircle,
   Calendar,
   CalendarDays,
-  UserCheck
+  UserCheck,
+  Bot
 } from 'lucide-react';
 import { usePos } from '../../context/PosContext';
-import { ParsedVoiceCommand, parseDarijaVoiceFallback } from '../../utils/darijaVoiceParser';
+import {
+  ParsedVoiceCommand,
+  matchEntityByName,
+  parseDarijaVoiceFallback
+} from '../../utils/darijaVoiceParser';
 import { VoiceCameraModal } from './VoiceCameraModal';
 import { VoiceInvoicesModal, VoiceInvoiceTab } from './VoiceInvoicesModal';
+import { speakAiText, stopAiSpeech } from '../../utils/aiVoice';
 
 interface SpeechRecognitionAlternativeLike {
   transcript: string;
@@ -55,23 +63,36 @@ interface VoiceLogEntry {
 }
 
 const EXAMPLE_COMMANDS = [
+  'شحال ربحت اليوم وشنو تنصحني؟',
   'محمد خدا التيد ب 100 ريال',
+  'فاطمة خدات حليب ب 5 درهم وخبز ب 3 درهم',
   'التيد شريتو ب 60 ريال',
   'محمد خلص 100 ريال',
+  'زيد سلعة جديدة عصير ب 10 درهم',
+  'زيد زبون جديد رشيد بنعلي',
   'زيد تصويرة ل التيد',
-  'عطيني فاكتورة اليوم',
-  'عطيني فاكتورة الشهر',
-  'عطيني فاكتورة محمد'
+  'عطيني فاكتورة اليوم'
 ];
 
 export const VoiceAssistantModal: React.FC = () => {
   const {
     products,
+    categories,
     customers,
+    orders,
+    expenses,
+    settings,
+    cpuSettings,
+    cpuRecords,
+    zakatSummary,
     recordVoiceSale,
     updateProductPurchaseCostAndRecalculateProfit,
     settleCustomerCredit,
     addCustomer,
+    addProduct,
+    updateProduct,
+    addActivityLog,
+    currentUser,
     currencySymbol,
     language
   } = usePos();
@@ -82,8 +103,25 @@ export const VoiceAssistantModal: React.FC = () => {
   const [isListeningSpeech, setIsListeningSpeech] = useState(false);
   const [isRecordingAudio, setIsRecordingAudio] = useState(false);
   const [isProcessing, setIsProcessing] = useState(false);
+  const [autoSpeakReply, setAutoSpeakReply] = useState(true);
+  const [speakingLogId, setSpeakingLogId] = useState<string | null>(null);
   const [statusError, setStatusError] = useState<string | null>(null);
-  const [logs, setLogs] = useState<VoiceLogEntry[]>([]);
+  const [logs, setLogs] = useState<VoiceLogEntry[]>(() => {
+    try {
+      const saved = localStorage.getItem('kadi_pos_voice_logs_v1');
+      return saved ? (JSON.parse(saved) as VoiceLogEntry[]) : [];
+    } catch {
+      return [];
+    }
+  });
+
+  useEffect(() => {
+    try {
+      localStorage.setItem('kadi_pos_voice_logs_v1', JSON.stringify(logs.slice(0, 50)));
+    } catch {
+      // ignore storage quota
+    }
+  }, [logs]);
 
   // Nested action modals
   const [cameraModalState, setCameraModalState] = useState<{ open: boolean; productName?: string }>({
@@ -116,9 +154,11 @@ export const VoiceAssistantModal: React.FC = () => {
     return () => window.removeEventListener('kadi:toggle-voice-assistant', handleToggle);
   }, []);
 
-  // Cleanup active mic streams on close/unmount
+  // Cleanup active mic streams & audio playback on close/unmount
   useEffect(() => {
     if (!isOpen) {
+      stopAiSpeech();
+      setSpeakingLogId(null);
       try {
         speechRecRef.current?.stop();
       } catch {
@@ -136,16 +176,109 @@ export const VoiceAssistantModal: React.FC = () => {
     }
   }, [isOpen]);
 
-  const appendLog = useCallback((entry: Omit<VoiceLogEntry, 'id' | 'time'>) => {
-    setLogs((prev) => [
-      {
-        ...entry,
-        id: `vlog-${Date.now()}-${Math.random().toString(36).slice(2, 5)}`,
-        time: new Date().toLocaleTimeString('ar-MA', { hour: '2-digit', minute: '2-digit' })
-      },
-      ...prev.slice(0, 14)
-    ]);
+  useEffect(() => {
+    return () => {
+      stopAiSpeech();
+    };
   }, []);
+
+  const triggerSpeakLog = useCallback(
+    (text: string, logId: string) => {
+      void speakAiText(text, language, {
+        onStart: () => setSpeakingLogId(logId),
+        onEnd: () => setSpeakingLogId((curr) => (curr === logId ? null : curr))
+      });
+    },
+    [language]
+  );
+
+  const appendLog = useCallback(
+    (entry: Omit<VoiceLogEntry, 'id' | 'time'>) => {
+      const id = `vlog-${Date.now()}-${Math.random().toString(36).slice(2, 5)}`;
+      setLogs((prev) => [
+        {
+          ...entry,
+          id,
+          time: new Date().toLocaleTimeString('ar-MA', { hour: '2-digit', minute: '2-digit' })
+        },
+        ...prev.slice(0, 14)
+      ]);
+      if (autoSpeakReply && entry.status === 'success' && entry.summary) {
+        triggerSpeakLog(entry.summary, id);
+      }
+      return id;
+    },
+    [autoSpeakReply, triggerSpeakLog]
+  );
+
+  const answerSpokenQuestion = useCallback(
+    async (question: string) => {
+      const completed = orders.filter((o) => o.status === 'completed');
+      const totalRevenue = completed.reduce((s, o) => s + o.grandTotal, 0);
+      const totalGrossProfit = completed.reduce((s, o) => s + o.profitTotal, 0);
+      const totalExpenses = expenses.reduce((s, e) => s + e.amount, 0);
+      const totalReceivables = customers.reduce((s, c) => s + (c.balance > 0 ? c.balance : 0), 0);
+      const unpaidCpuTotal = cpuRecords
+        .filter((r) => r.status !== 'paid')
+        .reduce((s, r) => s + r.totalDue, 0);
+      const criticalLowStockCount = products.filter(
+        (p) => p.lowStockThreshold > 0 && p.stock <= p.lowStockThreshold * 0.2
+      ).length;
+
+      const storeSummary = {
+        storeName: settings.storeName,
+        currencySymbol,
+        completedOrdersCount: completed.length,
+        totalRevenue: Number(totalRevenue.toFixed(2)),
+        totalGrossProfit: Number(totalGrossProfit.toFixed(2)),
+        totalExpenses: Number(totalExpenses.toFixed(2)),
+        netProfitBeforeTax: Number((totalGrossProfit - totalExpenses).toFixed(2)),
+        criticalLowStockCount,
+        customerCreditReceivables: Number(totalReceivables.toFixed(2)),
+        annualPatenteTax: cpuSettings.annualPatenteTax || 0,
+        unpaidCpuTotal: Number(unpaidCpuTotal.toFixed(2)),
+        zakatDueAmount: Number(zakatSummary.zakatDue.toFixed(2))
+      };
+
+      try {
+        const res = await fetch('/api/ai/chat', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            question,
+            history: [],
+            storeSummary,
+            language,
+            mode: 'advisor'
+          })
+        });
+        const data = (await res.json()) as { reply?: string; code?: string };
+        if (res.ok && data.reply?.trim()) {
+          appendLog({
+            transcript: question,
+            summary: data.reply.trim(),
+            status: 'success'
+          });
+          setCommandText('');
+          return;
+        }
+      } catch {
+        // Fallback below to live local summary answer
+      }
+
+      const fallbackReply = isAr
+        ? `ملخص متجرك الآن: المبيعات الإجمالية ${storeSummary.totalRevenue} ${currencySymbol} (${completed.length} فاتورة)، صافي الربح قبل الضريبة ${storeSummary.netProfitBeforeTax} ${currencySymbol}، ديون الكريدي ${storeSummary.customerCreditReceivables} ${currencySymbol}، والسلع في المخزون الحرج ${criticalLowStockCount} صنف.`
+        : `Live store summary: Revenue ${storeSummary.totalRevenue} ${currencySymbol} (${completed.length} orders), net profit ${storeSummary.netProfitBeforeTax} ${currencySymbol}, customer credit ${storeSummary.customerCreditReceivables} ${currencySymbol}, critical stock items: ${criticalLowStockCount}.`;
+
+      appendLog({
+        transcript: question,
+        summary: fallbackReply,
+        status: 'success'
+      });
+      setCommandText('');
+    },
+    [orders, expenses, customers, cpuRecords, products, settings.storeName, currencySymbol, cpuSettings.annualPatenteTax, zakatSummary.zakatDue, language, appendLog, isAr]
+  );
 
   const applyParsedCommand = useCallback(
     (cmd: ParsedVoiceCommand, spokenTranscript: string) => {
@@ -156,30 +289,126 @@ export const VoiceAssistantModal: React.FC = () => {
 
       switch (cmd.intent) {
         case 'record_sale': {
-          if (!cmd.amountDirham || cmd.amountDirham <= 0) {
-            setStatusError(
-              isAr
-                ? 'لم أتمكن من تحديد الثمن بالدرهم أو الريال. مثال: "محمد خدا التيد ب 100 ريال"'
-                : 'Could not determine sale price. Example: "Mohamed took Tide for 100 riyal"'
-            );
-            return;
-          }
+          const validItems = (cmd.items || []).filter((it) => Boolean(it.productName?.trim()));
+          const hasMulti = validItems.length > 0;
+          const totalDirham = hasMulti
+            ? Number(validItems.reduce((s, it) => s + (it.amountDirham || 0), 0).toFixed(2))
+            : cmd.amountDirham || 0;
+
           const res = recordVoiceSale({
             customerName: cmd.customerName || 'زبون عام',
-            productName: cmd.productName || 'سلعة جديدة',
-            priceDirham: cmd.amountDirham,
+            productName: cmd.productName || validItems[0]?.productName || 'سلعة جديدة',
+            priceDirham: totalDirham,
             quantity: cmd.quantity || 1,
+            items: hasMulti
+              ? validItems.map((it) => ({
+                  productName: it.productName,
+                  priceDirham: it.amountDirham || 0,
+                  quantity: it.quantity || 1
+                }))
+              : undefined,
             paymentMethod: cmd.paymentMethod || 'credit',
             note: `تسجيل صوتي: ${spokenTranscript}`
           });
-          const prodTag = res.createdProduct ? ' (أضيفت تلقائياً لقائمة السلع)' : '';
+
+          const prodTag =
+            res.createdProductsCount > 0
+              ? res.createdProductsCount === 1
+                ? ' (سلعة جديدة أضيفت تلقائياً)'
+                : ` (${res.createdProductsCount} سلع جديدة أضيفت تلقائياً)`
+              : '';
           const custTag = res.createdCustomer ? ' (زبون جديد)' : '';
+          const itemsLabel = res.order.items
+            .map((it) => `${it.productName}${it.quantity !== 1 ? ` ×${it.quantity}` : ''}`)
+            .join(' + ');
+
           appendLog({
             transcript: spokenTranscript,
-            summary: `${res.customer.name}${custTag} أخذ "${res.product.name}"${prodTag} بمبلغ ${res.order.grandTotal.toFixed(2)} ${currencySymbol} (${res.order.paymentMethod === 'credit' ? 'كريدي' : 'نقداً'})`,
+            summary: `${res.customer.name}${custTag} أخذ "${itemsLabel}"${prodTag} بمبلغ ${res.order.grandTotal.toFixed(2)} ${currencySymbol} (${res.order.paymentMethod === 'credit' ? 'كريدي' : 'نقداً'})`,
             conversionBadge: riyalBadge,
             status: 'success'
           });
+          setCommandText('');
+          return;
+        }
+
+        case 'add_product': {
+          const cleanProd = (cmd.productName || '').trim();
+          if (!cleanProd) {
+            setStatusError(
+              isAr
+                ? 'المرجو ذكر اسم السلعة لإضافتها. مثال: "زيد سلعة عصير برتقال ب 10 درهم"'
+                : 'Please mention the product name to register.'
+            );
+            return;
+          }
+          const existingProd = matchEntityByName(products, cleanProd);
+          if (existingProd) {
+            if (cmd.amountDirham && cmd.amountDirham > 0) {
+              updateProduct(existingProd.id, { price: cmd.amountDirham });
+            }
+            appendLog({
+              transcript: spokenTranscript,
+              summary: cmd.amountDirham
+                ? `✓ تم تحديث سعر "${existingProd.name}" إلى ${cmd.amountDirham.toFixed(2)} ${currencySymbol}`
+                : `✓ السلعة "${existingProd.name}" مسجلة مسبقاً في المخزون`,
+              conversionBadge: riyalBadge,
+              status: 'success'
+            });
+          } else {
+            const price = cmd.amountDirham && cmd.amountDirham > 0 ? cmd.amountDirham : 10;
+            addProduct({
+              name: cleanProd,
+              nameEn: cleanProd,
+              sku: `VC-${Date.now().toString().slice(-5)}`,
+              barcode: '',
+              categoryId: categories[0]?.id || 'cat-1',
+              price,
+              costPrice: 0,
+              stock: 20,
+              lowStockThreshold: 5,
+              unitType: 'piece'
+            });
+            appendLog({
+              transcript: spokenTranscript,
+              summary: `✓ تمت إضافة السلعة الجديدة "${cleanProd}" (${price.toFixed(2)} ${currencySymbol})`,
+              conversionBadge: riyalBadge,
+              status: 'success'
+            });
+          }
+          setCommandText('');
+          return;
+        }
+
+        case 'add_customer': {
+          const cleanCust = (cmd.customerName || '').trim();
+          if (!cleanCust) {
+            setStatusError(
+              isAr
+                ? 'المرجو ذكر اسم الزبون لتسجيله. مثال: "زيد زبون جديد رشيد بنعلي"'
+                : 'Please specify the customer name to add.'
+            );
+            return;
+          }
+          const existingCust = matchEntityByName(customers, cleanCust);
+          if (existingCust) {
+            appendLog({
+              transcript: spokenTranscript,
+              summary: `✓ الزبون "${existingCust.name}" مسجل مسبقاً في كناش الكريدي`,
+              status: 'success'
+            });
+          } else {
+            const created = addCustomer({
+              name: cleanCust,
+              phone: '',
+              notes: 'تم تسجيله عبر التسجيل الصوتي'
+            });
+            appendLog({
+              transcript: spokenTranscript,
+              summary: `✓ تم تسجيل الزبون الجديد "${created.name}" في كناش الكريدي`,
+              status: 'success'
+            });
+          }
           setCommandText('');
           return;
         }
@@ -193,10 +422,7 @@ export const VoiceAssistantModal: React.FC = () => {
             );
             return;
           }
-          const q = cmd.customerName.trim().toLowerCase();
-          let targetCust =
-            customers.find((c) => c.name.trim().toLowerCase() === q) ||
-            customers.find((c) => c.name.toLowerCase().includes(q) || q.includes(c.name.trim().toLowerCase()));
+          let targetCust = matchEntityByName(customers, cmd.customerName);
           if (!targetCust) {
             targetCust = addCustomer({
               name: cmd.customerName.trim(),
@@ -297,29 +523,56 @@ export const VoiceAssistantModal: React.FC = () => {
           return;
         }
 
+        case 'ask_ai': {
+          const question = (cmd.transcript || spokenTranscript || '').trim();
+          if (question) {
+            void answerSpokenQuestion(question);
+          }
+          return;
+        }
+
+        case 'record_note':
         default: {
-          setStatusError(
-            isAr
-              ? 'ما فهمتش الأمر مزيان. جرب بحال: "محمد خدا التيد ب 100 ريال" أو "عطيني فاكتورة اليوم"'
-              : 'Command not recognized. Try one of the examples below.'
-          );
+          const cleanNote = (cmd.explanation || spokenTranscript || '').trim();
+          if (!cleanNote) return;
+          addActivityLog({
+            category: 'system',
+            title: isAr ? 'تسجيل صوتي حر' : 'Voice Note',
+            description: cleanNote,
+            actor: currentUser.name,
+            actorRole: currentUser.role,
+            amount: cmd.amountDirham,
+            severity: 'info'
+          });
           appendLog({
             transcript: spokenTranscript,
-            summary: isAr ? 'أمر غير واضح — جرب صياغة أخرى' : 'Unrecognized command',
-            status: 'error'
+            summary: isAr
+              ? `🎙️ تم حفظ التسجيل الصوتي: "${cleanNote}"`
+              : `🎙️ Voice note saved: "${cleanNote}"`,
+            conversionBadge: riyalBadge,
+            status: 'success'
           });
+          setCommandText('');
+          return;
         }
       }
     },
     [
       isAr,
       currencySymbol,
+      products,
+      categories,
       recordVoiceSale,
       customers,
       addCustomer,
+      addProduct,
+      updateProduct,
+      addActivityLog,
+      currentUser,
       settleCustomerCredit,
       updateProductPurchaseCostAndRecalculateProfit,
-      appendLog
+      appendLog,
+      answerSpokenQuestion
     ]
   );
 
@@ -352,7 +605,7 @@ export const VoiceAssistantModal: React.FC = () => {
             applyParsedCommand(serverCmd, finalTranscript);
             return;
           }
-          if (finalTranscript && trimmedText) {
+          if (finalTranscript) {
             const localFallback = parseDarijaVoiceFallback(finalTranscript);
             applyParsedCommand(localFallback, finalTranscript);
             return;
@@ -370,8 +623,8 @@ export const VoiceAssistantModal: React.FC = () => {
       } else {
         setStatusError(
           isAr
-            ? 'تعذر تحليل التسجيل الصوتي عبر الخادم. يمكنك استخدام زر الميكروفون المباشر أو كتابة الأمر.'
-            : 'Could not transcribe audio clip via server. Try live mic or typing the command.'
+            ? 'تعذر تفريغ التسجيل الصوتي عبر الخادم. يمكنك استخدام زر التحدث المباشر أو الكتابة.'
+            : 'Could not transcribe audio clip via server. Try live mic or typing.'
         );
       }
     },
@@ -416,20 +669,22 @@ export const VoiceAssistantModal: React.FC = () => {
     try {
       const rec = new SpeechCtor();
       rec.lang = 'ar-MA';
-      rec.continuous = false;
+      rec.continuous = true;
       rec.interimResults = true;
 
       let latestFinal = '';
+      let latestCombined = '';
       rec.onresult = (evt) => {
         let combined = '';
         for (let i = 0; i < evt.results.length; i += 1) {
           const item = evt.results[i];
-          combined += item[0].transcript;
+          combined += `${item[0].transcript} `;
           if (item.isFinal) {
             latestFinal = combined.trim();
           }
         }
-        setCommandText(combined.trim());
+        latestCombined = combined.trim();
+        setCommandText(latestCombined);
       };
 
       rec.onerror = (evt) => {
@@ -441,8 +696,9 @@ export const VoiceAssistantModal: React.FC = () => {
 
       rec.onend = () => {
         setIsListeningSpeech(false);
-        if (latestFinal) {
-          void executeVoiceInput({ transcript: latestFinal });
+        const toExecute = latestFinal || latestCombined;
+        if (toExecute) {
+          void executeVoiceInput({ transcript: toExecute });
         }
       };
 
@@ -519,24 +775,66 @@ export const VoiceAssistantModal: React.FC = () => {
               </div>
               <div>
                 <h3 className="text-xs font-black tracking-wide">
-                  {isAr ? 'التسجيل الصوتي الكامل (Kadi Voice)' : 'Kadi Full Voice POS'}
+                  {isAr ? 'المساعد الصوتي (Kadi Voice & AI)' : 'Kadi Voice & AI Assistant'}
                 </h3>
                 <p className="text-[10px] text-emerald-200/90">
-                  {isAr ? 'هضر بالدارجة · 100 ريال = 5 درهم' : 'Speak Moroccan Darija · 100 Riyal = 5 DH'}
+                  {isAr ? 'هضر بالدارجة · يجيبك بالصوت والكتابة' : 'Speak Darija · Voice & Text Replies'}
                 </p>
               </div>
             </div>
-            <button
-              type="button"
-              onClick={() => setIsOpen(false)}
-              className="p-1 text-slate-300 hover:text-white rounded-lg"
-            >
-              <X className="w-4 h-4" />
-            </button>
+            <div className="flex items-center gap-1">
+              {speakingLogId && (
+                <button
+                  type="button"
+                  onClick={() => {
+                    stopAiSpeech();
+                    setSpeakingLogId(null);
+                  }}
+                  title={isAr ? 'إيقاف الصوت' : 'Stop Audio'}
+                  className="p-1.5 rounded-lg bg-rose-500/80 hover:bg-rose-600 text-white"
+                >
+                  <Square className="w-3.5 h-3.5 fill-current" />
+                </button>
+              )}
+              <button
+                type="button"
+                onClick={() => {
+                  const next = !autoSpeakReply;
+                  setAutoSpeakReply(next);
+                  if (!next) {
+                    stopAiSpeech();
+                    setSpeakingLogId(null);
+                  }
+                }}
+                title={autoSpeakReply ? (isAr ? 'كتم الرد الصوتي' : 'Mute Voice Reply') : isAr ? 'تفعيل الرد الصوتي' : 'Enable Voice Reply'}
+                className={`p-1.5 rounded-lg transition-colors ${
+                  autoSpeakReply ? 'bg-emerald-500/25 text-emerald-200 hover:bg-emerald-500/40' : 'text-slate-300 hover:bg-white/10'
+                }`}
+              >
+                {autoSpeakReply ? <Volume2 className="w-4 h-4" /> : <VolumeX className="w-4 h-4" />}
+              </button>
+              <button
+                type="button"
+                onClick={() => setIsOpen(false)}
+                className="p-1 text-slate-300 hover:text-white rounded-lg"
+              >
+                <X className="w-4 h-4" />
+              </button>
+            </div>
           </div>
 
           {/* Body */}
           <div className="flex-1 overflow-y-auto p-4 space-y-3.5">
+            {/* Open-vocabulary unrestricted banner */}
+            <div className="px-3 py-2 rounded-2xl bg-emerald-50 dark:bg-emerald-950/40 border border-emerald-200 dark:border-emerald-800/70 text-[11px] font-bold text-emerald-800 dark:text-emerald-200 flex items-center gap-2">
+              <Bot className="w-4 h-4 shrink-0 text-emerald-600" />
+              <span>
+                {isAr
+                  ? '✓ تسجيل حر أو سؤال مباشر بالصوت — يجيبك الذكاء الاصطناعي فوراً بالصوت والكتابة!'
+                  : '✓ Speak commands or ask store questions — AI replies with both voice and text!'}
+              </span>
+            </div>
+
             {/* Dual Mic Controls */}
             <div className="grid grid-cols-2 gap-2">
               <button
@@ -700,9 +998,34 @@ export const VoiceAssistantModal: React.FC = () => {
                     >
                       <div className="flex items-center justify-between gap-2 text-[10px] text-slate-500 font-mono">
                         <span className="truncate">« {item.transcript} »</span>
-                        <span>{item.time}</span>
+                        <div className="flex items-center gap-1.5 shrink-0">
+                          <button
+                            type="button"
+                            onClick={() => {
+                              if (speakingLogId === item.id) {
+                                stopAiSpeech();
+                                setSpeakingLogId(null);
+                              } else {
+                                triggerSpeakLog(item.summary, item.id);
+                              }
+                            }}
+                            title={speakingLogId === item.id ? (isAr ? 'إيقاف' : 'Stop') : isAr ? 'استماع' : 'Listen'}
+                            className={`p-1 rounded-md transition-colors ${
+                              speakingLogId === item.id
+                                ? 'bg-rose-600 text-white'
+                                : 'bg-white dark:bg-slate-800 text-emerald-600 hover:bg-emerald-100 dark:hover:bg-emerald-900/40 border border-emerald-200 dark:border-emerald-800'
+                            }`}
+                          >
+                            {speakingLogId === item.id ? (
+                              <Square className="w-3 h-3 fill-current" />
+                            ) : (
+                              <Volume2 className="w-3 h-3" />
+                            )}
+                          </button>
+                          <span>{item.time}</span>
+                        </div>
                       </div>
-                      <div className="font-bold text-slate-900 dark:text-white flex items-start gap-1.5">
+                      <div className="font-bold text-slate-900 dark:text-white flex items-start gap-1.5 whitespace-pre-wrap leading-relaxed">
                         <CheckCircle2
                           className={`w-3.5 h-3.5 shrink-0 mt-0.5 ${
                             item.status === 'success' ? 'text-emerald-600' : 'text-rose-500'

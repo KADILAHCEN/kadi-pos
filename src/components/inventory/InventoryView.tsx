@@ -423,14 +423,50 @@ export const InventoryView: React.FC = () => {
   };
 
   return (
-    <div className="flex-1 flex flex-col h-full overflow-hidden bg-slate-50 dark:bg-slate-950 p-6">
+    <div className="flex-1 flex flex-col h-full overflow-y-auto lg:overflow-hidden bg-slate-50 dark:bg-slate-950 p-3 sm:p-6">
       {productToast && (
         <div className="fixed top-16 left-1/2 -translate-x-1/2 z-50 px-4 py-2.5 bg-emerald-600 text-white rounded-xl shadow-xl text-xs font-extrabold flex items-center gap-2 animate-in fade-in slide-in-from-top-2">
           <span>{productToast}</span>
         </div>
       )}
+
+      {/* Always-Visible Top Action Header */}
+      <div className="flex flex-wrap items-center justify-between gap-2.5 mb-3 sm:mb-4 shrink-0">
+        <div>
+          <h2 className="text-base sm:text-xl font-black text-slate-900 dark:text-white">
+            {isAr ? 'إدارة المخزون والسلع والأصناف' : isFr ? 'Inventaire, Produits & Catégories' : 'Inventory, Products & Categories'}
+          </h2>
+          <p className="text-[11px] text-slate-500 dark:text-slate-400">
+            {isAr ? 'إضافة السلع والأصناف ومراقبة الرصيد وحركات التوريد' : 'Add items, organize categories, and track stock movements'}
+          </p>
+        </div>
+
+        <div className="flex items-center gap-2 shrink-0 w-full sm:w-auto">
+          <button
+            type="button"
+            onClick={() => setShowAddModal(true)}
+            className="flex-1 sm:flex-none min-h-[44px] sm:min-h-0 px-3.5 py-2 text-xs font-extrabold rounded-xl bg-emerald-600 hover:bg-emerald-700 text-white transition-colors flex items-center justify-center gap-1.5 shadow-xs whitespace-nowrap"
+          >
+            <PackagePlus className="w-4 h-4 shrink-0" />
+            <span>{isAr ? '+ إضافة سلعة' : t.add_product}</span>
+          </button>
+
+          <button
+            type="button"
+            onClick={() => {
+              setCategoryModalTab('create');
+              setShowAddCategoryModal(true);
+            }}
+            className="flex-1 sm:flex-none min-h-[44px] sm:min-h-0 px-3.5 py-2 text-xs font-extrabold rounded-xl bg-indigo-600 hover:bg-indigo-700 text-white transition-colors flex items-center justify-center gap-1.5 shadow-xs whitespace-nowrap"
+          >
+            <Layers className="w-4 h-4 shrink-0" />
+            <span>{isAr ? '+ إضافة صنف' : '+ Add Category'}</span>
+          </button>
+        </div>
+      </div>
+
       {/* Top Banner KPI Cards */}
-      <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-5 gap-3.5 mb-6 shrink-0">
+      <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-5 gap-2.5 sm:gap-3.5 mb-4 sm:mb-6 shrink-0">
         <div className="p-4 rounded-2xl bg-indigo-50/75 dark:bg-indigo-950/30 border border-indigo-200 dark:border-indigo-800/70 shadow-2xs">
           <div className="text-xs font-bold text-indigo-700 dark:text-indigo-300">
             {isAr ? 'قيمة المخزون (سعر التكلفة)' : 'Stock Cost Value'}
@@ -524,11 +560,11 @@ export const InventoryView: React.FC = () => {
       </div>
 
       {/* Main Container */}
-      <div className="flex-1 flex flex-col bg-white dark:bg-slate-900 rounded-3xl border border-slate-200 dark:border-slate-800 shadow-xs overflow-hidden">
+      <div className="flex-1 min-h-[480px] lg:min-h-0 flex flex-col bg-white dark:bg-slate-900 rounded-3xl border border-slate-200 dark:border-slate-800 shadow-xs overflow-hidden">
         {/* Navigation Tabs & Actions Toolbar */}
-        <div className="p-4 border-b border-slate-200 dark:border-slate-800 flex flex-wrap items-center justify-between gap-3">
+        <div className="p-3 sm:p-4 border-b border-slate-200 dark:border-slate-800 flex flex-wrap items-center justify-between gap-3">
           {/* Segmented Control (Tabs) */}
-          <div className="flex items-center gap-1 p-1 bg-slate-100 dark:bg-slate-800 rounded-xl">
+          <div className="flex items-center gap-1 p-1 bg-slate-100 dark:bg-slate-800 rounded-xl overflow-x-auto max-w-full">
             <button
               onClick={() => setActiveTab('catalog')}
               className={`px-4 py-1.5 text-xs font-bold rounded-lg transition-colors flex items-center gap-2 ${
@@ -598,14 +634,14 @@ export const InventoryView: React.FC = () => {
             {/* Categories Management (إدارة وإلغاء الأصناف) */}
             <button
               onClick={() => {
-                setCategoryModalTab('manage');
+                setCategoryModalTab('create');
                 setShowAddCategoryModal(true);
               }}
-              className="px-3.5 py-2 text-xs font-bold rounded-xl border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-800 hover:bg-slate-50 dark:hover:bg-slate-700 text-slate-700 dark:text-slate-300 transition-colors flex items-center gap-1.5 shadow-2xs shrink-0"
+              className="px-3.5 py-2 text-xs font-bold rounded-xl border border-indigo-200 dark:border-indigo-800 bg-indigo-50 dark:bg-indigo-950/50 hover:bg-indigo-100 dark:hover:bg-indigo-900/50 text-indigo-700 dark:text-indigo-300 transition-colors flex items-center gap-1.5 shadow-2xs shrink-0 whitespace-nowrap"
               title={isAr ? 'إضافة صنف جديد أو إدارة وإلغاء الأصناف' : 'Manage & Add Categories'}
             >
-              <Layers className="w-3.5 h-3.5 text-emerald-600 dark:text-emerald-400" />
-              <span>{isAr ? 'الأصناف والفئات' : 'Categories'}</span>
+              <Layers className="w-3.5 h-3.5" />
+              <span>{isAr ? '+ إضافة وإدارة الأصناف' : '+ Add / Manage Categories'}</span>
             </button>
 
             <button

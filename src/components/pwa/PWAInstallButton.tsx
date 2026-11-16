@@ -12,6 +12,7 @@ import {
   MoreVertical
 } from 'lucide-react';
 import { usePos } from '../../context/PosContext';
+import { OFFICIAL_APP_URL, buildQrImageUrl } from '../../utils/remoteCatalog';
 
 interface PWAInstallButtonProps {
   variant?: 'navbar' | 'banner' | 'settings';
@@ -19,16 +20,14 @@ interface PWAInstallButtonProps {
 
 export const PWAInstallButton: React.FC<PWAInstallButtonProps> = ({ variant = 'navbar' }) => {
   const { isInstallable, isInstalled, isIOS, install } = usePWAInstall();
-  const { language } = usePos();
+  const { language, settings } = usePos();
   const [showGuideModal, setShowGuideModal] = useState(false);
   const [copiedUrl, setCopiedUrl] = useState(false);
   const isAr = language === 'ar';
   const isFr = language === 'fr';
 
-  const shareUrl =
-    typeof window !== 'undefined'
-      ? window.location.origin
-      : 'https://ais-pre-vlflnu747qtck4aikt6rlo-324765339943.europe-west2.run.app';
+  const shareUrl = settings.publicAppUrl?.trim() || OFFICIAL_APP_URL;
+  const qrImageUrl = buildQrImageUrl(shareUrl, 300);
 
   const handleCopyUrl = async () => {
     try {
@@ -108,8 +107,8 @@ export const PWAInstallButton: React.FC<PWAInstallButtonProps> = ({ variant = 'n
 
       {/* Installation & Phone Publishing Guide Modal */}
       {showGuideModal && (
-        <div className="fixed inset-0 z-[70] flex items-center justify-center p-4 bg-slate-950/75 backdrop-blur-xs animate-in fade-in duration-150">
-          <div className="bg-white dark:bg-slate-900 rounded-3xl max-w-md w-full p-5 shadow-2xl border border-slate-200 dark:border-slate-800 space-y-4">
+        <div className="fixed inset-0 z-[70] flex items-center justify-center p-4 bg-slate-950/75 backdrop-blur-xs animate-in fade-in duration-150 overflow-y-auto">
+          <div className="bg-white dark:bg-slate-900 rounded-3xl max-w-md w-full p-5 shadow-2xl border border-slate-200 dark:border-slate-800 space-y-4 my-auto">
             <div className="flex items-center justify-between pb-2 border-b border-slate-100 dark:border-slate-800">
               <div className="flex items-center gap-2">
                 <div className="w-8 h-8 rounded-lg bg-emerald-500/15 text-emerald-600 flex items-center justify-center">
@@ -143,10 +142,26 @@ export const PWAInstallButton: React.FC<PWAInstallButtonProps> = ({ variant = 'n
               </button>
             )}
 
+            {/* Scannable Store QR Code Card */}
+            <div className="p-3.5 rounded-2xl bg-slate-50 dark:bg-slate-800/60 border border-slate-200 dark:border-slate-700 flex flex-col items-center text-center gap-2.5">
+              <div className="p-2.5 bg-white rounded-2xl border border-slate-200 shadow-xs">
+                <img
+                  src={qrImageUrl}
+                  alt="Kadi POS QR Code"
+                  className="w-36 h-36 object-contain"
+                />
+              </div>
+              <div className="text-[11px] font-bold text-slate-700 dark:text-slate-200">
+                {isAr
+                  ? 'امسح رمز QR بكاميرا الهاتف لفتح التطبيق فوراً'
+                  : 'Scan this QR code with your phone camera to open the app'}
+              </div>
+            </div>
+
             {/* Step 1: Copy link to open directly on phone */}
             <div className="p-3 rounded-2xl bg-slate-50 dark:bg-slate-800/60 border border-slate-200 dark:border-slate-700 space-y-2">
               <div className="text-[11px] font-black text-slate-700 dark:text-slate-200">
-                {isAr ? '1. افتح رابط التطبيق على متصفح الهاتف (أو أرسله لنفسك عبر واتساب):' : '1. Open this app link on your phone browser:'}
+                {isAr ? '1. رابط التطبيق الرسمي (أو أرسله عبر واتساب):' : '1. Official app link:'}
               </div>
               <div className="flex items-center gap-2">
                 <input
