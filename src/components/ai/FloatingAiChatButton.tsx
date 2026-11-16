@@ -16,7 +16,13 @@ import {
   Loader2
 } from 'lucide-react';
 import { usePos } from '../../context/PosContext';
-import { speakAiText, stopAiSpeech, transcribeAudioWithServer } from '../../utils/aiVoice';
+import {
+  speakAiText,
+  stopAiSpeech,
+  transcribeAudioWithServer,
+  safeParseJsonResponse,
+  buildLocalStoreFallbackReply
+} from '../../utils/aiVoice';
 
 type ChatMode = 'advisor' | 'tutor' | 'investigator';
 
@@ -180,18 +186,24 @@ export const FloatingAiChatButton: React.FC = () => {
           mode: chatMode
         })
       });
-      const data = await res.json();
-      if (!res.ok) {
-        if (data?.code === 'MISSING_API_KEY') {
+      const parsed = await safeParseJsonResponse<{ reply?: string; code?: string; error?: string }>(res);
+
+      let replyText = '';
+      if (parsed.isNonJson || !parsed.data) {
+        replyText = buildLocalStoreFallbackReply(storeSummary, language);
+      } else if (!res.ok) {
+        if (parsed.data.code === 'MISSING_API_KEY') {
           throw new Error(
             isAr
               ? 'مفتاح GEMINI_API_KEY غير مضاف على الخادم حالياً.'
               : 'GEMINI_API_KEY is not configured on the server.'
           );
         }
-        throw new Error(data?.error || 'AI request failed');
+        throw new Error(parsed.data.error || 'AI request failed');
+      } else {
+        replyText = (parsed.data.reply || '').trim() || buildLocalStoreFallbackReply(storeSummary, language);
       }
-      const replyText = (data.reply || '').trim();
+
       const updated = [...next, { role: 'assistant' as const, text: replyText }];
       setMessages(updated);
       if (autoSpeak && replyText) {

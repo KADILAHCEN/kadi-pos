@@ -117,8 +117,9 @@ export async function speakAiText(
     if (token !== activeSpeechToken) return;
 
     if (res.ok) {
-      const data = (await res.json()) as { audioBase64?: string; mimeType?: string };
-      if (data.audioBase64 && token === activeSpeechToken) {
+      const parsed = await safeParseJsonResponse<{ audioBase64?: string; mimeType?: string }>(res);
+      const data = parsed.data;
+      if (data?.audioBase64 && token === activeSpeechToken) {
         const mime = data.mimeType || 'audio/wav';
         const audio = new Audio(`data:${mime};base64,${data.audioBase64}`);
         activeAudioElement = audio;
@@ -157,6 +158,71 @@ export async function speakAiText(
   await speakWithBrowserSynthesis(clean.slice(0, 900), language, token, opts);
 }
 
+export async function safeParseJsonResponse<T = Record<string, unknown>>(
+  res: Response
+): Promise<{ data: T | null; isNonJson: boolean; rawText: string }> {
+  const rawText = await res.text();
+  const trimmed = rawText.trim();
+  if (!trimmed) {
+    return { data: null, isNonJson: true, rawText };
+  }
+  const cleaned = trimmed
+    .replace(/^```(?:json)?\s*/i, '')
+    .replace(/\s*```$/i, '')
+    .trim();
+  try {
+    return { data: JSON.parse(cleaned) as T, isNonJson: false, rawText };
+  } catch {
+    return { data: null, isNonJson: true, rawText };
+  }
+}
+
+export function buildLocalStoreFallbackReply(
+  storeSummary: Record<string, unknown>,
+  language: AiSpeechLang = 'ar'
+): string {
+  const cur = String(storeSummary.currencySymbol || 'DH');
+  const rev = Number(storeSummary.totalRevenue || 0);
+  const gross = Number(storeSummary.totalGrossProfit || 0);
+  const exp = Number(storeSummary.totalExpenses || 0);
+  const net = Number(storeSummary.netProfitBeforeTax ?? gross - exp);
+  const ordersCount = Number(storeSummary.completedOrdersCount || 0);
+  const credit = Number(storeSummary.customerCreditReceivables || 0);
+  const critical = Number(storeSummary.criticalLowStockCount || 0);
+
+  if (language === 'ar') {
+    return [
+      `ملخص الأرباح والحسابات الحية لمتجرك:`,
+      `• إجمالي المبيعات: ${rev.toFixed(2)} ${cur} (${ordersCount} فاتورة)`,
+      `• الربح الإجمالي: ${gross.toFixed(2)} ${cur}`,
+      `• المصاريف المسجلة: ${exp.toFixed(2)} ${cur}`,
+      `• صافي الربح قبل الضريبة: ${net.toFixed(2)} ${cur}`,
+      `• ديون الكريدي عند الزبائن: ${credit.toFixed(2)} ${cur}`,
+      `• سلع في المخزون الحرج: ${critical} صنف`
+    ].join('\n');
+  }
+  if (language === 'fr') {
+    return [
+      `Résumé en direct de votre boutique :`,
+      `• Ventes totales : ${rev.toFixed(2)} ${cur} (${ordersCount} factures)`,
+      `• Bénéfice brut : ${gross.toFixed(2)} ${cur}`,
+      `• Dépenses : ${exp.toFixed(2)} ${cur}`,
+      `• Bénéfice net avant impôt : ${net.toFixed(2)} ${cur}`,
+      `• Crédits clients : ${credit.toFixed(2)} ${cur}`,
+      `• Stock critique : ${critical} articles`
+    ].join('\n');
+  }
+  return [
+    `Live store profit summary:`,
+    `• Total Sales: ${rev.toFixed(2)} ${cur} (${ordersCount} orders)`,
+    `• Gross Profit: ${gross.toFixed(2)} ${cur}`,
+    `• Expenses: ${exp.toFixed(2)} ${cur}`,
+    `• Net Profit Before Tax: ${net.toFixed(2)} ${cur}`,
+    `• Customer Credit: ${credit.toFixed(2)} ${cur}`,
+    `• Critical Low Stock: ${critical} items`
+  ].join('\n');
+}
+
 export async function transcribeAudioWithServer(
   audioBase64: string,
   audioMimeType: string,
@@ -167,9 +233,14 @@ export async function transcribeAudioWithServer(
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ audioBase64, audioMimeType, language })
   });
-  const data = (await res.json()) as { transcript?: string; error?: string };
-  if (!res.ok) {
-    throw new Error(data.error || 'Transcription failed');
+  const parsed = await safeParseJsonResponse<{ transcript?: string; error?: string }>(res);
+  if (parsed.isNonJson || !parsed.data) {
+    throw new Error(
+      language === 'ar' ? 'خدمة تفريغ الصوت غير متاحة حالياً.' : 'Audio transcription unavailable.'
+    );
   }
-  return (data.transcript || '').trim();
+  if (!res.ok) {
+    throw new Error(parsed.data.error || 'Transcription failed');
+  }
+  return (parsed.data.transcript || '').trim();
 }

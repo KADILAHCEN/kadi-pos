@@ -36,7 +36,13 @@ import {
 } from 'lucide-react';
 import { Product } from '../../types';
 import { exportAiFinancialTaxPdf } from '../../utils/exportReports';
-import { speakAiText, stopAiSpeech, transcribeAudioWithServer } from '../../utils/aiVoice';
+import {
+  speakAiText,
+  stopAiSpeech,
+  transcribeAudioWithServer,
+  safeParseJsonResponse,
+  buildLocalStoreFallbackReply
+} from '../../utils/aiVoice';
 
 interface GeminiRecommendation {
   title: string;
@@ -666,18 +672,31 @@ export const AiAssistantView: React.FC = () => {
           language
         })
       });
-      const data = await res.json();
+      const parsed = await safeParseJsonResponse<{
+        analysis?: GeminiAnalysisResult;
+        code?: string;
+        error?: string;
+      }>(res);
+      if (parsed.isNonJson || !parsed.data) {
+        throw new Error(
+          isAr
+            ? 'تعذر قراءة رد الخادم للتحليل العميق. التوصيات الداخلية وتدقيق المحقق السري تعمل بالكامل.'
+            : 'Unable to parse AI server response. Internal insights and Secret Auditor remain active.'
+        );
+      }
       if (!res.ok) {
-        if (data?.code === 'MISSING_API_KEY') {
+        if (parsed.data.code === 'MISSING_API_KEY') {
           throw new Error(
             isAr
               ? 'مفتاح GEMINI_API_KEY غير مضبوط على الخادم بعد. التوصيات الداخلية وتدقيق المحقق السري تعمل بالكامل.'
               : 'GEMINI_API_KEY is not configured on the server yet. Internal insights and Secret Auditor remain active.'
           );
         }
-        throw new Error(data?.error || 'AI analysis failed');
+        throw new Error(parsed.data.error || 'AI analysis failed');
       }
-      setAnalysisResult(data.analysis as GeminiAnalysisResult);
+      if (parsed.data.analysis) {
+        setAnalysisResult(parsed.data.analysis);
+      }
     } catch (err) {
       setAnalysisError(err instanceof Error ? err.message : 'Failed to reach AI server');
     } finally {
@@ -710,29 +729,36 @@ export const AiAssistantView: React.FC = () => {
     setChatError(null);
 
     try {
+      const storePayload = buildStoreSummaryPayload();
       const res = await fetch('/api/ai/chat', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           question: q,
           history: chatHistory.map((m) => ({ role: m.role, text: m.text })),
-          storeSummary: buildStoreSummaryPayload(),
+          storeSummary: storePayload,
           language,
           mode: activeMode
         })
       });
-      const data = await res.json();
-      if (!res.ok) {
-        if (data?.code === 'MISSING_API_KEY') {
+      const parsed = await safeParseJsonResponse<{ reply?: string; code?: string; error?: string }>(res);
+
+      let replyText = '';
+      if (parsed.isNonJson || !parsed.data) {
+        replyText = buildLocalStoreFallbackReply(storePayload, language);
+      } else if (!res.ok) {
+        if (parsed.data.code === 'MISSING_API_KEY') {
           throw new Error(
             isAr
               ? 'مفتاح GEMINI_API_KEY غير مضاف على الخادم حالياً.'
               : 'GEMINI_API_KEY is not configured on the server.'
           );
         }
-        throw new Error(data?.error || 'Failed to get AI response');
+        throw new Error(parsed.data.error || 'Failed to get AI response');
+      } else {
+        replyText = (parsed.data.reply || '').trim() || buildLocalStoreFallbackReply(storePayload, language);
       }
-      const replyText = (data.reply || '').trim();
+
       const updated = [...nextHistory, { role: 'assistant' as const, text: replyText, mode: activeMode }];
       setChatHistory(updated);
       if (autoSpeak && replyText) {

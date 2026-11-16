@@ -27,6 +27,29 @@ function createGeminiClient(): GoogleGenAI | null {
   });
 }
 
+function safeParseGeminiJson<T>(rawText: string, fallback: T): T {
+  const trimmed = (rawText || '').trim();
+  if (!trimmed) return fallback;
+  const cleaned = trimmed
+    .replace(/^```(?:json)?\s*/i, '')
+    .replace(/\s*```$/i, '')
+    .trim();
+  try {
+    return JSON.parse(cleaned) as T;
+  } catch {
+    const firstBrace = cleaned.indexOf('{');
+    const lastBrace = cleaned.lastIndexOf('}');
+    if (firstBrace !== -1 && lastBrace > firstBrace) {
+      try {
+        return JSON.parse(cleaned.slice(firstBrace, lastBrace + 1)) as T;
+      } catch {
+        return fallback;
+      }
+    }
+    return fallback;
+  }
+}
+
 async function startServer() {
   const app = express();
   app.use(express.json({ limit: '5mb' }));
@@ -118,7 +141,7 @@ Keep every point specific to the actual metrics provided, concise, and practical
       });
 
       const rawText = (response.text || '{}').trim();
-      const parsed = JSON.parse(rawText);
+      const parsed = safeParseGeminiJson<Record<string, unknown>>(rawText, {});
       return res.json({ analysis: parsed });
     } catch (error) {
       const message = error instanceof Error ? error.message : 'Failed to generate AI financial analysis';
@@ -292,7 +315,9 @@ If audio is provided, transcribe what was said verbatim into "transcript" in Ara
         }
       });
 
-      const parsed = JSON.parse((response.text || '{}').trim());
+      const parsed = safeParseGeminiJson<Record<string, unknown>>(response.text || '{}', {
+        intent: 'unknown'
+      });
       return res.json({ command: parsed });
     } catch (error) {
       const message = error instanceof Error ? error.message : 'Failed to parse voice command';
@@ -402,6 +427,25 @@ If audio is provided, transcribe what was said verbatim into "transcript" in Ara
       return res.status(500).json({ error: message });
     }
   });
+
+  app.use('/api', (_req, res) => {
+    return res.status(404).json({ error: 'API route not found' });
+  });
+
+  app.use(
+    (
+      err: unknown,
+      req: express.Request,
+      res: express.Response,
+      next: express.NextFunction
+    ) => {
+      if (req.path.startsWith('/api')) {
+        const message = err instanceof Error ? err.message : 'Invalid API request';
+        return res.status(400).json({ error: message });
+      }
+      return next(err);
+    }
+  );
 
   if (process.env.NODE_ENV !== 'production') {
     app.get('/@vite/client', (_req, res) => {

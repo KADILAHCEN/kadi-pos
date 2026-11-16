@@ -27,7 +27,7 @@ import {
 } from '../../utils/darijaVoiceParser';
 import { VoiceCameraModal } from './VoiceCameraModal';
 import { VoiceInvoicesModal, VoiceInvoiceTab } from './VoiceInvoicesModal';
-import { speakAiText, stopAiSpeech } from '../../utils/aiVoice';
+import { speakAiText, stopAiSpeech, safeParseJsonResponse } from '../../utils/aiVoice';
 
 interface SpeechRecognitionAlternativeLike {
   transcript: string;
@@ -252,11 +252,11 @@ export const VoiceAssistantModal: React.FC = () => {
             mode: 'advisor'
           })
         });
-        const data = (await res.json()) as { reply?: string; code?: string };
-        if (res.ok && data.reply?.trim()) {
+        const parsed = await safeParseJsonResponse<{ reply?: string; code?: string }>(res);
+        if (res.ok && !parsed.isNonJson && parsed.data?.reply?.trim()) {
           appendLog({
             transcript: question,
-            summary: data.reply.trim(),
+            summary: parsed.data.reply.trim(),
             status: 'success'
           });
           setCommandText('');
@@ -598,8 +598,8 @@ export const VoiceAssistantModal: React.FC = () => {
         });
 
         if (res.ok) {
-          const data = (await res.json()) as { command?: ParsedVoiceCommand };
-          const serverCmd = data.command;
+          const parsed = await safeParseJsonResponse<{ command?: ParsedVoiceCommand }>(res);
+          const serverCmd = parsed.data?.command;
           const finalTranscript = serverCmd?.transcript || trimmedText || 'تسجيل صوتي';
           if (serverCmd && serverCmd.intent && serverCmd.intent !== 'unknown') {
             applyParsedCommand(serverCmd, finalTranscript);
