@@ -33,7 +33,9 @@ import {
   TheftAlertSettings,
   TheftAlertItem,
   StocktakeRecordItem,
-  StocktakeSessionRecord
+  StocktakeSessionRecord,
+  EmergencyOpeningSession,
+  ShopEarRequest
 } from '../types';
 import {
   initialProducts,
@@ -72,7 +74,7 @@ import {
   loadSupplierInvoicesFromIndexedDB,
   safeLocalStorageSet
 } from '../utils/storage';
-import { getExpenseCategoryLabel } from '../utils/expenses';
+import { getExpenseCategoryLabel, getLocalTodayYMD } from '../utils/expenses';
 import { matchEntityByName } from '../utils/darijaVoiceParser';
 import { generate2000MoroccanProducts } from '../utils/catalogGenerator';
 import { calculateTradeZakatSummary, ZakatSummary } from '../utils/zakat';
@@ -98,6 +100,8 @@ export type AppTabId =
   | 'remote_sales'
   | 'cpu_tax'
   | 'analytics'
+  | 'customers_peak'
+  | 'shop_ear'
   | 'ai_assistant'
   | 'alerts'
   | 'settings';
@@ -265,6 +269,21 @@ interface PosContextType {
     }
   ) => Shift;
   addCashTransaction: (type: 'pay_in' | 'pay_out', amount: number, reason: string) => void;
+
+  // Emergency Re-Opening & Overtime Sales (الفتح الاستعجالي والوقت بدل الضائع - بلا مدة محدودة)
+  currentEmergencySession: EmergencyOpeningSession | null;
+  emergencySessions: EmergencyOpeningSession[];
+  openEmergencySession: (note?: string) => EmergencyOpeningSession;
+  closeEmergencySession: () => EmergencyOpeningSession | null;
+  todayEmergencyStats: {
+    openingsCount: number;
+    customersCount: number;
+    ordersCount: number;
+    totalSales: number;
+    cashSales: number;
+    creditSales: number;
+    sessions: EmergencyOpeningSession[];
+  };
   // Multi-Branch Management (إدارة الفروع المتعددة)
   branches: Branch[];
   activeBranchId: string;
@@ -368,6 +387,27 @@ interface PosContextType {
   acknowledgeAllTheftAlerts: (managerPin?: string) => { success: boolean; message?: string };
   clearAcknowledgedTheftAlerts: () => void;
 
+  // Shop Ear (ودن الحانوت - السلعة المطلوبة غير المتوفرة)
+  shopEarRequests: ShopEarRequest[];
+  addShopEarRequest: (params: {
+    itemName: string;
+    productId?: string;
+    estimatedUnitPrice?: number;
+    customerId?: string;
+    customerName?: string;
+    customerPhone?: string;
+    inputSource?: 'manual' | 'voice' | 'catalog';
+    notes?: string;
+  }) => ShopEarRequest;
+  markShopEarItemArrived: (
+    itemNameOrNormalized: string,
+    productId?: string,
+    restockQuantity?: number
+  ) => { updatedCount: number };
+  markShopEarNotified: (requestId: string, customerPhone?: string) => void;
+  deleteShopEarRequest: (requestId: string) => void;
+  clearNotifiedShopEarRequests: () => void;
+
   // Utilities
   buildFullBackupObject: () => Record<string, unknown>;
   resetToDemoData: () => void;
@@ -407,6 +447,157 @@ export const PosProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
   const clearActivityLogs = () => {
     setActivityLogs([]);
     playSound('click');
+  };
+
+  // Shop Ear (ودن الحانوت - السلعة المطلوبة)
+  const normalizeShopEarName = (name: string): string =>
+    name
+      .trim()
+      .toLowerCase()
+      .replace(/[\u064B-\u065F\u0670]/g, '')
+      .replace(/[أإآ]/g, 'ا')
+      .replace(/ة/g, 'ه')
+      .replace(/ى/g, 'ي')
+      .replace(/\s+/g, ' ');
+
+  const [shopEarRequests, setShopEarRequests] = useState<ShopEarRequest[]>(() => {
+    try {
+      const saved = localStorage.getItem('kadi_pos_shop_ear_requests_v1');
+      return saved ? JSON.parse(saved) : [];
+    } catch {
+      return [];
+    }
+  });
+
+  useEffect(() => {
+    localStorage.setItem('kadi_pos_shop_ear_requests_v1', JSON.stringify(shopEarRequests));
+  }, [shopEarRequests]);
+
+  const markMatchingShopEarArrivedInternal = useCallback((prod: { id: string; name: string; price?: number }) => {
+    const normProdName = normalizeShopEarName(prod.name);
+    const nowIso = new Date().toISOString();
+    setShopEarRequests((prev) => {
+      let changed = false;
+      const next = prev.map((req) => {
+        if (
+          req.status === 'pending' &&
+          (req.productId === prod.id || req.normalizedName === normProdName)
+        ) {
+          changed = true;
+          return {
+            ...req,
+            status: 'arrived' as const,
+            arrivedAt: nowIso,
+            productId: prod.id,
+            estimatedUnitPrice: req.estimatedUnitPrice ?? prod.price
+          };
+        }
+        return req;
+      });
+      return changed ? next : prev;
+    });
+  }, []);
+
+  const addShopEarRequest: PosContextType['addShopEarRequest'] = (params) => {
+    const cleanItem = params.itemName.trim();
+    const norm = normalizeShopEarName(cleanItem);
+    const nowIso = new Date().toISOString();
+    const newReq: ShopEarRequest = {
+      id: `ear-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`,
+      itemName: cleanItem,
+      normalizedName: norm,
+      productId: params.productId,
+      estimatedUnitPrice: params.estimatedUnitPrice,
+      customerId: params.customerId,
+      customerName: params.customerName?.trim() || undefined,
+      customerPhone: params.customerPhone?.trim() || undefined,
+      requestedAt: nowIso,
+      dateKey: getLocalTodayYMD(),
+      inputSource: params.inputSource || 'manual',
+      status: 'pending',
+      notes: params.notes?.trim() || undefined
+    };
+    setShopEarRequests((prev) => [newReq, ...prev]);
+    addActivityLog({
+      category: 'system',
+      title: `ودن الحانوت: طلب سلعة غير متوفرة (${cleanItem})`,
+      description: newReq.customerName
+        ? `سول عليها ${newReq.customerName} وما لقاهاش`
+        : `سول عليها زبون وما لقاهاش`,
+      actor: currentUser.name,
+      actorRole: currentUser.role,
+      severity: 'info'
+    });
+    if (settings.enableSoundEffects) playSound('beep');
+    return newReq;
+  };
+
+  const markShopEarItemArrived = (
+    itemNameOrNormalized: string,
+    productId?: string,
+    restockQuantity?: number
+  ): { updatedCount: number } => {
+    const normTarget = normalizeShopEarName(itemNameOrNormalized);
+    const nowIso = new Date().toISOString();
+    let updatedCount = 0;
+
+    setShopEarRequests((prev) =>
+      prev.map((req) => {
+        if (
+          req.status === 'pending' &&
+          ((productId && req.productId === productId) || req.normalizedName === normTarget)
+        ) {
+          updatedCount += 1;
+          return {
+            ...req,
+            status: 'arrived',
+            arrivedAt: nowIso
+          };
+        }
+        return req;
+      })
+    );
+
+    if (restockQuantity && restockQuantity > 0) {
+      const matchedProd =
+        (productId ? products.find((p) => p.id === productId) : undefined) ||
+        products.find((p) => normalizeShopEarName(p.name) === normTarget);
+      if (matchedProd) {
+        adjustStock(
+          matchedProd.id,
+          restockQuantity,
+          'توريد من ورقة الجملة (ودن الحانوت)',
+          'restock'
+        );
+      }
+    }
+
+    if (settings.enableSoundEffects) playSound('success');
+    return { updatedCount };
+  };
+
+  const markShopEarNotified = (requestId: string, customerPhone?: string) => {
+    const nowIso = new Date().toISOString();
+    setShopEarRequests((prev) =>
+      prev.map((req) =>
+        req.id === requestId
+          ? {
+              ...req,
+              status: 'notified',
+              notifiedAt: nowIso,
+              customerPhone: customerPhone?.trim() || req.customerPhone
+            }
+          : req
+      )
+    );
+  };
+
+  const deleteShopEarRequest = (requestId: string) => {
+    setShopEarRequests((prev) => prev.filter((r) => r.id !== requestId));
+  };
+
+  const clearNotifiedShopEarRequests = () => {
+    setShopEarRequests((prev) => prev.filter((r) => r.status !== 'notified'));
   };
 
   // Settings State
@@ -852,14 +1043,25 @@ export const PosProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
       id: `prod-${Date.now()}`
     };
     setProducts((prev) => [newProduct, ...prev]);
+    if (newProduct.stock > 0) {
+      markMatchingShopEarArrivedInternal(newProduct);
+    }
     playSound('beep');
     return { success: true, product: newProduct };
   };
 
   const updateProduct = (id: string, updated: Partial<Product>) => {
+    const prevProd = products.find((p) => p.id === id);
     setProducts((prev) =>
       prev.map((p) => (p.id === id ? { ...p, ...updated } : p))
     );
+    if (updated.stock !== undefined && updated.stock > 0 && (!prevProd || prevProd.stock <= 0)) {
+      markMatchingShopEarArrivedInternal({
+        id,
+        name: updated.name || prevProd?.name || '',
+        price: updated.price ?? prevProd?.price
+      });
+    }
   };
 
   const recordVoiceSale = (params: {
@@ -1019,6 +1221,9 @@ export const PosProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
       '0.00'
     );
 
+    const isEmergencyOvertimeSale =
+      currentShift.status === 'closed' && currentEmergencySession?.status === 'open';
+
     const newOrder: Order = {
       id: `ord-${Date.now()}-${Math.random().toString(36).slice(2, 5)}`,
       orderNumber: orderNum,
@@ -1052,10 +1257,16 @@ export const PosProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
       status: 'completed',
       note: params.note || 'مسجل بالصوت (Kadi Voice)',
       zatcaQrString: zatcaQr,
-      syncStatus: 'synced'
+      syncStatus: 'synced',
+      isEmergencyOvertime: isEmergencyOvertimeSale || undefined,
+      emergencySessionId: isEmergencyOvertimeSale ? currentEmergencySession?.id : undefined
     };
 
     setOrders((prev) => [newOrder, ...prev]);
+
+    if (isEmergencyOvertimeSale && currentEmergencySession) {
+      recordOvertimeOrderInSession(newOrder, targetCust.id || `walkin-${newOrder.id}`);
+    }
 
     // 4. Record Stock Movements for every spoken product
     const newMovements: StockMovement[] = resolvedItems.map((it, idx) => ({
@@ -1541,6 +1752,10 @@ export const PosProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
         return p;
       })
     );
+
+    if (targetProduct && quantityChange > 0 && prevStockVal + quantityChange > 0) {
+      markMatchingShopEarArrivedInternal(targetProduct);
+    }
 
     const theftCfg = getTheftConfig();
     if (
@@ -4045,7 +4260,182 @@ export const PosProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
     localStorage.setItem('kadi_pos_shifts_history', JSON.stringify(shiftsHistory));
   }, [shiftsHistory]);
 
+  // Emergency Re-Opening Sessions (الفتح الاستعجالي والوقت بدل الضائع - بلا مدة محدودة)
+  const [currentEmergencySession, setCurrentEmergencySession] = useState<EmergencyOpeningSession | null>(() => {
+    try {
+      const saved = localStorage.getItem('kadi_pos_current_emergency_session');
+      return saved ? JSON.parse(saved) : null;
+    } catch {
+      return null;
+    }
+  });
+
+  const [emergencySessions, setEmergencySessions] = useState<EmergencyOpeningSession[]>(() => {
+    try {
+      const saved = localStorage.getItem('kadi_pos_emergency_sessions');
+      return saved ? JSON.parse(saved) : [];
+    } catch {
+      return [];
+    }
+  });
+
+  useEffect(() => {
+    if (currentEmergencySession) {
+      localStorage.setItem('kadi_pos_current_emergency_session', JSON.stringify(currentEmergencySession));
+    } else {
+      localStorage.removeItem('kadi_pos_current_emergency_session');
+    }
+  }, [currentEmergencySession]);
+
+  useEffect(() => {
+    localStorage.setItem('kadi_pos_emergency_sessions', JSON.stringify(emergencySessions));
+  }, [emergencySessions]);
+
+  const recordOvertimeOrderInSession = useCallback(
+    (order: Order, customerKey: string) => {
+      setCurrentEmergencySession((prev) => {
+        if (!prev || prev.status !== 'open') return prev;
+        const cashDelta =
+          order.paymentMethod === 'cash'
+            ? order.grandTotal
+            : order.paymentMethod === 'split'
+            ? order.splitDetails?.cash || 0
+            : 0;
+        const creditDelta = order.paymentMethod === 'credit' ? order.grandTotal : 0;
+        const nextCustomerKeys = prev.customerKeys.includes(customerKey)
+          ? prev.customerKeys
+          : [...prev.customerKeys, customerKey];
+        const updated: EmergencyOpeningSession = {
+          ...prev,
+          ordersCount: prev.ordersCount + 1,
+          totalSales: Number((prev.totalSales + order.grandTotal).toFixed(2)),
+          cashSales: Number((prev.cashSales + cashDelta).toFixed(2)),
+          creditSales: Number((prev.creditSales + creditDelta).toFixed(2)),
+          customerKeys: nextCustomerKeys
+        };
+        return updated;
+      });
+    },
+    []
+  );
+
+  const openEmergencySession = (note?: string): EmergencyOpeningSession => {
+    if (currentEmergencySession && currentEmergencySession.status === 'open') {
+      return currentEmergencySession;
+    }
+    const nowIso = new Date().toISOString();
+    const session: EmergencyOpeningSession = {
+      id: `emg-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`,
+      openedAt: nowIso,
+      status: 'open',
+      openedBy: currentUser.name || currentShift.cashierName || 'التاجر',
+      note: note?.trim() || undefined,
+      ordersCount: 0,
+      totalSales: 0,
+      cashSales: 0,
+      creditSales: 0,
+      customerKeys: [],
+      dateKey: getLocalTodayYMD()
+    };
+    setCurrentEmergencySession(session);
+    addActivityLog({
+      category: 'system',
+      title: 'فتح استعجالي للصندوق (بلا مدة محدودة)',
+      description: `تم فتح الصندوق استعجالياً بعد الإغلاق من طرف ${session.openedBy}. يبقى مفتوحاً حتى الإغلاق اليدوي ومبيعاته تُحسب في الوقت بدل الضائع.`,
+      actor: currentUser.name,
+      actorRole: currentUser.role,
+      severity: 'warning'
+    });
+    if (settings.enableSoundEffects) {
+      playSound('drawer');
+    }
+    return session;
+  };
+
+  const closeEmergencySession = (): EmergencyOpeningSession | null => {
+    if (!currentEmergencySession) return null;
+    const closed: EmergencyOpeningSession = {
+      ...currentEmergencySession,
+      status: 'closed',
+      closedAt: new Date().toISOString()
+    };
+    setEmergencySessions((prev) => [closed, ...prev]);
+    setCurrentEmergencySession(null);
+    addActivityLog({
+      category: 'system',
+      title: `إغلاق الفتح الاستعجالي (${closed.customerKeys.length} زبون)`,
+      description: `تم إغلاق الصندوق يدوياً بعد الفتح الاستعجالي. مبيعات الوقت بدل الضائع: ${closed.totalSales.toFixed(2)} ${settings.currencySymbol} (${closed.ordersCount} فاتورة · ${closed.customerKeys.length} زبون).`,
+      actor: currentUser.name,
+      actorRole: currentUser.role,
+      amount: closed.totalSales,
+      severity: 'info'
+    });
+    if (settings.enableSoundEffects) {
+      playSound('drawer');
+    }
+    return closed;
+  };
+
+  const todayEmergencyStats = useMemo(() => {
+    const todayKey = getLocalTodayYMD();
+    const map = new Map<string, EmergencyOpeningSession>();
+    emergencySessions.forEach((s) => {
+      if (s.dateKey === todayKey) map.set(s.id, s);
+    });
+    if (currentEmergencySession && currentEmergencySession.dateKey === todayKey) {
+      map.set(currentEmergencySession.id, currentEmergencySession);
+    }
+    const sessions = Array.from(map.values()).sort(
+      (a, b) => new Date(b.openedAt).getTime() - new Date(a.openedAt).getTime()
+    );
+    const todayOvertimeOrders = orders.filter((o) => {
+      if (!o.isEmergencyOvertime || o.status !== 'completed') return false;
+      const d = new Date(o.date);
+      if (Number.isNaN(d.getTime())) return o.date.slice(0, 10) === todayKey;
+      const ymd = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(
+        d.getDate()
+      ).padStart(2, '0')}`;
+      return ymd === todayKey;
+    });
+    const sessionCustomers = sessions.reduce(
+      (sum, s) => sum + Math.max(s.customerKeys.length, s.ordersCount),
+      0
+    );
+    const customersCount = Math.max(sessionCustomers, todayOvertimeOrders.length);
+    const ordersCount = Math.max(
+      sessions.reduce((sum, s) => sum + s.ordersCount, 0),
+      todayOvertimeOrders.length
+    );
+    const totalSalesFromOrders = todayOvertimeOrders.reduce((s, o) => s + o.grandTotal, 0);
+    const totalSalesFromSessions = sessions.reduce((s, sess) => s + sess.totalSales, 0);
+    const totalSales = Number(Math.max(totalSalesFromOrders, totalSalesFromSessions).toFixed(2));
+    const cashSales = Number(
+      sessions.reduce((s, sess) => s + sess.cashSales, 0).toFixed(2)
+    );
+    const creditSales = Number(
+      sessions.reduce((s, sess) => s + sess.creditSales, 0).toFixed(2)
+    );
+    return {
+      openingsCount: sessions.length,
+      customersCount,
+      ordersCount,
+      totalSales,
+      cashSales,
+      creditSales,
+      sessions
+    };
+  }, [emergencySessions, currentEmergencySession, orders]);
+
   const openNewShift = (startingCash: number, cashierName: string) => {
+    if (currentEmergencySession?.status === 'open') {
+      const autoClosed: EmergencyOpeningSession = {
+        ...currentEmergencySession,
+        status: 'closed',
+        closedAt: new Date().toISOString()
+      };
+      setEmergencySessions((prev) => [autoClosed, ...prev]);
+      setCurrentEmergencySession(null);
+    }
     const newShiftNum = (currentShift?.shiftNumber || 100) + 1;
     const newShift: Shift = {
       id: `shift-${Date.now()}`,
@@ -4072,15 +4462,19 @@ export const PosProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
       reopenNextShiftWithRetainedFloat?: boolean;
     }
   ): Shift => {
-    // Calculate totals for current shift from orders placed during this shift
+    // Calculate totals for current shift from regular (non-overtime) orders placed during this shift
     const shiftStartTime = new Date(currentShift.openedAt).getTime();
     const shiftStartDateStr = currentShift.openedAt.slice(0, 10);
     const shiftOrders = orders.filter(
-      (o) => new Date(o.date).getTime() >= shiftStartTime && o.status === 'completed'
+      (o) =>
+        new Date(o.date).getTime() >= shiftStartTime &&
+        o.status === 'completed' &&
+        !o.isEmergencyOvertime
     );
     const shiftRefundOrders = orders.filter(
       (o) =>
         new Date(o.date).getTime() >= shiftStartTime &&
+        !o.isEmergencyOvertime &&
         (o.status === 'refunded' || o.status === 'partially_refunded')
     );
 
@@ -4379,6 +4773,9 @@ export const PosProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
 
     const onlineNow = typeof navigator !== 'undefined' ? navigator.onLine : isOnline;
 
+    const isEmergencyOvertimeSale =
+      currentShift.status === 'closed' && currentEmergencySession?.status === 'open';
+
     const newOrder: Order = {
       id: `ord-${Date.now()}`,
       orderNumber: orderNum,
@@ -4406,12 +4803,21 @@ export const PosProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
       zatcaQrString: zatcaQr,
       syncStatus: onlineNow ? 'synced' : 'pending_sync',
       createdOffline: !onlineNow,
-      syncedAt: onlineNow ? orderDate : undefined
+      syncedAt: onlineNow ? orderDate : undefined,
+      isEmergencyOvertime: isEmergencyOvertimeSale || undefined,
+      emergencySessionId: isEmergencyOvertimeSale ? currentEmergencySession?.id : undefined
     };
 
     // 1. Save order (persisted to IndexedDB + offline sync queue when offline)
     setOrders((prev) => [newOrder, ...prev]);
     setLastCompletedOrder(newOrder);
+
+    if (isEmergencyOvertimeSale && currentEmergencySession) {
+      recordOvertimeOrderInSession(
+        newOrder,
+        selectedCustomer?.id || selectedCustomer?.name || `walkin-${newOrder.id}`
+      );
+    }
 
     if (!onlineNow) {
       const queueItem: OfflineSaleQueueItem = {
@@ -4705,6 +5111,9 @@ export const PosProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
     setTheftAlerts([]);
     setActiveTheftToasts([]);
     setStocktakeHistory([]);
+    setCurrentEmergencySession(null);
+    setEmergencySessions([]);
+    setShopEarRequests([]);
   };
 
   // Snapshot & Backup Helpers
@@ -4736,7 +5145,9 @@ export const PosProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
     activityLogs,
     theftAlerts,
     stocktakeHistory,
-    shiftsHistory: [currentShift, ...shiftsHistory]
+    shiftsHistory: [currentShift, ...shiftsHistory],
+    emergencySessions,
+    shopEarRequests
   });
 
   // Export & Import Database JSON
@@ -4809,6 +5220,12 @@ export const PosProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
       }
       if (data.stocktakeHistory && Array.isArray(data.stocktakeHistory)) {
         setStocktakeHistory(data.stocktakeHistory);
+      }
+      if (data.emergencySessions && Array.isArray(data.emergencySessions)) {
+        setEmergencySessions(data.emergencySessions);
+      }
+      if (data.shopEarRequests && Array.isArray(data.shopEarRequests)) {
+        setShopEarRequests(data.shopEarRequests);
       }
       if (data.activeBranchId && typeof data.activeBranchId === 'string') {
         setActiveBranchIdState(data.activeBranchId);
@@ -4937,6 +5354,11 @@ export const PosProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
         closeCurrentShift,
         addCashTransaction,
         shiftsHistory,
+        currentEmergencySession,
+        emergencySessions,
+        openEmergencySession,
+        closeEmergencySession,
+        todayEmergencyStats,
         branches,
         activeBranchId,
         activeBranch,
@@ -5006,6 +5428,12 @@ export const PosProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
         acknowledgeTheftAlert,
         acknowledgeAllTheftAlerts,
         clearAcknowledgedTheftAlerts,
+        shopEarRequests,
+        addShopEarRequest,
+        markShopEarItemArrived,
+        markShopEarNotified,
+        deleteShopEarRequest,
+        clearNotifiedShopEarRequests,
         buildFullBackupObject,
         resetToDemoData,
         exportDatabaseJson,

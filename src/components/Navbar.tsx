@@ -15,7 +15,10 @@ import {
   MessageSquare,
   Mic,
   Monitor,
-  ShieldAlert
+  ShieldAlert,
+  Zap,
+  Unlock,
+  Ear
 } from 'lucide-react';
 import { PinGateModal } from './auth/PinGateModal';
 import { KExecutivePanel } from './KExecutivePanel';
@@ -50,8 +53,15 @@ export const Navbar: React.FC = () => {
     activePalette,
     selectPalette,
     unresolvedTheftAlerts,
-    isSirenActive
+    isSirenActive,
+    currentEmergencySession,
+    openEmergencySession,
+    closeEmergencySession,
+    shopEarRequests
   } = usePos();
+
+  const arrivedShopEarCount = shopEarRequests.filter((r) => r.status === 'arrived').length;
+  const pendingShopEarCount = shopEarRequests.filter((r) => r.status === 'pending').length;
 
   const isAr = language === 'ar';
   const isFr = language === 'fr';
@@ -302,8 +312,28 @@ export const Navbar: React.FC = () => {
           onClick={() => handleTabClick('shifts')}
           className="hidden sm:flex items-center gap-2 px-3 py-1.5 text-xs font-medium rounded-lg border border-slate-200 dark:border-slate-700 hover:bg-slate-50 dark:hover:bg-slate-800 text-slate-700 dark:text-slate-300 transition-colors whitespace-nowrap shrink-0"
         >
-          <span className={`w-2 h-2 rounded-full ${currentShift.status === 'open' ? 'bg-emerald-500' : 'bg-slate-400'}`}></span>
-          <span>{currentShift.status === 'open' ? (isAr ? `وردية #${currentShift.shiftNumber}` : `Shift #${currentShift.shiftNumber}`) : (isAr ? 'الوردية مغلقة' : 'Shift Closed')}</span>
+          <span
+            className={`w-2 h-2 rounded-full ${
+              currentShift.status === 'open'
+                ? 'bg-emerald-500'
+                : currentEmergencySession?.status === 'open'
+                ? 'bg-amber-500'
+                : 'bg-slate-400'
+            }`}
+          ></span>
+          <span>
+            {currentShift.status === 'open'
+              ? isAr
+                ? `وردية #${currentShift.shiftNumber}`
+                : `Shift #${currentShift.shiftNumber}`
+              : currentEmergencySession?.status === 'open'
+              ? isAr
+                ? `استعجالي (${currentEmergencySession.ordersCount})`
+                : `Emergency (${currentEmergencySession.ordersCount})`
+              : isAr
+              ? 'الصندوق مسدود'
+              : 'Drawer Closed'}
+          </span>
         </button>
 
         {/* User Profile & Role Switcher */}
@@ -584,6 +614,44 @@ export const Navbar: React.FC = () => {
           <Monitor className="w-4 h-4" />
         </button>
 
+        {/* Compact Top Shop Ear Trigger (ودن الحانوت) */}
+        <button
+          type="button"
+          onClick={() => {
+            setShowPaletteDropdown(false);
+            setShowBranchDropdown(false);
+            setShowUserDropdown(false);
+            setShowKPanel(false);
+            if (arrivedShopEarCount > 0) {
+              handleTabClick('shop_ear');
+            } else {
+              window.dispatchEvent(new CustomEvent('kadi:open-shop-ear-modal'));
+            }
+          }}
+          aria-label={isAr ? 'ودن الحانوت — السلعة المطلوبة' : 'Shop Ear'}
+          title={
+            isAr
+              ? arrivedShopEarCount > 0
+                ? `ودن الحانوت: ${arrivedShopEarCount} سلع جات كتسنى واتساب للزبناء`
+                : `ودن الحانوت (${pendingShopEarCount} سلعة مطلوبة للجملة)`
+              : 'Shop Ear'
+          }
+          className="relative p-2 rounded-lg text-amber-700 dark:text-amber-300 bg-amber-50 dark:bg-amber-950/50 border border-amber-200/80 dark:border-amber-800/70 hover:bg-amber-100 dark:hover:bg-amber-900/60 transition-colors"
+        >
+          <Ear className="w-4 h-4" />
+          {(arrivedShopEarCount > 0 || pendingShopEarCount > 0) && (
+            <span
+              className={`absolute -top-1 -end-1 px-1 py-0.2 text-[9px] font-black rounded-full tabular-nums ${
+                arrivedShopEarCount > 0
+                  ? 'bg-emerald-600 text-white'
+                  : 'bg-amber-500 text-slate-950'
+              }`}
+            >
+              {arrivedShopEarCount > 0 ? arrivedShopEarCount : pendingShopEarCount}
+            </span>
+          )}
+        </button>
+
         {/* Compact Top Voice Assistant Trigger */}
         <button
           type="button"
@@ -650,6 +718,27 @@ export const Navbar: React.FC = () => {
           </button>
         ) : (
           <div className="flex items-center gap-1 shrink-0">
+            {currentEmergencySession?.status === 'open' ? (
+              <button
+                type="button"
+                onClick={() => closeEmergencySession()}
+                className="flex items-center gap-1 px-2 py-0.5 text-[10px] leading-tight font-black rounded-md bg-rose-600 hover:bg-rose-700 text-white shadow-2xs transition-colors whitespace-nowrap shrink-0"
+                title={isAr ? 'إغلاق الفتح الاستعجالي يدوياً' : 'Close Emergency Opening'}
+              >
+                <Lock className="w-2.5 h-2.5 shrink-0" />
+                <span>{isAr ? 'إغلاق استعجالي' : 'End Emg.'}</span>
+              </button>
+            ) : (
+              <button
+                type="button"
+                onClick={() => openEmergencySession()}
+                className="flex items-center gap-1 px-2 py-0.5 text-[10px] leading-tight font-black rounded-md bg-amber-500 hover:bg-amber-600 text-slate-950 shadow-2xs transition-colors whitespace-nowrap shrink-0"
+                title={isAr ? 'فتح استعجالي للصندوق بلا مدة محدودة' : 'Emergency Open (No Timer)'}
+              >
+                <Zap className="w-2.5 h-2.5 shrink-0" />
+                <span>{isAr ? 'فتح استعجالي' : 'Emergency'}</span>
+              </button>
+            )}
             <button
               type="button"
               onClick={() => {
@@ -659,23 +748,8 @@ export const Navbar: React.FC = () => {
               className="flex items-center gap-1 px-1.5 py-0.5 text-[10px] leading-tight font-bold rounded-md bg-emerald-600 hover:bg-emerald-700 text-white shadow-2xs transition-colors whitespace-nowrap shrink-0"
               title={isAr ? 'فتح الصندوق' : 'Open Drawer'}
             >
+              <Unlock className="w-2.5 h-2.5 shrink-0" />
               <span>{isAr ? 'فتح' : 'Open'}</span>
-            </button>
-            <button
-              type="button"
-              onClick={() => {
-                setShowKPanel(false);
-                sessionStorage.setItem('kadi_open_daily_report', '1');
-                handleTabClick('shifts');
-                window.setTimeout(() => {
-                  window.dispatchEvent(new CustomEvent('kadi:open-daily-report'));
-                }, 60);
-              }}
-              className="flex items-center gap-1 px-1.5 py-0.5 text-[10px] leading-tight font-bold rounded-md bg-rose-600 hover:bg-rose-700 text-white shadow-2xs transition-colors whitespace-nowrap shrink-0"
-              title={isAr ? 'تقرير الإغلاق النهاري' : 'Daily Closing Report'}
-            >
-              <Lock className="w-2.5 h-2.5 shrink-0" />
-              <span>{isAr ? 'إغلاق' : 'EOD'}</span>
             </button>
           </div>
         )}

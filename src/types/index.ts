@@ -211,6 +211,8 @@ export interface Order {
   remoteOrderId?: string;
   customerPhone?: string;
   customerAddress?: string;
+  isEmergencyOvertime?: boolean;
+  emergencySessionId?: string;
 }
 
 export interface OfflineSaleQueueItem {
@@ -272,6 +274,39 @@ export interface Shift {
   closingNotes?: string;
   retainedFloatForNextDay?: number;
   merchantWithdrawnCash?: number;
+}
+
+export interface EmergencyOpeningSession {
+  id: string;
+  openedAt: string;
+  closedAt?: string;
+  status: 'open' | 'closed';
+  openedBy: string;
+  note?: string;
+  ordersCount: number;
+  totalSales: number;
+  cashSales: number;
+  creditSales: number;
+  customerKeys: string[];
+  dateKey: string;
+}
+
+export interface ShopEarRequest {
+  id: string;
+  itemName: string;
+  normalizedName: string;
+  productId?: string;
+  estimatedUnitPrice?: number;
+  customerId?: string;
+  customerName?: string;
+  customerPhone?: string;
+  requestedAt: string;
+  dateKey: string;
+  inputSource: 'manual' | 'voice' | 'catalog';
+  status: 'pending' | 'arrived' | 'notified';
+  arrivedAt?: string;
+  notifiedAt?: string;
+  notes?: string;
 }
 
 export type UserRole = 'manager' | 'cashier' | 'courier';

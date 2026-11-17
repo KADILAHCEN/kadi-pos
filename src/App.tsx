@@ -21,6 +21,9 @@ import { RemoteSalesView } from './components/remote/RemoteSalesView';
 import { PublicCatalogView } from './components/remote/PublicCatalogView';
 import { CpuTaxView } from './components/cpu/CpuTaxView';
 import { AnalyticsView } from './components/analytics/AnalyticsView';
+import { CustomersPeakView } from './components/analytics/CustomersPeakView';
+import { ShopEarView } from './components/shopEar/ShopEarView';
+import { ShopEarQuickModal } from './components/shopEar/ShopEarQuickModal';
 import { AiAssistantView } from './components/ai/AiAssistantView';
 import { FloatingAiChatButton } from './components/ai/FloatingAiChatButton';
 import { VoiceAssistantModal } from './components/voice/VoiceAssistantModal';
@@ -51,7 +54,9 @@ import {
   AlertTriangle,
   X,
   Download,
-  BellRing
+  BellRing,
+  Zap,
+  Lock
 } from 'lucide-react';
 
 import { OfflineIndicator } from './components/pwa/OfflineIndicator';
@@ -77,7 +82,10 @@ const PosMainContent: React.FC = () => {
     buildFullBackupObject,
     currencySymbol,
     notificationPermission,
-    requestNotificationPermission
+    requestNotificationPermission,
+    currentShift,
+    currentEmergencySession,
+    closeEmergencySession
   } = usePos();
   const isAr = language === 'ar';
   const isFr = language === 'fr';
@@ -474,6 +482,34 @@ const PosMainContent: React.FC = () => {
           </div>
         )}
 
+      {/* Active Emergency Opening Bar (only shown while emergency open is active) */}
+      {currentShift.status === 'closed' && currentEmergencySession?.status === 'open' && (
+        <div className="bg-amber-50 dark:bg-amber-950/50 border-b border-amber-300 dark:border-amber-800 px-3 py-1 flex items-center justify-between gap-2 text-xs">
+          <div className="flex items-center gap-2 min-w-0 text-amber-900 dark:text-amber-200 font-bold truncate">
+            <Zap className="w-3.5 h-3.5 text-amber-600 dark:text-amber-400 shrink-0" />
+            <span className="truncate">
+              {isAr
+                ? `فتح استعجالي مفتوح (بلا مدة) · الوقت بدل الضائع: ${Math.max(
+                    currentEmergencySession.customerKeys.length,
+                    currentEmergencySession.ordersCount
+                  )} زبون · ${currentEmergencySession.totalSales.toFixed(2)} ${currencySymbol}`
+                : `Emergency Open Active · Overtime: ${Math.max(
+                    currentEmergencySession.customerKeys.length,
+                    currentEmergencySession.ordersCount
+                  )} customers · ${currentEmergencySession.totalSales.toFixed(2)} ${currencySymbol}`}
+            </span>
+          </div>
+          <button
+            type="button"
+            onClick={() => closeEmergencySession()}
+            className="px-2.5 py-0.5 rounded-md bg-rose-600 hover:bg-rose-700 text-white font-black text-[11px] flex items-center gap-1 shrink-0 transition-colors whitespace-nowrap"
+          >
+            <Lock className="w-3 h-3" />
+            <span>{isAr ? 'إغلاق بيدي' : 'Close'}</span>
+          </button>
+        </div>
+      )}
+
       {/* Main View Area */}
       <main className="flex-1 flex overflow-hidden relative pb-16 lg:pb-0">
         {currentTab === 'pos' && (
@@ -553,6 +589,8 @@ const PosMainContent: React.FC = () => {
         {currentTab === 'remote_sales' && <RemoteSalesView />}
         {currentTab === 'cpu_tax' && <CpuTaxView />}
         {currentTab === 'analytics' && <AnalyticsView />}
+        {currentTab === 'customers_peak' && <CustomersPeakView />}
+        {currentTab === 'shop_ear' && <ShopEarView />}
         {currentTab === 'ai_assistant' && <AiAssistantView />}
         {currentTab === 'alerts' && <AlertsView />}
         {currentTab === 'settings' && <SettingsView />}
@@ -588,6 +626,8 @@ const PosMainContent: React.FC = () => {
           onScanned={handleBarcodeScanned}
         />
       )}
+
+      <ShopEarQuickModal />
 
       {/* PIN Gate Modal for protected routes */}
       <PinGateModal

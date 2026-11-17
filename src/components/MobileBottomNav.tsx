@@ -12,7 +12,8 @@ import {
   Moon,
   ShieldAlert,
   Sun,
-  X
+  X,
+  Zap
 } from 'lucide-react';
 import { AppTabId, usePos } from '../context/PosContext';
 import { POS_TAB_CATALOG, resolveTabVisual } from '../utils/tabCustomization';
@@ -44,7 +45,10 @@ export const MobileBottomNav: React.FC<MobileBottomNavProps> = ({ onSelectProtec
     users,
     currentUser,
     setCurrentUserId,
-    currentShift
+    currentShift,
+    currentEmergencySession,
+    openEmergencySession,
+    closeEmergencySession
   } = usePos();
 
   const [showMoreSheet, setShowMoreSheet] = useState(false);
@@ -368,7 +372,7 @@ export const MobileBottomNav: React.FC<MobileBottomNavProps> = ({ onSelectProtec
 
               <div className="flex items-center justify-between gap-2 pt-1">
                 <PWAInstallButton variant="navbar" />
-                {currentShift.status === 'open' && (
+                {currentShift.status === 'open' ? (
                   <button
                     type="button"
                     onClick={() => {
@@ -382,6 +386,30 @@ export const MobileBottomNav: React.FC<MobileBottomNavProps> = ({ onSelectProtec
                   >
                     <Lock className="w-3.5 h-3.5" />
                     <span>{isAr ? 'إغلاق صندوق آخر النهار' : 'End-of-Day Close'}</span>
+                  </button>
+                ) : currentEmergencySession?.status === 'open' ? (
+                  <button
+                    type="button"
+                    onClick={() => {
+                      closeEmergencySession();
+                      setShowMoreSheet(false);
+                    }}
+                    className="min-h-[44px] flex-1 px-4 py-2 rounded-xl bg-rose-600 hover:bg-rose-700 text-white text-xs font-black flex items-center justify-center gap-1.5"
+                  >
+                    <Lock className="w-3.5 h-3.5" />
+                    <span>{isAr ? 'إغلاق الفتح الاستعجالي' : 'Close Emergency'}</span>
+                  </button>
+                ) : (
+                  <button
+                    type="button"
+                    onClick={() => {
+                      openEmergencySession();
+                      setShowMoreSheet(false);
+                    }}
+                    className="min-h-[44px] flex-1 px-4 py-2 rounded-xl bg-amber-500 hover:bg-amber-600 text-slate-950 text-xs font-black flex items-center justify-center gap-1.5"
+                  >
+                    <Zap className="w-3.5 h-3.5" />
+                    <span>{isAr ? 'فتح استعجالي (بلا مدة)' : 'Emergency Open'}</span>
                   </button>
                 )}
               </div>

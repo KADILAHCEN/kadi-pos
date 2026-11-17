@@ -29,7 +29,8 @@ import {
   Trash2,
   Calendar,
   ScanLine,
-  BookOpen
+  BookOpen,
+  Ear
 } from 'lucide-react';
 
 interface ProductGridProps {
@@ -46,8 +47,14 @@ export const ProductGrid: React.FC<ProductGridProps> = ({ onOpenBarcodeScanner }
     currencySymbol,
     language,
     setCurrentTab,
-    customers
+    customers,
+    shopEarRequests
   } = usePos();
+
+  const activeShopEarCount = useMemo(
+    () => shopEarRequests.filter((r) => r.status !== 'notified').length,
+    [shopEarRequests]
+  );
 
   const totalCreditDebt = useMemo(
     () => customers.reduce((sum, c) => sum + (c.balance > 0 ? c.balance : 0), 0),
@@ -286,6 +293,21 @@ export const ProductGrid: React.FC<ProductGridProps> = ({ onOpenBarcodeScanner }
             <BookOpen className="w-3.5 h-3.5 shrink-0" />
             <span className="hidden sm:inline">{isAr ? 'الكريدي' : isFr ? 'Crédit' : 'Credit'}</span>
           </button>
+
+          <button
+            type="button"
+            onClick={() => window.dispatchEvent(new CustomEvent('kadi:open-shop-ear-modal'))}
+            className="relative h-8 flex items-center justify-center gap-1 px-2 text-[11px] font-extrabold bg-orange-500 hover:bg-orange-600 text-white rounded-lg shadow-2xs transition-all active:scale-95 whitespace-nowrap shrink-0"
+            title={isAr ? 'ودن الحانوت — سجل سلعة سول عليها زبون وما لقيتهاش' : 'Shop Ear — Log Requested Item'}
+          >
+            <Ear className="w-3.5 h-3.5 shrink-0" />
+            <span className="hidden md:inline">{isAr ? 'ودن الحانوت' : 'Shop Ear'}</span>
+            {activeShopEarCount > 0 && (
+              <span className="px-1 py-0.2 rounded-full bg-slate-950 text-white text-[9px] font-black tabular-nums">
+                {activeShopEarCount}
+              </span>
+            )}
+          </button>
         </div>
       </div>
 
@@ -388,13 +410,29 @@ export const ProductGrid: React.FC<ProductGridProps> = ({ onOpenBarcodeScanner }
           <div className="flex flex-col items-center justify-center h-64 text-center p-6 text-slate-400">
             <Search className="w-8 h-8 mb-2 stroke-1 text-slate-300 dark:text-slate-600" />
             <p className="text-sm font-semibold">{isAr ? 'لا توجد منتجات مطابقة للبحث' : isFr ? 'Aucun article trouvé' : 'No matching products'}</p>
-            <button
-              onClick={() => setShowAddProductModal(true)}
-              className="mt-3 px-3.5 py-2 text-xs font-bold bg-emerald-600 hover:bg-emerald-700 text-white rounded-xl shadow-xs flex items-center gap-1.5 transition-all active:scale-95"
-            >
-              <PackagePlus className="w-3.5 h-3.5" />
-              <span>{isAr ? 'إضافة هذا الصنف الآن' : 'Add Item Now'}</span>
-            </button>
+            <div className="mt-3 flex flex-wrap items-center justify-center gap-2">
+              <button
+                onClick={() => setShowAddProductModal(true)}
+                className="px-3.5 py-2 text-xs font-bold bg-emerald-600 hover:bg-emerald-700 text-white rounded-xl shadow-xs flex items-center gap-1.5 transition-all active:scale-95"
+              >
+                <PackagePlus className="w-3.5 h-3.5" />
+                <span>{isAr ? 'إضافة هذا الصنف الآن' : 'Add Item Now'}</span>
+              </button>
+              <button
+                type="button"
+                onClick={() =>
+                  window.dispatchEvent(
+                    new CustomEvent('kadi:open-shop-ear-modal', {
+                      detail: { initialQuery: searchQuery.trim() }
+                    })
+                  )
+                }
+                className="px-3.5 py-2 text-xs font-bold bg-amber-500 hover:bg-amber-600 text-slate-950 rounded-xl shadow-xs flex items-center gap-1.5 transition-all active:scale-95"
+              >
+                <Ear className="w-3.5 h-3.5" />
+                <span>{isAr ? 'سجلها في ودن الحانوت' : 'Log in Shop Ear'}</span>
+              </button>
+            </div>
           </div>
         ) : (
           <div className="grid grid-cols-2 sm:grid-cols-3 xl:grid-cols-4 gap-2.5 sm:gap-3">

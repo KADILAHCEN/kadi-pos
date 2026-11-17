@@ -27,7 +27,10 @@ import {
   Clock,
   FileText,
   CreditCard,
-  RotateCcw
+  RotateCcw,
+  Zap,
+  Users,
+  Ear
 } from 'lucide-react';
 import {
   ResponsiveContainer,
@@ -82,6 +85,11 @@ export const ShiftsView: React.FC = () => {
     closeCurrentShift,
     addCashTransaction,
     shiftsHistory,
+    currentEmergencySession,
+    openEmergencySession,
+    closeEmergencySession,
+    todayEmergencyStats,
+    shopEarRequests,
     currencySymbol,
     orders,
     expenses,
@@ -129,11 +137,15 @@ export const ShiftsView: React.FC = () => {
     const shiftStartDateStr = currentShift.openedAt.slice(0, 10);
 
     const activeOrders = orders.filter(
-      (o) => new Date(o.date).getTime() >= shiftStartTime && o.status === 'completed'
+      (o) =>
+        new Date(o.date).getTime() >= shiftStartTime &&
+        o.status === 'completed' &&
+        !o.isEmergencyOvertime
     );
     const refundOrders = orders.filter(
       (o) =>
         new Date(o.date).getTime() >= shiftStartTime &&
+        !o.isEmergencyOvertime &&
         (o.status === 'refunded' || o.status === 'partially_refunded')
     );
 
@@ -585,10 +597,19 @@ export const ShiftsView: React.FC = () => {
               className={`px-3 py-1 text-xs font-extrabold rounded-full ${
                 currentShift.status === 'open'
                   ? 'bg-emerald-50 dark:bg-emerald-950/60 text-emerald-700 dark:text-emerald-400 border border-emerald-200 dark:border-emerald-800'
+                  : currentEmergencySession?.status === 'open'
+                  ? 'bg-amber-50 dark:bg-amber-950/60 text-amber-800 dark:text-amber-300 border border-amber-300 dark:border-amber-700'
                   : 'bg-slate-100 dark:bg-slate-800 text-slate-600 dark:text-slate-300 border border-slate-200 dark:border-slate-700'
               }`}
             >
-              {currentShift.status === 'open' ? t.open_shift : t.closed_shift} · #{currentShift.shiftNumber}
+              {currentShift.status === 'open'
+                ? t.open_shift
+                : currentEmergencySession?.status === 'open'
+                ? isAr
+                  ? 'فتح استعجالي مفتوح · بلا مدة محدودة'
+                  : 'Emergency Open · Unlimited'
+                : t.closed_shift}{' '}
+              · #{currentShift.shiftNumber}
             </span>
             <span className="text-xs text-slate-400 font-medium">
               {isAr ? 'بدأت في:' : 'Opened:'}{' '}
@@ -654,16 +675,202 @@ export const ShiftsView: React.FC = () => {
               </button>
             </>
           ) : (
-            <button
-              onClick={() => setShowOpenShiftModal(true)}
-              className="px-5 py-2.5 text-xs font-bold rounded-xl bg-emerald-600 hover:bg-emerald-700 text-white transition-colors flex items-center gap-2 shadow-sm"
-            >
-              <Unlock className="w-4 h-4" />
-              <span>{t.open_shift_btn}</span>
-            </button>
+            <div className="flex flex-wrap items-center gap-2">
+              {currentEmergencySession?.status === 'open' ? (
+                <button
+                  type="button"
+                  onClick={() => closeEmergencySession()}
+                  className="px-4 py-2.5 text-xs sm:text-sm font-black rounded-xl bg-rose-600 hover:bg-rose-700 text-white transition-colors flex items-center gap-2 shadow-sm whitespace-nowrap shrink-0"
+                >
+                  <Lock className="w-4 h-4" />
+                  <span>{isAr ? 'إغلاق الفتح الاستعجالي بيدي' : 'Close Emergency Opening'}</span>
+                </button>
+              ) : (
+                <button
+                  type="button"
+                  onClick={() => openEmergencySession()}
+                  className="px-4 py-2.5 text-xs sm:text-sm font-black rounded-xl bg-amber-500 hover:bg-amber-600 text-slate-950 transition-colors flex items-center gap-2 shadow-sm whitespace-nowrap shrink-0"
+                >
+                  <Zap className="w-4 h-4" />
+                  <span>{isAr ? 'فتح استعجالي (بلا مدة)' : 'Emergency Open'}</span>
+                </button>
+              )}
+              <button
+                onClick={() => setShowOpenShiftModal(true)}
+                className="px-4 py-2.5 text-xs font-bold rounded-xl bg-emerald-600 hover:bg-emerald-700 text-white transition-colors flex items-center gap-2 shadow-sm whitespace-nowrap shrink-0"
+              >
+                <Unlock className="w-4 h-4" />
+                <span>{t.open_shift_btn}</span>
+              </button>
+            </div>
           )}
         </div>
       </div>
+
+      {/* Emergency Re-Opening & Overtime Sales Card (الفتح الاستعجالي و الوقت بدل الضائع) */}
+      {(currentShift.status === 'closed' || todayEmergencyStats.openingsCount > 0) && (
+        <div
+          className={`rounded-2xl p-4 sm:p-5 border transition-colors ${
+            currentEmergencySession?.status === 'open'
+              ? 'bg-amber-50/70 dark:bg-amber-950/20 border-amber-300 dark:border-amber-800'
+              : 'bg-white dark:bg-slate-900 border-slate-200 dark:border-slate-800'
+          }`}
+        >
+          <div className="flex flex-col lg:flex-row lg:items-center justify-between gap-4">
+            <div className="space-y-1.5">
+              <div className="flex flex-wrap items-center gap-2">
+                <span
+                  className={`inline-flex items-center gap-1.5 px-2.5 py-0.5 rounded-lg text-[11px] font-bold ${
+                    currentEmergencySession?.status === 'open'
+                      ? 'bg-amber-500 text-slate-950'
+                      : 'bg-slate-100 dark:bg-slate-800 text-slate-700 dark:text-slate-300'
+                  }`}
+                >
+                  <Zap className="w-3.5 h-3.5" />
+                  <span>
+                    {currentEmergencySession?.status === 'open'
+                      ? isAr
+                        ? 'الفتح الاستعجالي شغال الآن (مفتوح بلا مدة محدودة)'
+                        : 'Emergency Open Active (No Auto-Close Timer)'
+                      : isAr
+                      ? 'الفتح الاستعجالي والوقت بدل الضائع'
+                      : 'Emergency Re-Opening & Overtime'}
+                  </span>
+                </span>
+                {currentEmergencySession?.status === 'open' && (
+                  <span className="text-xs font-mono tabular-nums text-amber-800 dark:text-amber-300">
+                    {isAr ? 'تحلّ في:' : 'Opened:'}{' '}
+                    {new Date(currentEmergencySession.openedAt).toLocaleTimeString([], {
+                      hour: '2-digit',
+                      minute: '2-digit'
+                    })}
+                  </span>
+                )}
+              </div>
+
+              <p className="text-sm sm:text-base font-extrabold text-slate-900 dark:text-white">
+                {isAr
+                  ? `اليوم حليتي استعجالي ${todayEmergencyStats.openingsCount} مرات، و جاوك ${todayEmergencyStats.customersCount} زبون من بعد السدان`
+                  : `Today you opened emergency ${todayEmergencyStats.openingsCount} times, serving ${todayEmergencyStats.customersCount} customers after closing`}
+              </p>
+
+              <p className="text-xs text-slate-500 dark:text-slate-400">
+                {isAr
+                  ? 'مبيعات الوقت بدل الضائع كتتحسب بوحدها، والصندوق كيبقى محلول حتى تسدو بيدك ملي كتسالي الروينة.'
+                  : 'Overtime sales are tracked separately from your closed shift, and the drawer stays open until you manually close it.'}
+              </p>
+            </div>
+
+            <div className="flex flex-wrap items-center gap-3 shrink-0">
+              <div className="px-3.5 py-2 rounded-xl bg-slate-50 dark:bg-slate-800/70 border border-slate-200 dark:border-slate-700">
+                <div className="text-[11px] font-semibold text-slate-500 dark:text-slate-400">
+                  {isAr ? 'مبيعات الوقت بدل الضائع' : 'Overtime Sales'}
+                </div>
+                <div className="text-base font-black font-mono tabular-nums text-amber-700 dark:text-amber-300">
+                  {todayEmergencyStats.totalSales.toFixed(2)} {currencySymbol}
+                </div>
+              </div>
+
+              <div className="px-3.5 py-2 rounded-xl bg-slate-50 dark:bg-slate-800/70 border border-slate-200 dark:border-slate-700">
+                <div className="text-[11px] font-semibold text-slate-500 dark:text-slate-400">
+                  {isAr ? 'زبناء بعد السدان' : 'After-Hours Customers'}
+                </div>
+                <div className="text-base font-black font-mono tabular-nums text-slate-900 dark:text-white flex items-center gap-1.5">
+                  <Users className="w-4 h-4 text-amber-600 dark:text-amber-400" />
+                  <span>{todayEmergencyStats.customersCount}</span>
+                </div>
+              </div>
+
+              {currentShift.status === 'closed' && (
+                currentEmergencySession?.status === 'open' ? (
+                  <button
+                    type="button"
+                    onClick={() => closeEmergencySession()}
+                    className="px-4 py-2.5 rounded-xl bg-rose-600 hover:bg-rose-700 text-white text-xs font-black flex items-center gap-1.5 transition-colors whitespace-nowrap shrink-0"
+                  >
+                    <Lock className="w-3.5 h-3.5" />
+                    <span>{isAr ? 'إغلاق الفتح الاستعجالي' : 'Close Emergency'}</span>
+                  </button>
+                ) : (
+                  <button
+                    type="button"
+                    onClick={() => openEmergencySession()}
+                    className="px-4 py-2.5 rounded-xl bg-amber-500 hover:bg-amber-600 text-slate-950 text-xs font-black flex items-center gap-1.5 transition-colors whitespace-nowrap shrink-0"
+                  >
+                    <Zap className="w-3.5 h-3.5" />
+                    <span>{isAr ? 'فتح استعجالي الآن' : 'Emergency Open'}</span>
+                  </button>
+                )
+              )}
+
+              <button
+                type="button"
+                onClick={() => setCurrentTab('customers_peak')}
+                className="px-3.5 py-2.5 rounded-xl border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-800 hover:bg-slate-50 dark:hover:bg-slate-700 text-xs font-bold text-slate-700 dark:text-slate-200 transition-colors whitespace-nowrap shrink-0"
+              >
+                {isAr ? 'صفحة الزبناء و الذروة' : 'Customers & Peak'}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Nightly Shop Ear Summary Strip (خلاصة ودن الحانوت الليلية) */}
+      {shopEarRequests.length > 0 && (() => {
+        const todayKey = getLocalTodayYMD();
+        const weekAgoMs = Date.now() - 7 * 86400000;
+        const todayReqs = shopEarRequests.filter((r) => r.dateKey === todayKey && r.status !== 'notified');
+        const weekReqs = shopEarRequests.filter((r) => {
+          const ms = new Date(r.requestedAt).getTime();
+          return !Number.isNaN(ms) && ms >= weekAgoMs && r.status !== 'notified';
+        });
+        const counts = new Map<string, { name: string; today: number; week: number }>();
+        weekReqs.forEach((r) => {
+          const prev = counts.get(r.normalizedName) || { name: r.itemName, today: 0, week: 0 };
+          prev.week += 1;
+          if (r.dateKey === todayKey) prev.today += 1;
+          counts.set(r.normalizedName, prev);
+        });
+        const topItem = Array.from(counts.values()).sort((a, b) => b.today - a.today || b.week - a.week)[0];
+        const arrivedCnt = shopEarRequests.filter((r) => r.status === 'arrived').length;
+        if (!topItem && arrivedCnt === 0) return null;
+
+        return (
+          <div className="rounded-2xl p-4 bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 flex flex-col sm:flex-row sm:items-center justify-between gap-3">
+            <div className="flex items-start gap-2.5">
+              <div className="w-8 h-8 rounded-xl bg-amber-100 dark:bg-amber-950/60 text-amber-700 dark:text-amber-300 flex items-center justify-center shrink-0">
+                <Ear className="w-4 h-4" />
+              </div>
+              <div className="text-xs space-y-0.5">
+                <div className="font-black text-slate-900 dark:text-white">
+                  {isAr ? 'خلاصة ودن الحانوت (السلعة اللي كتخسرك فلوس)' : 'Shop Ear Evening Summary'}
+                </div>
+                {topItem && (
+                  <p className="text-slate-600 dark:text-slate-300 font-semibold">
+                    {isAr
+                      ? `اليوم ${todayReqs.length} طلب (${topItem.today} على "${topItem.name}") · هاد السيمانة ${topItem.week} واحد سول على "${topItem.name}" و ما جبتيهاش`
+                      : `Today: ${todayReqs.length} missed · This week: ${topItem.week} asked for "${topItem.name}"`}
+                  </p>
+                )}
+              </div>
+            </div>
+
+            <button
+              type="button"
+              onClick={() => setCurrentTab('shop_ear')}
+              className="px-3.5 py-2 rounded-xl bg-amber-500 hover:bg-amber-600 text-slate-950 text-xs font-black whitespace-nowrap shrink-0"
+            >
+              {arrivedCnt > 0
+                ? isAr
+                  ? `ورقة الجملة وإخبار ${arrivedCnt} زبون`
+                  : `Wholesale & Notify (${arrivedCnt})`
+                : isAr
+                ? 'فتح ورقة الجملة (ودن الحانوت)'
+                : 'Open Wholesale Sheet'}
+            </button>
+          </div>
+        );
+      })()}
 
       {/* End-of-Day Cash Drawer & Real Net Profit Breakdown Cards */}
       <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4">

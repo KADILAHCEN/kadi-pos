@@ -31,7 +31,8 @@ import {
   FileText,
   PieChart,
   Briefcase,
-  Award
+  Award,
+  Ear
 } from 'lucide-react';
 
 export type TabIconKey =
@@ -66,7 +67,8 @@ export type TabIconKey =
   | 'file_text'
   | 'pie_chart'
   | 'briefcase'
-  | 'award';
+  | 'award'
+  | 'ear';
 
 export type TabColorKey =
   | 'emerald'
@@ -117,6 +119,7 @@ export const TAB_ICON_OPTIONS: TabIconOption[] = [
   { key: 'heart', labelAr: 'مفضل', labelEn: 'Heart', icon: Heart },
   { key: 'award', labelAr: 'وسام', labelEn: 'Award', icon: Award },
   { key: 'briefcase', labelAr: 'عمل', labelEn: 'Briefcase', icon: Briefcase },
+  { key: 'ear', labelAr: 'ودن الحانوت', labelEn: 'Shop Ear', icon: Ear },
   { key: 'smartphone', labelAr: 'هاتف', labelEn: 'Phone', icon: Smartphone },
   { key: 'printer', labelAr: 'طابعة', labelEn: 'Printer', icon: Printer },
   { key: 'settings', labelAr: 'إعدادات', labelEn: 'Settings', icon: Settings }
@@ -304,6 +307,8 @@ export interface PosTabDefinition {
     | 'remote_sales'
     | 'cpu_tax'
     | 'analytics'
+    | 'customers_peak'
+    | 'shop_ear'
     | 'ai_assistant'
     | 'alerts'
     | 'settings';
@@ -425,6 +430,30 @@ export const POS_TAB_CATALOG: PosTabDefinition[] = [
     shortLabelEn: 'Reports',
     defaultIcon: 'trending_up',
     defaultColor: 'emerald',
+    showInTopNav: true
+  },
+  {
+    id: 'customers_peak',
+    labelAr: 'الزبناء و الذروة',
+    labelFr: 'Clients & Pics',
+    labelEn: 'Customers & Peak',
+    shortLabelAr: 'الذروة',
+    shortLabelFr: 'Pics',
+    shortLabelEn: 'Peak',
+    defaultIcon: 'bar_chart',
+    defaultColor: 'amber',
+    showInTopNav: true
+  },
+  {
+    id: 'shop_ear',
+    labelAr: 'ودن الحانوت',
+    labelFr: 'Demandes Clients',
+    labelEn: 'Shop Ear',
+    shortLabelAr: 'ودن الحانوت',
+    shortLabelFr: 'Demandes',
+    shortLabelEn: 'Shop Ear',
+    defaultIcon: 'ear',
+    defaultColor: 'orange',
     showInTopNav: true
   },
   {
