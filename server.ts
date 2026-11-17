@@ -52,7 +52,7 @@ function safeParseGeminiJson<T>(rawText: string, fallback: T): T {
 
 async function startServer() {
   const app = express();
-  app.use(express.json({ limit: '5mb' }));
+  app.use(express.json({ limit: '15mb' }));
 
   app.post('/api/ai/analyze', async (req, res) => {
     const ai = createGeminiClient();
@@ -424,6 +424,120 @@ If audio is provided, transcribe what was said verbatim into "transcript" in Ara
     } catch (error) {
       const message = error instanceof Error ? error.message : 'Failed to transcribe audio';
       console.error('Gemini transcribe error:', error);
+      return res.status(500).json({ error: message });
+    }
+  });
+
+  app.post('/api/ai/scan-purchase-invoice', async (req, res) => {
+    const ai = createGeminiClient();
+    if (!ai) {
+      return res.status(503).json({
+        error: 'Gemini API key is not configured on the server.',
+        code: 'MISSING_API_KEY'
+      });
+    }
+
+    try {
+      const {
+        imageBase64,
+        mimeType = 'image/jpeg',
+        existingProducts = [],
+        language = 'ar'
+      } = req.body as {
+        imageBase64?: string;
+        mimeType?: string;
+        existingProducts?: string[];
+        language?: 'ar' | 'fr' | 'en';
+      };
+
+      if (!imageBase64) {
+        return res.status(400).json({ error: 'imageBase64 is required' });
+      }
+
+      const cleanBase64 = imageBase64.replace(/^data:[^;]+;base64,/, '');
+
+      const systemInstruction = `You are a Moroccan retail purchase invoice OCR & inventory intake parser for Kadi POS (الحانوت).
+Examine the photographed supplier invoice, receipt, or handwritten delivery note (bon de livraison / بون) carefully.
+Extract:
+1) supplierName: Supplier or distributor company name (in Arabic or French as shown).
+2) supplierIce: Moroccan ICE number (Identifiant Commun de l'Entreprise, usually 15 digits) if clearly visible on the document, otherwise "".
+3) supplierPhone: Supplier phone number if visible, otherwise "".
+4) invoiceNumber: Invoice or BL number if printed, otherwise "".
+5) invoiceDate: Date formatted strictly as YYYY-MM-DD if visible, otherwise "".
+6) hasOfficialMarkers: true if the document is an official printed tax invoice containing ICE, IF, RC, Patente, or TVA breakdown; false if it is an informal handwritten note/bon without official tax identifiers.
+7) totalAmount: Total purchase amount in MAD (number). If only item subtotals exist, sum them accurately.
+8) items: Every purchased line item with:
+   - rawName: Clean product name (in Arabic/French as printed, concise).
+   - matchedCatalogName: Exact closest match from the store catalog list if confidently matching, else "".
+   - quantity: Numeric quantity purchased (default 1 if unclear).
+   - unitCost: Cost per unit in MAD (if only line total is visible, divide by quantity; 0 if no prices are shown).
+   - unitType: One of "piece", "kg", "liter", "box".
+
+Known catalog products (hint for matching): ${existingProducts.slice(0, 400).join(', ')}
+Prefer clear ${language === 'ar' ? 'Arabic/French' : 'Latin'} product naming matching how grocery owners write items.`;
+
+      const response = await ai.models.generateContent({
+        model: GEMINI_MODEL,
+        contents: {
+          parts: [
+            {
+              inlineData: {
+                mimeType,
+                data: cleanBase64
+              }
+            },
+            {
+              text: 'Read this purchase invoice image and extract supplier info, Moroccan ICE (if present), and every purchased product with quantity and unit cost into JSON.'
+            }
+          ]
+        },
+        config: {
+          systemInstruction,
+          responseMimeType: 'application/json',
+          responseSchema: {
+            type: Type.OBJECT,
+            properties: {
+              supplierName: { type: Type.STRING },
+              supplierIce: { type: Type.STRING },
+              supplierPhone: { type: Type.STRING },
+              invoiceNumber: { type: Type.STRING },
+              invoiceDate: { type: Type.STRING },
+              hasOfficialMarkers: { type: Type.BOOLEAN },
+              totalAmount: { type: Type.NUMBER },
+              items: {
+                type: Type.ARRAY,
+                items: {
+                  type: Type.OBJECT,
+                  properties: {
+                    rawName: { type: Type.STRING },
+                    matchedCatalogName: { type: Type.STRING },
+                    quantity: { type: Type.NUMBER },
+                    unitCost: { type: Type.NUMBER },
+                    unitType: { type: Type.STRING }
+                  }
+                }
+              }
+            }
+          }
+        }
+      });
+
+      const parsed = safeParseGeminiJson<Record<string, unknown>>(response.text || '{}', {
+        supplierName: '',
+        supplierIce: '',
+        supplierPhone: '',
+        invoiceNumber: '',
+        invoiceDate: '',
+        hasOfficialMarkers: false,
+        totalAmount: 0,
+        items: []
+      });
+
+      return res.json({ invoice: parsed });
+    } catch (error) {
+      const message =
+        error instanceof Error ? error.message : 'Failed to analyze purchase invoice image';
+      console.error('Gemini scan purchase invoice error:', error);
       return res.status(500).json({ error: message });
     }
   });

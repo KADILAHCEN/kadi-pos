@@ -309,6 +309,7 @@ export interface PosTabDefinition {
     | 'analytics'
     | 'customers_peak'
     | 'shop_ear'
+    | 'dream'
     | 'ai_assistant'
     | 'alerts'
     | 'settings';
@@ -454,6 +455,18 @@ export const POS_TAB_CATALOG: PosTabDefinition[] = [
     shortLabelEn: 'Shop Ear',
     defaultIcon: 'ear',
     defaultColor: 'orange',
+    showInTopNav: true
+  },
+  {
+    id: 'dream',
+    labelAr: 'الحلم ديال المحال',
+    labelFr: 'Mon Rêve',
+    labelEn: 'Shop Dream',
+    shortLabelAr: 'الحلم',
+    shortLabelFr: 'Rêve',
+    shortLabelEn: 'Dream',
+    defaultIcon: 'star',
+    defaultColor: 'amber',
     showInTopNav: true
   },
   {

@@ -102,6 +102,7 @@ export type AppTabId =
   | 'analytics'
   | 'customers_peak'
   | 'shop_ear'
+  | 'dream'
   | 'ai_assistant'
   | 'alerts'
   | 'settings';

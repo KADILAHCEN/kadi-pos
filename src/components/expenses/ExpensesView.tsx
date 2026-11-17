@@ -27,7 +27,8 @@ import {
   Filter,
   FileText,
   Phone,
-  Clock
+  Clock,
+  Camera
 } from 'lucide-react';
 
 const CategoryIcon: React.FC<{ category: ExpenseCategory; className?: string }> = ({
@@ -90,6 +91,7 @@ export const ExpensesView: React.FC = () => {
 
   // Supplier Invoice Form & Payment State
   const [supName, setSupName] = useState('');
+  const [supIce, setSupIce] = useState('');
   const [supPhone, setSupPhone] = useState('');
   const [supInvoiceNumber, setSupInvoiceNumber] = useState('');
   const [supDate, setSupDate] = useState(todayStr);
@@ -98,7 +100,7 @@ export const ExpensesView: React.FC = () => {
   const [supPaid, setSupPaid] = useState('0');
   const [supNotes, setSupNotes] = useState('');
   const [supSearch, setSupSearch] = useState('');
-  const [supStatusFilter, setSupStatusFilter] = useState<'all' | 'unpaid' | 'partial' | 'paid'>('all');
+  const [supStatusFilter, setSupStatusFilter] = useState<'all' | 'unpaid' | 'partial' | 'paid' | 'ice_archive'>('all');
   const [payDraftMap, setPayDraftMap] = useState<Record<string, string>>({});
   const [supConfirmDeleteId, setSupConfirmDeleteId] = useState<string | null>(null);
 
@@ -119,11 +121,16 @@ export const ExpensesView: React.FC = () => {
     const q = supSearch.trim().toLowerCase();
     return supplierInvoices
       .filter((inv) => {
-        if (supStatusFilter !== 'all' && inv.status !== supStatusFilter) return false;
+        if (supStatusFilter === 'ice_archive') {
+          if (inv.invoiceType !== 'official_ice' && !inv.supplierIce) return false;
+        } else if (supStatusFilter !== 'all' && inv.status !== supStatusFilter) {
+          return false;
+        }
         if (!q) return true;
         return (
           inv.supplierName.toLowerCase().includes(q) ||
           inv.invoiceNumber.toLowerCase().includes(q) ||
+          (inv.supplierIce || '').toLowerCase().includes(q) ||
           (inv.supplierPhone || '').toLowerCase().includes(q)
         );
       })
@@ -142,6 +149,8 @@ export const ExpensesView: React.FC = () => {
 
     addSupplierInvoice({
       supplierName: supName.trim(),
+      supplierIce: supIce.trim() || undefined,
+      invoiceType: supIce.trim() ? 'official_ice' : undefined,
       supplierPhone: supPhone.trim() || undefined,
       invoiceNumber: invNum,
       date: supDate || todayStr,
@@ -152,6 +161,7 @@ export const ExpensesView: React.FC = () => {
     });
 
     setSupName('');
+    setSupIce('');
     setSupPhone('');
     setSupInvoiceNumber('');
     setSupDueDate('');
@@ -403,14 +413,23 @@ export const ExpensesView: React.FC = () => {
             onSubmit={handleAddSupplierInvoiceSubmit}
             className="p-6 rounded-3xl bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 shadow-xs space-y-4"
           >
-            <div className="flex items-center justify-between pb-3 border-b border-slate-100 dark:border-slate-800">
+            <div className="flex flex-wrap items-center justify-between gap-2 pb-3 border-b border-slate-100 dark:border-slate-800">
               <h3 className="font-extrabold text-sm text-slate-900 dark:text-white flex items-center gap-2">
                 <Plus className="w-4 h-4 text-indigo-600" />
-                <span>{isAr ? 'تسجيل فاتورة مورد / شراء سلعة جديدة' : 'Record New Supplier Invoice'}</span>
+                <span>{isAr ? 'تسجيل فاتورة مورد / أرشيف ICE' : 'Record New Supplier Invoice'}</span>
               </h3>
-              <span className="text-[11px] text-slate-400">
-                {isAr ? 'تتبع الدفعات الجزئية وتواريخ الاستحقاق' : 'Track partial payments & due dates'}
-              </span>
+              <button
+                type="button"
+                onClick={() =>
+                  window.dispatchEvent(new CustomEvent('kadi:open-purchase-invoice-scanner'))
+                }
+                className="px-3.5 py-2 rounded-xl bg-amber-400 hover:bg-amber-500 text-slate-950 text-xs font-black flex items-center gap-1.5 transition-colors whitespace-nowrap"
+              >
+                <Camera className="w-4 h-4" />
+                <span>
+                  {isAr ? 'تصوير الفاتورة بالهاتف (ICE / نوار)' : 'Scan Invoice Photo (ICE / Noir)'}
+                </span>
+              </button>
             </div>
 
             <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-3">
@@ -425,6 +444,19 @@ export const ExpensesView: React.FC = () => {
                   onChange={(e) => setSupName(e.target.value)}
                   placeholder={isAr ? 'مثال: شركة ألبان الأطلس...' : 'e.g. Atlas Dairy...'}
                   className="w-full px-3 py-2 text-xs font-semibold bg-slate-50 dark:bg-slate-800 border border-slate-300 dark:border-slate-700 rounded-xl"
+                />
+              </div>
+
+              <div>
+                <label className="block text-xs font-bold text-slate-700 dark:text-slate-300 mb-1">
+                  {isAr ? 'رقم ICE (للفواتير الرسمية)' : 'ICE Number (Official)'}
+                </label>
+                <input
+                  type="text"
+                  value={supIce}
+                  onChange={(e) => setSupIce(e.target.value)}
+                  placeholder="001234567000089"
+                  className="w-full px-3 py-2 text-xs font-mono bg-slate-50 dark:bg-slate-800 border border-slate-300 dark:border-slate-700 rounded-xl"
                 />
               </div>
 
@@ -554,6 +586,7 @@ export const ExpensesView: React.FC = () => {
                   {(
                     [
                       { id: 'all', label: isAr ? 'الكل' : 'All' },
+                      { id: 'ice_archive', label: isAr ? 'أرشيف ICE الرسمي' : 'Official ICE Archive' },
                       { id: 'unpaid', label: isAr ? 'غير مدفوعة' : 'Unpaid' },
                       { id: 'partial', label: isAr ? 'جزئية' : 'Partial' },
                       { id: 'paid', label: isAr ? 'مدفوعة' : 'Paid' }
@@ -580,7 +613,7 @@ export const ExpensesView: React.FC = () => {
                     type="text"
                     value={supSearch}
                     onChange={(e) => setSupSearch(e.target.value)}
-                    placeholder={isAr ? 'بحث بالمورد أو رقم الفاتورة...' : 'Search supplier or invoice...'}
+                    placeholder={isAr ? 'بحث بالمورد أو ICE أو الفاتورة...' : 'Search supplier, ICE or invoice...'}
                     className="ps-8 pe-3 py-1.5 text-xs bg-slate-50 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 rounded-xl"
                   />
                 </div>
@@ -632,6 +665,11 @@ export const ExpensesView: React.FC = () => {
                             <span className="font-mono text-[11px] px-2 py-0.5 rounded-md bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-700 text-slate-600 dark:text-slate-300">
                               #{inv.invoiceNumber}
                             </span>
+                            {inv.supplierIce && (
+                              <span className="font-mono text-[10px] px-2 py-0.5 rounded-md bg-emerald-50 dark:bg-emerald-950/60 border border-emerald-200 dark:border-emerald-800 text-emerald-800 dark:text-emerald-300 font-bold">
+                                ICE: {inv.supplierIce}
+                              </span>
+                            )}
                             <span className={`px-2 py-0.5 rounded-md text-[10px] font-black ${statusBadge.cls}`}>
                               {statusBadge.label}
                             </span>
@@ -670,6 +708,26 @@ export const ExpensesView: React.FC = () => {
                           </div>
                         </div>
                       </div>
+
+                      {inv.itemsSummary && inv.itemsSummary.length > 0 && (
+                        <div className="px-3 py-2 rounded-xl bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-700/70 text-[11px] space-y-1">
+                          <div className="font-bold text-slate-700 dark:text-slate-200">
+                            {isAr
+                              ? `السلع المضافة للمخزون (${inv.itemsSummary.length}):`
+                              : `Archived Items (${inv.itemsSummary.length}):`}
+                          </div>
+                          <div className="flex flex-wrap gap-x-3 gap-y-1 text-slate-600 dark:text-slate-300 font-mono">
+                            {inv.itemsSummary.slice(0, 6).map((item, i) => (
+                              <span key={i}>
+                                {item.productName} (+{item.quantity} × {item.unitCost})
+                              </span>
+                            ))}
+                            {inv.itemsSummary.length > 6 && (
+                              <span>+{inv.itemsSummary.length - 6} ...</span>
+                            )}
+                          </div>
+                        </div>
+                      )}
 
                       {inv.notes && (
                         <div className="text-[11px] text-slate-600 dark:text-slate-300 italic">

@@ -45,7 +45,81 @@ import {
   exportReplenishmentPoToPdf,
   ReplenishmentOrderLine
 } from '../../utils/exportReports';
-import { ScanLine, FileText, Brain, ShoppingCart, CheckCircle2, Mail, ClipboardCheck } from 'lucide-react';
+import { ScanLine, FileText, Brain, ShoppingCart, CheckCircle2, Mail, ClipboardCheck, Truck, Copy, Check } from 'lucide-react';
+import { SupplierInvoice } from '../../types';
+
+const resolveProductSupplier = (
+  product: Product,
+  categoryName: string,
+  invoices: SupplierInvoice[],
+  isAr: boolean
+): { supplierName: string; supplierPhone?: string; source: 'invoice' | 'category' } => {
+  const prodNameLower = product.name.trim().toLowerCase();
+  const prodEnLower = (product.nameEn || '').trim().toLowerCase();
+
+  for (let i = invoices.length - 1; i >= 0; i--) {
+    const inv = invoices[i];
+    const inItems = inv.itemsSummary?.some((it) => {
+      const itName = it.productName.trim().toLowerCase();
+      return (
+        itName.includes(prodNameLower) ||
+        prodNameLower.includes(itName) ||
+        (prodEnLower && itName.includes(prodEnLower))
+      );
+    });
+    const inNotes = inv.notes && inv.notes.toLowerCase().includes(prodNameLower);
+    if (inItems || inNotes) {
+      return {
+        supplierName: inv.supplierName,
+        supplierPhone: inv.supplierPhone,
+        source: 'invoice'
+      };
+    }
+  }
+
+  const combined = `${prodNameLower} ${prodEnLower} ${categoryName.toLowerCase()}`;
+  if (/(حليب|لبن|ياغورت|رايبي|جبن|فرماج|زبدة|أجبان|milk|danone|yogurt|lait|dairy)/.test(combined)) {
+    return {
+      supplierName: isAr ? 'موزع الحليب ومشتقاته (سنطرال / جودة / كوباك)' : 'Dairy Distributor',
+      source: 'category'
+    };
+  }
+  if (/(كوكا|بيبسي|فانتا|سبرايت|عصير|ماء|سيدي علي|والماس|مشروب|soda|juice|water|boisson|drink|beverage)/.test(combined)) {
+    return {
+      supplierName: isAr ? 'مستودع المشروبات الغازية والمياه' : 'Beverages Wholesaler',
+      source: 'category'
+    };
+  }
+  if (/(شاي|أتاي|قهوة|سكر|زيت|دقيق|طماطم|أرز|مقرونة|عدس|فاصوليا|سميد|كسكس|tea|sugar|oil|flour|grocery|أغذية)/.test(combined)) {
+    return {
+      supplierName: isAr ? 'تاجر جملة المواد الغذائية الأساسية (درب عمر / سوق الجملة)' : 'Dry Groceries Wholesaler',
+      source: 'category'
+    };
+  }
+  if (/(جافيل|أومو|تيد|صابون|شامبو|نظافة|منظف|حفاضات|بامبرز|detergent|soap|clean|hygiene)/.test(combined)) {
+    return {
+      supplierName: isAr ? 'مورد مواد التنظيف والعناية الشخصية' : 'Cleaning & Care Supplier',
+      source: 'category'
+    };
+  }
+  if (/(بيمو|شوكولا|بسكويت|حلوة|علكة|شيبس|كيك|chocolate|biscuit|snack|حلويات)/.test(combined)) {
+    return {
+      supplierName: isAr ? 'موزع البسكويت والحلويات (بيمو / أولي)' : 'Snacks & Confectionery Distributor',
+      source: 'category'
+    };
+  }
+  if (/(خبز|كرواصة|مسمن|بيض|دجاج|لاندون|كاشير|مخبز|bread|egg|bakery)/.test(combined)) {
+    return {
+      supplierName: isAr ? 'موزع المخبز والبيض واللحوم المحولة' : 'Fresh & Bakery Supplier',
+      source: 'category'
+    };
+  }
+
+  return {
+    supplierName: isAr ? 'سوق الجملة العام / المورد المعتمد' : 'General Wholesale Supplier',
+    source: 'category'
+  };
+};
 
 export const InventoryView: React.FC = () => {
   const {
@@ -60,6 +134,7 @@ export const InventoryView: React.FC = () => {
     expiringSoonProducts,
     criticalLowStockProducts,
     orders,
+    supplierInvoices,
     settings,
     setCurrentTab,
     currencySymbol,
@@ -77,11 +152,31 @@ export const InventoryView: React.FC = () => {
 
   React.useEffect(() => {
     const handleOpenStocktake = () => setActiveTab('stocktake');
+    const handleOpenSmartPlanning = () => {
+      setActiveTab('ai_prediction');
+      setAiSubView('supplier_po');
+    };
+    const handleInvoiceScanned = (evt: Event) => {
+      const detail = (evt as CustomEvent<{ message?: string }>).detail;
+      if (detail?.message) {
+        setProductToast(detail.message);
+        setTimeout(() => setProductToast(null), 4500);
+      }
+    };
     window.addEventListener('kadi:open-stocktake', handleOpenStocktake);
-    return () => window.removeEventListener('kadi:open-stocktake', handleOpenStocktake);
+    window.addEventListener('kadi:open-smart-planning', handleOpenSmartPlanning);
+    window.addEventListener('kadi:purchase-invoice-completed', handleInvoiceScanned);
+    return () => {
+      window.removeEventListener('kadi:open-stocktake', handleOpenStocktake);
+      window.removeEventListener('kadi:open-smart-planning', handleOpenSmartPlanning);
+      window.removeEventListener('kadi:purchase-invoice-completed', handleInvoiceScanned);
+    };
   }, []);
   const [selectedPoIds, setSelectedPoIds] = useState<Set<string>>(new Set());
   const [poTargetDays, setPoTargetDays] = useState<number>(14);
+  const [aiSubView, setAiSubView] = useState<'supplier_po' | 'forecast_table'>('supplier_po');
+  const [onlyNeedsReorder, setOnlyNeedsReorder] = useState<boolean>(false);
+  const [copiedSupplierKey, setCopiedSupplierKey] = useState<string | null>(null);
   const [searchQuery, setSearchQuery] = useState('');
   const [selectedCat, setSelectedCat] = useState('all');
   const [selectedUnit, setSelectedUnit] = useState<string>('all');
@@ -141,33 +236,35 @@ export const InventoryView: React.FC = () => {
     };
   }, [products]);
 
-  // AI Stock Depletion Prediction based on historical sales velocity
+  // Smart Replenishment & AI Stock Planning (30-day velocity, Reorder Point, & Supplier Grouping)
   const aiPredictions = React.useMemo(() => {
     const completedOrders = orders.filter((o) => o.status === 'completed');
     const thirtyDaysAgoMs = Date.now() - 30 * 86_400_000;
-    const recentOrders = completedOrders.filter((o) => new Date(o.date).getTime() >= thirtyDaysAgoMs);
-    const sourceOrders = recentOrders.length > 0 ? recentOrders : completedOrders;
+    const recent30dOrders = completedOrders.filter((o) => {
+      const tMs = new Date(o.date).getTime();
+      return !isNaN(tMs) && tMs >= thirtyDaysAgoMs;
+    });
 
-    let spanDays = 30;
-    if (sourceOrders.length > 0) {
-      const timestamps = sourceOrders.map((o) => new Date(o.date).getTime()).filter((t) => !isNaN(t));
-      if (timestamps.length > 0) {
-        const minTs = Math.min(...timestamps);
-        spanDays = Math.max(1, Math.min(30, Math.ceil((Date.now() - minTs) / 86_400_000)));
-      }
-    }
-
-    const soldQtyByProduct = new Map<string, number>();
-    sourceOrders.forEach((o) => {
+    const sold30dByProduct = new Map<string, number>();
+    recent30dOrders.forEach((o) => {
       o.items.forEach((it) => {
-        soldQtyByProduct.set(it.productId, (soldQtyByProduct.get(it.productId) || 0) + it.quantity);
+        sold30dByProduct.set(it.productId, (sold30dByProduct.get(it.productId) || 0) + it.quantity);
       });
     });
 
+    const categoryMap = new Map(categories.map((c) => [c.id, isAr ? c.name : c.nameEn || c.name]));
+
     return products
       .map((p) => {
-        const totalSold = soldQtyByProduct.get(p.id) || 0;
-        const dailyVelocity = totalSold / spanDays;
+        const soldLast30d = sold30dByProduct.get(p.id) || 0;
+        const dailyVelocity = soldLast30d / 30;
+        const safetyBuffer = Math.max(2, Math.round(p.lowStockThreshold * 0.5));
+        const reorderPoint = Math.max(
+          p.lowStockThreshold,
+          Math.ceil(dailyVelocity * 5) + safetyBuffer
+        );
+        const needsReorder = p.stock <= reorderPoint;
+
         const daysToZero =
           p.stock <= 0
             ? 0
@@ -179,12 +276,12 @@ export const InventoryView: React.FC = () => {
             ? new Date(Date.now() + daysToZero * 86_400_000).toISOString().slice(0, 10)
             : null;
         const isCriticalThreshold =
-          p.lowStockThreshold > 0 && p.stock <= p.lowStockThreshold * 0.2;
+          p.stock <= 0 || (p.lowStockThreshold > 0 && p.stock <= p.lowStockThreshold * 0.2);
         const isBelowMin = p.stock <= p.lowStockThreshold;
 
         const targetStock = Math.max(
           Math.ceil(dailyVelocity * poTargetDays),
-          p.lowStockThreshold * 2,
+          reorderPoint * 2,
           10
         );
         const recommendedQty = Math.max(0, Math.ceil(targetStock - p.stock));
@@ -193,24 +290,34 @@ export const InventoryView: React.FC = () => {
         const urgency: 'critical' | 'warning' | 'healthy' =
           p.stock <= 0 || isCriticalThreshold || (daysToZero !== null && daysToZero <= 5)
             ? 'critical'
-            : isBelowMin || (daysToZero !== null && daysToZero <= 14)
+            : needsReorder || isBelowMin || (daysToZero !== null && daysToZero <= 14)
             ? 'warning'
             : 'healthy';
 
+        const catName = categoryMap.get(p.categoryId) || '';
+        const supplierInfo = resolveProductSupplier(p, catName, supplierInvoices, isAr);
+
         return {
           product: p,
-          totalSold,
+          totalSold: soldLast30d,
+          soldLast30d,
           dailyVelocity,
+          reorderPoint,
+          needsReorder,
           daysToZero,
           estimatedZeroDate,
           isCriticalThreshold,
           isBelowMin,
           recommendedQty,
           estimatedCost,
-          urgency
+          urgency,
+          supplierName: supplierInfo.supplierName,
+          supplierPhone: supplierInfo.supplierPhone,
+          supplierSource: supplierInfo.source
         };
       })
       .sort((a, b) => {
+        if (a.needsReorder !== b.needsReorder) return a.needsReorder ? -1 : 1;
         const rank = { critical: 0, warning: 1, healthy: 2 };
         if (rank[a.urgency] !== rank[b.urgency]) return rank[a.urgency] - rank[b.urgency];
         const aDays = a.daysToZero ?? 9999;
@@ -218,7 +325,7 @@ export const InventoryView: React.FC = () => {
         if (aDays !== bDays) return aDays - bDays;
         return b.dailyVelocity - a.dailyVelocity;
       });
-  }, [products, orders, poTargetDays]);
+  }, [products, categories, orders, supplierInvoices, poTargetDays, isAr]);
 
   // Stagnant stock detector: stock > 0 with 0 completed sales in last 30 days
   const stagnantProductIds = React.useMemo(() => {
@@ -610,10 +717,10 @@ export const InventoryView: React.FC = () => {
               }`}
             >
               <Brain className="w-4 h-4 text-indigo-600 dark:text-indigo-400" />
-              <span>{isAr ? 'التنبؤ بالذكاء الاصطناعي' : 'AI Prediction'}</span>
-              {criticalLowStockProducts.length > 0 && (
-                <span className="px-1.5 py-0.2 text-[10px] bg-rose-600 text-white rounded-full font-black">
-                  {criticalLowStockProducts.length}
+              <span>{isAr ? 'التخطيط الذكي وقائمة الشراء' : 'Smart Planning & PO'}</span>
+              {aiPredictions.filter((r) => r.needsReorder).length > 0 && (
+                <span className="px-1.5 py-0.2 text-[10px] bg-rose-600 text-white rounded-full font-black font-mono tabular-nums">
+                  {aiPredictions.filter((r) => r.needsReorder).length}
                 </span>
               )}
             </button>
@@ -621,6 +728,23 @@ export const InventoryView: React.FC = () => {
 
           {/* Action buttons */}
           <div className="flex flex-wrap items-center gap-2">
+            {/* Scan Purchase Invoice via Phone Camera (تصوير فاتورة الشراء) */}
+            <button
+              type="button"
+              onClick={() =>
+                window.dispatchEvent(new CustomEvent('kadi:open-purchase-invoice-scanner'))
+              }
+              className="px-4 py-2 text-xs font-black rounded-xl bg-amber-400 hover:bg-amber-500 text-slate-950 transition-colors flex items-center gap-1.5 shadow-xs shrink-0 whitespace-nowrap"
+              title={
+                isAr
+                  ? 'صور فاتورة الشراء بالهاتف (رسمية ICE للأرشيف أو نوار للمخزون فقط)'
+                  : 'Scan purchase invoice photo (Official ICE or Stock-Only)'
+              }
+            >
+              <Camera className="w-3.5 h-3.5" />
+              <span>{isAr ? 'تصوير فاتورة شراء' : 'Scan Purchase Invoice'}</span>
+            </button>
+
             {/* Add Product (إضافة منتوج) */}
             <button
               onClick={() => setShowAddModal(true)}
@@ -1283,7 +1407,7 @@ export const InventoryView: React.FC = () => {
           </div>
         )}
 
-        {/* Tab 3: AI Stock Depletion Prediction & Replenishment PO Generator */}
+        {/* Tab 3: Smart Inventory Planning (30d Velocity + ROP + Auto Purchase List by Supplier) */}
         {activeTab === 'ai_prediction' && (() => {
           const buildPoLines = (subset: typeof aiPredictions): ReplenishmentOrderLine[] =>
             subset
@@ -1301,17 +1425,87 @@ export const InventoryView: React.FC = () => {
                 unitType: getUnitName(r.product.unitType)
               }));
 
+          const reorderItems = aiPredictions.filter((r) => r.needsReorder && r.recommendedQty > 0);
           const selectedRows =
             selectedPoIds.size > 0
               ? aiPredictions.filter((r) => selectedPoIds.has(r.product.id))
-              : aiPredictions.filter((r) => r.urgency !== 'healthy');
+              : reorderItems;
           const poLines = buildPoLines(selectedRows);
           const totalPoBudget = poLines.reduce((s, l) => s + l.estimatedTotal, 0);
           const urgentCount = aiPredictions.filter((r) => r.urgency === 'critical').length;
+          const needsReorderCount = reorderItems.length;
+
+          // Group items near stockout (stock <= reorderPoint) automatically by supplier
+          const supplierGroupsMap = new Map<
+            string,
+            {
+              supplierName: string;
+              supplierPhone?: string;
+              supplierSource: 'invoice' | 'category';
+              items: typeof aiPredictions;
+              totalUnits: number;
+              estimatedCost: number;
+              criticalCount: number;
+            }
+          >();
+
+          reorderItems.forEach((row) => {
+            const key = row.supplierName;
+            const existing = supplierGroupsMap.get(key);
+            if (!existing) {
+              supplierGroupsMap.set(key, {
+                supplierName: row.supplierName,
+                supplierPhone: row.supplierPhone,
+                supplierSource: row.supplierSource,
+                items: [row],
+                totalUnits: row.recommendedQty,
+                estimatedCost: row.estimatedCost,
+                criticalCount: row.urgency === 'critical' ? 1 : 0
+              });
+            } else {
+              existing.items.push(row);
+              existing.totalUnits += row.recommendedQty;
+              existing.estimatedCost = Number((existing.estimatedCost + row.estimatedCost).toFixed(2));
+              if (row.urgency === 'critical') existing.criticalCount += 1;
+              if (!existing.supplierPhone && row.supplierPhone) {
+                existing.supplierPhone = row.supplierPhone;
+              }
+            }
+          });
+
+          const supplierGroups = Array.from(supplierGroupsMap.values()).sort((a, b) => {
+            if (b.criticalCount !== a.criticalCount) return b.criticalCount - a.criticalCount;
+            return b.estimatedCost - a.estimatedCost;
+          });
+
+          const displayedTableRows = onlyNeedsReorder
+            ? aiPredictions.filter((r) => r.needsReorder)
+            : aiPredictions;
+
+          const copySupplierPo = async (group: (typeof supplierGroups)[number]) => {
+            const linesText = [
+              `📦 ${isAr ? 'طلبية شراء تلقائية للمورد' : 'Auto Purchase Order'}: ${group.supplierName}`,
+              `${isAr ? 'التاريخ' : 'Date'}: ${new Date().toLocaleDateString(isAr ? 'ar-MA' : 'en-US')}`,
+              '------------------------',
+              ...group.items.map(
+                (it, i) =>
+                  `${i + 1}. ${it.product.name} — ${isAr ? 'الطلب' : 'Qty'}: ${it.recommendedQty} ${getUnitName(it.product.unitType)} (${isAr ? 'الباقي' : 'Stock'}: ${it.product.stock} | ROP: ${it.reorderPoint})`
+              ),
+              '------------------------',
+              `${isAr ? 'التكلفة التقديرية' : 'Est. Total'}: ${group.estimatedCost.toFixed(2)} ${currencySymbol}`
+            ].join('\n');
+            try {
+              await navigator.clipboard.writeText(linesText);
+              setCopiedSupplierKey(group.supplierName);
+              setTimeout(() => setCopiedSupplierKey(null), 2500);
+            } catch {
+              // ignore clipboard errors
+            }
+          };
 
           return (
             <div className="flex-1 flex flex-col overflow-hidden">
-              {/* Top Prediction Toolbar */}
+              {/* Top Smart Planning Toolbar */}
               <div className="p-4 border-b border-slate-200 dark:border-slate-800 bg-indigo-50/40 dark:bg-indigo-950/20 flex flex-wrap items-center justify-between gap-3">
                 <div className="flex items-center gap-3">
                   <div className="w-10 h-10 rounded-2xl bg-indigo-600 text-white flex items-center justify-center shrink-0">
@@ -1320,18 +1514,46 @@ export const InventoryView: React.FC = () => {
                   <div>
                     <h3 className="text-sm font-black text-slate-900 dark:text-white">
                       {isAr
-                        ? 'توقعات نفاد المخزون بالذكاء الاصطناعي (بناءً على سرعة البيع التاريخية)'
-                        : 'AI Stock Depletion Forecast (Historical Sales Velocity)'}
+                        ? 'التخطيط الذكي للمخزون — معدل بيع آخر 30 يوم ونقطة إعادة الطلب (ROP)'
+                        : 'Smart Inventory Planning — 30-Day Velocity & Reorder Points'}
                     </h3>
-                    <p className="text-[11px] text-slate-500 dark:text-slate-400">
+                    <p className="text-[11px] text-slate-500 dark:text-slate-400 font-mono tabular-nums">
                       {isAr
-                        ? `${urgentCount} أصناف حرجة ستنفد قريباً · تكلفة أمر الشراء المقترح (${poLines.length} أصناف): ${totalPoBudget.toFixed(2)} ${currencySymbol}`
-                        : `${urgentCount} critical items · Est. PO Total (${poLines.length} items): ${totalPoBudget.toFixed(2)} ${currencySymbol}`}
+                        ? `${needsReorderCount} سلع وصلت لنقطة إعادة الطلب (${urgentCount} حرجة) موزعة على ${supplierGroups.length} موردين · التكلفة التقديرية: ${totalPoBudget.toFixed(2)} ${currencySymbol}`
+                        : `${needsReorderCount} items at/below ROP (${urgentCount} critical) across ${supplierGroups.length} suppliers · Est. PO: ${totalPoBudget.toFixed(2)} ${currencySymbol}`}
                     </p>
                   </div>
                 </div>
 
                 <div className="flex flex-wrap items-center gap-2">
+                  {/* View Switcher: Auto Purchase List by Supplier vs Full 30d Velocity Table */}
+                  <div className="inline-flex bg-white dark:bg-slate-800 border border-slate-200 dark:border-slate-700 rounded-xl p-1 text-xs font-bold">
+                    <button
+                      type="button"
+                      onClick={() => setAiSubView('supplier_po')}
+                      className={`px-3 py-1 rounded-lg flex items-center gap-1.5 transition-colors ${
+                        aiSubView === 'supplier_po'
+                          ? 'bg-indigo-600 text-white'
+                          : 'text-slate-600 dark:text-slate-300 hover:bg-slate-100 dark:hover:bg-slate-700'
+                      }`}
+                    >
+                      <Truck className="w-3.5 h-3.5" />
+                      <span>{isAr ? `قائمة الشراء حسب المورد (${supplierGroups.length})` : `By Supplier (${supplierGroups.length})`}</span>
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => setAiSubView('forecast_table')}
+                      className={`px-3 py-1 rounded-lg flex items-center gap-1.5 transition-colors ${
+                        aiSubView === 'forecast_table'
+                          ? 'bg-indigo-600 text-white'
+                          : 'text-slate-600 dark:text-slate-300 hover:bg-slate-100 dark:hover:bg-slate-700'
+                      }`}
+                    >
+                      <TrendingUp className="w-3.5 h-3.5" />
+                      <span>{isAr ? 'معدل 30 يوم ونقطة إعادة الطلب' : '30d Rate & ROP Table'}</span>
+                    </button>
+                  </div>
+
                   <div className="flex items-center gap-1.5 bg-white dark:bg-slate-800 border border-slate-200 dark:border-slate-700 rounded-xl px-2.5 py-1 text-xs font-bold">
                     <span className="text-slate-500">{isAr ? 'تغطية لـ:' : 'Cover:'}</span>
                     {[7, 14, 30].map((d) => (
@@ -1349,19 +1571,6 @@ export const InventoryView: React.FC = () => {
                       </button>
                     ))}
                   </div>
-
-                  <button
-                    type="button"
-                    onClick={() => {
-                      const urgentIds = new Set(
-                        aiPredictions.filter((r) => r.urgency !== 'healthy').map((r) => r.product.id)
-                      );
-                      setSelectedPoIds(urgentIds);
-                    }}
-                    className="px-3 py-1.5 rounded-xl border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-800 text-xs font-bold text-slate-700 dark:text-slate-200 hover:bg-slate-50"
-                  >
-                    {isAr ? 'تحديد الحرجة تلقائياً' : 'Select Urgent'}
-                  </button>
 
                   <button
                     type="button"
@@ -1383,7 +1592,7 @@ export const InventoryView: React.FC = () => {
                     className="px-3.5 py-2 rounded-xl bg-indigo-600 hover:bg-indigo-700 disabled:opacity-50 text-white text-xs font-black flex items-center gap-1.5 shadow-xs"
                   >
                     <ShoppingCart className="w-3.5 h-3.5" />
-                    <span>{isAr ? 'توليد أمر شراء تعويضي (PDF)' : 'Generate PO (PDF)'}</span>
+                    <span>{isAr ? 'تصدير كل الطلبيات PDF' : 'All POs PDF'}</span>
                   </button>
 
                   <button
@@ -1401,149 +1610,463 @@ export const InventoryView: React.FC = () => {
                     className="px-3.5 py-2 rounded-xl bg-emerald-600 hover:bg-emerald-700 disabled:opacity-50 text-white text-xs font-black flex items-center gap-1.5 shadow-xs"
                   >
                     <FileSpreadsheet className="w-3.5 h-3.5" />
-                    <span>{isAr ? 'أمر شراء Excel' : 'PO Excel'}</span>
+                    <span>{isAr ? 'Excel' : 'PO Excel'}</span>
                   </button>
                 </div>
               </div>
 
-              {/* Predictions Table */}
-              <div className="flex-1 overflow-y-auto">
-                <table className="w-full text-start border-collapse text-xs">
-                  <thead className="sticky top-0 bg-slate-100 dark:bg-slate-800 text-slate-600 dark:text-slate-300 font-bold border-b border-slate-200 dark:border-slate-700">
-                    <tr>
-                      <th className="py-3 px-3 text-center w-10">#</th>
-                      <th className="py-3 px-4 text-start">{isAr ? 'المنتج' : 'Product'}</th>
-                      <th className="py-3 px-3 text-center">{isAr ? 'الرصيد الحالي' : 'Stock'}</th>
-                      <th className="py-3 px-3 text-center">{isAr ? 'سرعة البيع / يوم' : 'Velocity/d'}</th>
-                      <th className="py-3 px-3 text-center">{isAr ? 'توقع النفاد (صفر)' : 'Est. Zero Stock'}</th>
-                      <th className="py-3 px-3 text-center">{isAr ? `طلبية مقترحة (${poTargetDays} ي)` : `Suggested Qty (${poTargetDays}d)`}</th>
-                      <th className="py-3 px-3 text-end">{isAr ? 'التكلفة التقديرية' : 'Est. Cost'}</th>
-                      <th className="py-3 px-4 text-center">{isAr ? 'توريد فوري' : 'Quick Restock'}</th>
-                    </tr>
-                  </thead>
-                  <tbody className="divide-y divide-slate-100 dark:divide-slate-800">
-                    {aiPredictions.map((row) => {
-                      const isChecked = selectedPoIds.has(row.product.id);
-                      return (
-                        <tr
-                          key={row.product.id}
-                          className={`hover:bg-slate-50 dark:hover:bg-slate-800/50 ${
-                            row.urgency === 'critical' ? 'bg-rose-50/40 dark:bg-rose-950/15' : ''
-                          }`}
+              {/* View A: Auto Purchase List Grouped by Supplier */}
+              {aiSubView === 'supplier_po' ? (
+                <div className="flex-1 overflow-y-auto p-4 space-y-4">
+                  {/* Summary Cards Strip */}
+                  <div className="grid grid-cols-2 lg:grid-cols-4 gap-3">
+                    <div className="p-3.5 rounded-2xl bg-slate-50 dark:bg-slate-800/70 border border-slate-200 dark:border-slate-700">
+                      <div className="text-[11px] font-bold text-slate-500 dark:text-slate-400">
+                        {isAr ? 'سلع وصلت لنقطة إعادة الطلب' : 'Items At/Below ROP'}
+                      </div>
+                      <div className="text-xl font-black font-mono tabular-nums text-rose-600 dark:text-rose-400 mt-1">
+                        {needsReorderCount}
+                      </div>
+                    </div>
+                    <div className="p-3.5 rounded-2xl bg-slate-50 dark:bg-slate-800/70 border border-slate-200 dark:border-slate-700">
+                      <div className="text-[11px] font-bold text-slate-500 dark:text-slate-400">
+                        {isAr ? 'عدد الموردين المطلوبين' : 'Active Suppliers in PO'}
+                      </div>
+                      <div className="text-xl font-black font-mono tabular-nums text-indigo-600 dark:text-indigo-400 mt-1">
+                        {supplierGroups.length}
+                      </div>
+                    </div>
+                    <div className="p-3.5 rounded-2xl bg-slate-50 dark:bg-slate-800/70 border border-slate-200 dark:border-slate-700">
+                      <div className="text-[11px] font-bold text-slate-500 dark:text-slate-400">
+                        {isAr ? `مجموع الوحدات (تغطية ${poTargetDays} يوم)` : `Total Units (${poTargetDays}d cover)`}
+                      </div>
+                      <div className="text-xl font-black font-mono tabular-nums text-slate-900 dark:text-white mt-1">
+                        {supplierGroups.reduce((s, g) => s + g.totalUnits, 0)}
+                      </div>
+                    </div>
+                    <div className="p-3.5 rounded-2xl bg-slate-50 dark:bg-slate-800/70 border border-slate-200 dark:border-slate-700">
+                      <div className="text-[11px] font-bold text-slate-500 dark:text-slate-400">
+                        {isAr ? 'ميزانية الشراء التقديرية' : 'Estimated Purchase Total'}
+                      </div>
+                      <div className="text-xl font-black font-mono tabular-nums text-emerald-600 dark:text-emerald-400 mt-1">
+                        {supplierGroups.reduce((s, g) => s + g.estimatedCost, 0).toFixed(2)} {currencySymbol}
+                      </div>
+                    </div>
+                  </div>
+
+                  {supplierGroups.length === 0 ? (
+                    <div className="p-8 rounded-2xl border border-emerald-200 dark:border-emerald-900 bg-emerald-50/50 dark:bg-emerald-950/20 text-center space-y-2">
+                      <CheckCircle2 className="w-10 h-10 text-emerald-600 mx-auto" />
+                      <h4 className="text-sm font-black text-slate-900 dark:text-white">
+                        {isAr ? 'ممتاز! جميع السلع فوق نقطة إعادة الطلب حالياً' : 'All products are above their reorder points'}
+                      </h4>
+                      <p className="text-xs text-slate-500 dark:text-slate-400">
+                        {isAr
+                          ? 'ملي تقرب شي سلعة تسالي (توصل لنقطة إعادة الطلب المحسوبة من بيع آخر 30 يوم)، غادي تبان ليك هنا أوتوماتيكياً مرتبة حسب كل مورد.'
+                          : 'Products approaching stockout based on 30-day velocity automatically appear here grouped by supplier.'}
+                      </p>
+                      <button
+                        type="button"
+                        onClick={() => setAiSubView('forecast_table')}
+                        className="mt-2 px-4 py-2 rounded-xl bg-indigo-600 text-white text-xs font-bold"
+                      >
+                        {isAr ? 'عرض جدول معدل البيع ونقطة إعادة الطلب لجميع السلع' : 'View Full 30-Day Velocity Table'}
+                      </button>
+                    </div>
+                  ) : (
+                    <div className="space-y-4">
+                      {supplierGroups.map((group) => (
+                        <div
+                          key={group.supplierName}
+                          className="rounded-2xl border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-900 overflow-hidden shadow-2xs"
                         >
-                          <td className="py-3 px-3 text-center">
-                            <input
-                              type="checkbox"
-                              checked={isChecked}
-                              onChange={() => {
-                                setSelectedPoIds((prev) => {
-                                  const next = new Set(prev);
-                                  if (next.has(row.product.id)) next.delete(row.product.id);
-                                  else next.add(row.product.id);
-                                  return next;
-                                });
-                              }}
-                              className="w-4 h-4 rounded text-indigo-600 cursor-pointer"
-                            />
-                          </td>
-                          <td className="py-3 px-4">
-                            <div className="font-bold text-slate-900 dark:text-white flex items-center gap-1.5">
-                              <span>{row.product.name}</span>
-                              {row.isCriticalThreshold && (
-                                <span className="px-1.5 py-0.2 rounded text-[9px] font-black bg-rose-600 text-white">
-                                  &lt; 20%
-                                </span>
-                              )}
-                            </div>
-                            <div className="text-[10px] font-mono text-slate-400">
-                              {row.product.sku} · {row.totalSold} {isAr ? 'مباع مؤخراً' : 'sold recently'}
-                            </div>
-                          </td>
-                          <td className="py-3 px-3 text-center font-mono font-black tabular-nums">
-                            <span
-                              className={
-                                row.urgency === 'critical'
-                                  ? 'text-rose-600'
-                                  : row.urgency === 'warning'
-                                  ? 'text-amber-600'
-                                  : 'text-emerald-600'
-                              }
-                            >
-                              {row.product.stock} {getUnitName(row.product.unitType)}
-                            </span>
-                          </td>
-                          <td className="py-3 px-3 text-center font-mono tabular-nums text-slate-700 dark:text-slate-300">
-                            {row.dailyVelocity.toFixed(2)} / {isAr ? 'يوم' : 'd'}
-                          </td>
-                          <td className="py-3 px-3 text-center">
-                            {row.daysToZero === null ? (
-                              <span className="px-2 py-0.5 rounded-lg bg-slate-100 dark:bg-slate-800 text-slate-500 text-[10px] font-bold">
-                                {isAr ? 'سحب بطيء جداً' : 'Slow moving'}
-                              </span>
-                            ) : row.daysToZero === 0 ? (
-                              <span className="px-2 py-0.5 rounded-lg bg-rose-600 text-white text-[10px] font-black">
-                                {isAr ? 'نفد المخزون (0 يوم)' : 'Out Now (0d)'}
-                              </span>
-                            ) : (
-                              <div className="inline-flex flex-col items-center">
-                                <span
-                                  className={`px-2 py-0.5 rounded-lg text-[10px] font-black font-mono ${
-                                    row.daysToZero <= 5
-                                      ? 'bg-rose-100 text-rose-800 dark:bg-rose-950 dark:text-rose-300'
-                                      : row.daysToZero <= 14
-                                      ? 'bg-amber-100 text-amber-800 dark:bg-amber-950 dark:text-amber-300'
-                                      : 'bg-emerald-100 text-emerald-800 dark:bg-emerald-950 dark:text-emerald-300'
-                                  }`}
-                                >
-                                  {isAr ? `بعد ${row.daysToZero} يوم` : `In ${row.daysToZero}d`}
-                                </span>
-                                <span className="text-[9px] font-mono text-slate-400 mt-0.5">
-                                  {row.estimatedZeroDate}
-                                </span>
+                          <div className="p-3.5 bg-slate-50 dark:bg-slate-800/80 border-b border-slate-200 dark:border-slate-700 flex flex-wrap items-center justify-between gap-3">
+                            <div className="flex items-center gap-2.5">
+                              <div className="w-9 h-9 rounded-xl bg-indigo-100 dark:bg-indigo-950 text-indigo-700 dark:text-indigo-300 flex items-center justify-center shrink-0">
+                                <Truck className="w-4 h-4" />
                               </div>
-                            )}
-                          </td>
-                          <td className="py-3 px-3 text-center font-mono font-black text-indigo-700 dark:text-indigo-300 tabular-nums">
-                            {row.recommendedQty > 0 ? `+${row.recommendedQty}` : '0'}
-                          </td>
-                          <td className="py-3 px-3 text-end font-mono font-bold tabular-nums text-slate-700 dark:text-slate-300">
-                            {row.estimatedCost.toFixed(2)} {currencySymbol}
-                          </td>
-                          <td className="py-3 px-4 text-center">
-                            {row.recommendedQty > 0 ? (
+                              <div>
+                                <div className="flex flex-wrap items-center gap-2">
+                                  <h4 className="text-sm font-black text-slate-900 dark:text-white">
+                                    {group.supplierName}
+                                  </h4>
+                                  <span
+                                    className={`px-2 py-0.5 rounded-lg text-[10px] font-bold ${
+                                      group.supplierSource === 'invoice'
+                                        ? 'bg-emerald-100 text-emerald-800 dark:bg-emerald-950 dark:text-emerald-300'
+                                        : 'bg-slate-200 text-slate-700 dark:bg-slate-700 dark:text-slate-300'
+                                    }`}
+                                  >
+                                    {group.supplierSource === 'invoice'
+                                      ? isAr
+                                        ? 'مورد مسجل من الفواتير'
+                                        : 'Matched from Invoices'
+                                      : isAr
+                                      ? 'تصنيف جملة تلقائي'
+                                      : 'Auto Category Supplier'}
+                                  </span>
+                                  {group.criticalCount > 0 && (
+                                    <span className="px-2 py-0.5 rounded-lg text-[10px] font-black bg-rose-100 text-rose-800 dark:bg-rose-950 dark:text-rose-300">
+                                      {group.criticalCount} {isAr ? 'حرج' : 'Critical'}
+                                    </span>
+                                  )}
+                                </div>
+                                <p className="text-[11px] text-slate-500 dark:text-slate-400 font-mono tabular-nums mt-0.5">
+                                  {group.items.length} {isAr ? 'سلع' : 'items'} · {group.totalUnits}{' '}
+                                  {isAr ? 'وحدة للطلب' : 'units'} ·{' '}
+                                  <span className="font-bold text-emerald-700 dark:text-emerald-400">
+                                    {group.estimatedCost.toFixed(2)} {currencySymbol}
+                                  </span>
+                                  {group.supplierPhone ? ` · 📞 ${group.supplierPhone}` : ''}
+                                </p>
+                              </div>
+                            </div>
+
+                            <div className="flex flex-wrap items-center gap-2">
+                              <button
+                                type="button"
+                                onClick={() => copySupplierPo(group)}
+                                className="px-2.5 py-1.5 rounded-xl border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-900 text-xs font-bold text-slate-700 dark:text-slate-200 hover:bg-slate-100 dark:hover:bg-slate-800 flex items-center gap-1"
+                              >
+                                {copiedSupplierKey === group.supplierName ? (
+                                  <>
+                                    <Check className="w-3.5 h-3.5 text-emerald-600" />
+                                    <span>{isAr ? 'تم النسخ' : 'Copied'}</span>
+                                  </>
+                                ) : (
+                                  <>
+                                    <Copy className="w-3.5 h-3.5" />
+                                    <span>{isAr ? 'نسخ الطلبية' : 'Copy PO'}</span>
+                                  </>
+                                )}
+                              </button>
+
                               <button
                                 type="button"
                                 onClick={() => {
-                                  adjustStock(
-                                    row.product.id,
-                                    row.recommendedQty,
-                                    'توريد تعويضي بناءً على توقع AI',
-                                    'restock'
-                                  );
+                                  const lines = buildPoLines(group.items);
+                                  const fname = exportReplenishmentPoToPdf({
+                                    lines,
+                                    settings: {
+                                      ...settings,
+                                      storeName: `${settings.storeName} — ${group.supplierName}`
+                                    },
+                                    currencySymbol,
+                                    language
+                                  });
                                   setProductToast(
                                     isAr
-                                      ? `✅ تم توريد +${row.recommendedQty} لمنتج "${row.product.name}"`
-                                      : `✅ Restocked +${row.recommendedQty} for ${row.product.name}`
+                                      ? `🧾 تم تصدير طلبية "${group.supplierName}": ${fname}`
+                                      : `🧾 Exported PO for ${group.supplierName}: ${fname}`
                                   );
-                                  setTimeout(() => setProductToast(null), 3000);
+                                  setTimeout(() => setProductToast(null), 3500);
                                 }}
-                                className="px-2.5 py-1 rounded-lg bg-emerald-600 hover:bg-emerald-700 text-white text-[10px] font-black inline-flex items-center gap-1"
+                                className="px-2.5 py-1.5 rounded-xl bg-indigo-600 hover:bg-indigo-700 text-white text-xs font-bold flex items-center gap-1"
                               >
-                                <CheckCircle2 className="w-3 h-3" />
-                                <span>+{row.recommendedQty}</span>
+                                <Download className="w-3.5 h-3.5" />
+                                <span>PDF</span>
                               </button>
-                            ) : (
-                              <span className="text-[10px] text-emerald-600 font-bold">
-                                {isAr ? 'مكتفي ✓' : 'OK ✓'}
-                              </span>
-                            )}
-                          </td>
+
+                              <button
+                                type="button"
+                                onClick={() => {
+                                  group.items.forEach((it) => {
+                                    adjustStock(
+                                      it.product.id,
+                                      it.recommendedQty,
+                                      `توريد تلقائي لمورد: ${group.supplierName}`,
+                                      'restock'
+                                    );
+                                  });
+                                  setProductToast(
+                                    isAr
+                                      ? `✅ تم توريد جميع سلع "${group.supplierName}" (${group.items.length} سلع) للمخزون`
+                                      : `✅ Restocked all ${group.items.length} items from ${group.supplierName}`
+                                  );
+                                  setTimeout(() => setProductToast(null), 4000);
+                                }}
+                                className="px-3 py-1.5 rounded-xl bg-emerald-600 hover:bg-emerald-700 text-white text-xs font-black flex items-center gap-1"
+                              >
+                                <CheckCircle2 className="w-3.5 h-3.5" />
+                                <span>{isAr ? 'توريد الكل للمورد' : 'Restock Supplier'}</span>
+                              </button>
+                            </div>
+                          </div>
+
+                          <div className="overflow-x-auto">
+                            <table className="w-full text-start border-collapse text-xs">
+                              <thead className="bg-slate-50/70 dark:bg-slate-800/40 text-slate-500 dark:text-slate-400 border-b border-slate-200 dark:border-slate-700">
+                                <tr>
+                                  <th className="py-2 px-3 text-start">{isAr ? 'السلعة' : 'Product'}</th>
+                                  <th className="py-2 px-3 text-center">{isAr ? 'المخزون الحالي' : 'Stock'}</th>
+                                  <th className="py-2 px-3 text-center">{isAr ? 'نقطة إعادة الطلب (ROP)' : 'Reorder Point'}</th>
+                                  <th className="py-2 px-3 text-center">{isAr ? 'معدل بيع 30 يوم' : '30d Rate'}</th>
+                                  <th className="py-2 px-3 text-center">{isAr ? 'الكمية للطلب' : 'Order Qty'}</th>
+                                  <th className="py-2 px-3 text-end">{isAr ? 'التكلفة التقديرية' : 'Est. Cost'}</th>
+                                  <th className="py-2 px-3 text-center">{isAr ? 'توريد سريع' : 'Restock'}</th>
+                                </tr>
+                              </thead>
+                              <tbody className="divide-y divide-slate-100 dark:divide-slate-800">
+                                {group.items.map((row) => (
+                                  <tr key={row.product.id} className="hover:bg-slate-50 dark:hover:bg-slate-800/40">
+                                    <td className="py-2.5 px-3">
+                                      <div className="font-bold text-slate-900 dark:text-white flex items-center gap-1.5">
+                                        <span>{row.product.name}</span>
+                                        {row.urgency === 'critical' && (
+                                          <span className="px-1.5 py-0.2 rounded text-[9px] font-black bg-rose-600 text-white">
+                                            {isAr ? 'حرج' : 'CRITICAL'}
+                                          </span>
+                                        )}
+                                      </div>
+                                      <div className="text-[10px] font-mono text-slate-400">{row.product.sku}</div>
+                                    </td>
+                                    <td className="py-2.5 px-3 text-center font-mono font-black tabular-nums text-rose-600 dark:text-rose-400">
+                                      {row.product.stock} {getUnitName(row.product.unitType)}
+                                    </td>
+                                    <td className="py-2.5 px-3 text-center font-mono font-bold tabular-nums text-amber-700 dark:text-amber-300">
+                                      {row.reorderPoint} {getUnitName(row.product.unitType)}
+                                    </td>
+                                    <td className="py-2.5 px-3 text-center font-mono tabular-nums text-slate-600 dark:text-slate-300">
+                                      <div>{row.dailyVelocity.toFixed(2)}/{isAr ? 'يوم' : 'd'}</div>
+                                      <div className="text-[10px] text-slate-400">({row.soldLast30d} / 30{isAr ? 'ي' : 'd'})</div>
+                                    </td>
+                                    <td className="py-2.5 px-3 text-center font-mono font-black tabular-nums text-indigo-700 dark:text-indigo-300">
+                                      +{row.recommendedQty}
+                                    </td>
+                                    <td className="py-2.5 px-3 text-end font-mono font-bold tabular-nums text-slate-800 dark:text-slate-200">
+                                      {row.estimatedCost.toFixed(2)} {currencySymbol}
+                                    </td>
+                                    <td className="py-2.5 px-3 text-center">
+                                      <button
+                                        type="button"
+                                        onClick={() => {
+                                          adjustStock(
+                                            row.product.id,
+                                            row.recommendedQty,
+                                            `توريد قائمة شراء المورد (${group.supplierName})`,
+                                            'restock'
+                                          );
+                                          setProductToast(
+                                            isAr
+                                              ? `✅ تم توريد +${row.recommendedQty} لمنتج "${row.product.name}"`
+                                              : `✅ Restocked +${row.recommendedQty} for ${row.product.name}`
+                                          );
+                                          setTimeout(() => setProductToast(null), 3000);
+                                        }}
+                                        className="px-2.5 py-1 rounded-lg bg-emerald-600 hover:bg-emerald-700 text-white text-[10px] font-black inline-flex items-center gap-1"
+                                      >
+                                        <CheckCircle2 className="w-3 h-3" />
+                                        <span>+{row.recommendedQty}</span>
+                                      </button>
+                                    </td>
+                                  </tr>
+                                ))}
+                              </tbody>
+                            </table>
+                          </div>
+                        </div>
+                      ))}
+                    </div>
+                  )}
+                </div>
+              ) : (
+                /* View B: Full 30-Day Velocity & Reorder Point Table */
+                <div className="flex-1 flex flex-col overflow-hidden">
+                  <div className="px-4 py-2.5 border-b border-slate-200 dark:border-slate-800 bg-slate-50/70 dark:bg-slate-800/40 flex flex-wrap items-center justify-between gap-2 text-xs">
+                    <div className="flex items-center gap-2">
+                      <button
+                        type="button"
+                        onClick={() => setOnlyNeedsReorder(false)}
+                        className={`px-3 py-1 rounded-lg font-bold ${
+                          !onlyNeedsReorder
+                            ? 'bg-slate-900 text-white dark:bg-white dark:text-slate-900'
+                            : 'bg-white dark:bg-slate-800 text-slate-600 dark:text-slate-300 border border-slate-200 dark:border-slate-700'
+                        }`}
+                      >
+                        {isAr ? `جميع السلع (${aiPredictions.length})` : `All (${aiPredictions.length})`}
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => setOnlyNeedsReorder(true)}
+                        className={`px-3 py-1 rounded-lg font-bold ${
+                          onlyNeedsReorder
+                            ? 'bg-rose-600 text-white'
+                            : 'bg-white dark:bg-slate-800 text-rose-600 dark:text-rose-400 border border-rose-200 dark:border-rose-800'
+                        }`}
+                      >
+                        {isAr ? `قريبة تسالي / ≤ نقطة إعادة الطلب (${needsReorderCount})` : `At/Below ROP (${needsReorderCount})`}
+                      </button>
+                    </div>
+                    <button
+                      type="button"
+                      onClick={() => {
+                        const urgentIds = new Set(reorderItems.map((r) => r.product.id));
+                        setSelectedPoIds(urgentIds);
+                      }}
+                      className="px-3 py-1 rounded-lg border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-800 font-bold text-slate-700 dark:text-slate-200 hover:bg-slate-50"
+                    >
+                      {isAr ? 'تحديد كل التي وصلت لنقطة إعادة الطلب' : 'Select All Below ROP'}
+                    </button>
+                  </div>
+
+                  <div className="flex-1 overflow-y-auto">
+                    <table className="w-full text-start border-collapse text-xs">
+                      <thead className="sticky top-0 bg-slate-100 dark:bg-slate-800 text-slate-600 dark:text-slate-300 font-bold border-b border-slate-200 dark:border-slate-700">
+                        <tr>
+                          <th className="py-3 px-3 text-center w-10">#</th>
+                          <th className="py-3 px-4 text-start">{isAr ? 'المنتج والمورد' : 'Product & Supplier'}</th>
+                          <th className="py-3 px-3 text-center">{isAr ? 'الرصيد الحالي' : 'Stock'}</th>
+                          <th className="py-3 px-3 text-center">{isAr ? 'معدل البيع (آخر 30 يوم)' : '30d Sales Rate'}</th>
+                          <th className="py-3 px-3 text-center">{isAr ? 'نقطة إعادة الطلب (ROP)' : 'Reorder Point'}</th>
+                          <th className="py-3 px-3 text-center">{isAr ? 'توقع النفاد' : 'Est. Stockout'}</th>
+                          <th className="py-3 px-3 text-center">{isAr ? `طلبية مقترحة (${poTargetDays} ي)` : `Suggested Qty (${poTargetDays}d)`}</th>
+                          <th className="py-3 px-3 text-end">{isAr ? 'التكلفة التقديرية' : 'Est. Cost'}</th>
+                          <th className="py-3 px-4 text-center">{isAr ? 'توريد فوري' : 'Quick Restock'}</th>
                         </tr>
-                      );
-                    })}
-                  </tbody>
-                </table>
-              </div>
+                      </thead>
+                      <tbody className="divide-y divide-slate-100 dark:divide-slate-800">
+                        {displayedTableRows.map((row) => {
+                          const isChecked = selectedPoIds.has(row.product.id);
+                          return (
+                            <tr
+                              key={row.product.id}
+                              className={`hover:bg-slate-50 dark:hover:bg-slate-800/50 ${
+                                row.urgency === 'critical'
+                                  ? 'bg-rose-50/40 dark:bg-rose-950/15'
+                                  : row.needsReorder
+                                  ? 'bg-amber-50/30 dark:bg-amber-950/10'
+                                  : ''
+                              }`}
+                            >
+                              <td className="py-3 px-3 text-center">
+                                <input
+                                  type="checkbox"
+                                  checked={isChecked}
+                                  onChange={() => {
+                                    setSelectedPoIds((prev) => {
+                                      const next = new Set(prev);
+                                      if (next.has(row.product.id)) next.delete(row.product.id);
+                                      else next.add(row.product.id);
+                                      return next;
+                                    });
+                                  }}
+                                  className="w-4 h-4 rounded text-indigo-600 cursor-pointer"
+                                />
+                              </td>
+                              <td className="py-3 px-4">
+                                <div className="font-bold text-slate-900 dark:text-white flex items-center gap-1.5">
+                                  <span>{row.product.name}</span>
+                                  {row.needsReorder && (
+                                    <span className="px-1.5 py-0.2 rounded text-[9px] font-black bg-amber-500 text-slate-950">
+                                      {isAr ? 'في قائمة الشراء' : 'IN PO'}
+                                    </span>
+                                  )}
+                                </div>
+                                <div className="text-[10px] text-slate-500 dark:text-slate-400">
+                                  <span className="font-mono">{row.product.sku}</span> · {row.supplierName}
+                                </div>
+                              </td>
+                              <td className="py-3 px-3 text-center font-mono font-black tabular-nums">
+                                <span
+                                  className={
+                                    row.urgency === 'critical'
+                                      ? 'text-rose-600'
+                                      : row.urgency === 'warning'
+                                      ? 'text-amber-600'
+                                      : 'text-emerald-600'
+                                  }
+                                >
+                                  {row.product.stock} {getUnitName(row.product.unitType)}
+                                </span>
+                              </td>
+                              <td className="py-3 px-3 text-center font-mono tabular-nums text-slate-700 dark:text-slate-300">
+                                <div className="font-bold">{row.dailyVelocity.toFixed(2)} / {isAr ? 'يوم' : 'd'}</div>
+                                <div className="text-[10px] text-slate-400">
+                                  {row.soldLast30d} {isAr ? 'فآخر 30 يوم' : 'in 30d'}
+                                </div>
+                              </td>
+                              <td className="py-3 px-3 text-center font-mono tabular-nums">
+                                <span
+                                  className={`px-2 py-0.5 rounded-lg text-[10px] font-black ${
+                                    row.needsReorder
+                                      ? 'bg-rose-100 text-rose-800 dark:bg-rose-950 dark:text-rose-300'
+                                      : 'bg-slate-100 text-slate-700 dark:bg-slate-800 dark:text-slate-300'
+                                  }`}
+                                >
+                                  {row.reorderPoint} {getUnitName(row.product.unitType)}
+                                </span>
+                              </td>
+                              <td className="py-3 px-3 text-center">
+                                {row.daysToZero === null ? (
+                                  <span className="px-2 py-0.5 rounded-lg bg-slate-100 dark:bg-slate-800 text-slate-500 text-[10px] font-bold">
+                                    {isAr ? 'سحب بطيء' : 'Slow'}
+                                  </span>
+                                ) : row.daysToZero === 0 ? (
+                                  <span className="px-2 py-0.5 rounded-lg bg-rose-600 text-white text-[10px] font-black">
+                                    {isAr ? 'نفد (0 ي)' : 'Out (0d)'}
+                                  </span>
+                                ) : (
+                                  <div className="inline-flex flex-col items-center">
+                                    <span
+                                      className={`px-2 py-0.5 rounded-lg text-[10px] font-black font-mono ${
+                                        row.daysToZero <= 5
+                                          ? 'bg-rose-100 text-rose-800 dark:bg-rose-950 dark:text-rose-300'
+                                          : row.daysToZero <= 14
+                                          ? 'bg-amber-100 text-amber-800 dark:bg-amber-950 dark:text-amber-300'
+                                          : 'bg-emerald-100 text-emerald-800 dark:bg-emerald-950 dark:text-emerald-300'
+                                      }`}
+                                    >
+                                      {isAr ? `بعد ${row.daysToZero} ي` : `${row.daysToZero}d`}
+                                    </span>
+                                    <span className="text-[9px] font-mono text-slate-400 mt-0.5">
+                                      {row.estimatedZeroDate}
+                                    </span>
+                                  </div>
+                                )}
+                              </td>
+                              <td className="py-3 px-3 text-center font-mono font-black text-indigo-700 dark:text-indigo-300 tabular-nums">
+                                {row.recommendedQty > 0 ? `+${row.recommendedQty}` : '0'}
+                              </td>
+                              <td className="py-3 px-3 text-end font-mono font-bold tabular-nums text-slate-700 dark:text-slate-300">
+                                {row.estimatedCost.toFixed(2)} {currencySymbol}
+                              </td>
+                              <td className="py-3 px-4 text-center">
+                                {row.recommendedQty > 0 ? (
+                                  <button
+                                    type="button"
+                                    onClick={() => {
+                                      adjustStock(
+                                        row.product.id,
+                                        row.recommendedQty,
+                                        `توريد تعويضي بناءً على نقطة إعادة الطلب (${row.supplierName})`,
+                                        'restock'
+                                      );
+                                      setProductToast(
+                                        isAr
+                                          ? `✅ تم توريد +${row.recommendedQty} لمنتج "${row.product.name}"`
+                                          : `✅ Restocked +${row.recommendedQty} for ${row.product.name}`
+                                      );
+                                      setTimeout(() => setProductToast(null), 3000);
+                                    }}
+                                    className="px-2.5 py-1 rounded-lg bg-emerald-600 hover:bg-emerald-700 text-white text-[10px] font-black inline-flex items-center gap-1"
+                                  >
+                                    <CheckCircle2 className="w-3 h-3" />
+                                    <span>+{row.recommendedQty}</span>
+                                  </button>
+                                ) : (
+                                  <span className="text-[10px] text-emerald-600 font-bold">
+                                    {isAr ? 'مكتفي ✓' : 'OK ✓'}
+                                  </span>
+                                )}
+                              </td>
+                            </tr>
+                          );
+                        })}
+                      </tbody>
+                    </table>
+                  </div>
+                </div>
+              )}
             </div>
           );
         })()}

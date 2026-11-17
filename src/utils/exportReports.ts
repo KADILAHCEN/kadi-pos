@@ -1010,3 +1010,205 @@ export function exportVoiceInvoicePdf(params: {
   saveCanvasAsPaginatedA4Pdf(canvas, width, height, filename);
   return filename;
 }
+
+// ======================================================
+// 5. Shop Ear Wholesale Shopping Sheet PDF (قائمة تسوق الجملة - ودن الحانوت)
+// ======================================================
+export interface ShopEarWholesalePdfItem {
+  itemName: string;
+  todayCount: number;
+  weekCount: number;
+  recommendedQty: number;
+  wholesaleUnitCost: number;
+  suggestedSellPrice: number;
+  expectedTotalProfit: number;
+  marginPct: number;
+  supplierHint?: string;
+}
+
+export function exportShopEarWholesalePdf(params: {
+  items: ShopEarWholesalePdfItem[];
+  settings: StoreSettings;
+  currencySymbol: string;
+  language: 'ar' | 'fr' | 'en';
+  highDemandOnly?: boolean;
+}): string {
+  const { items, settings, currencySymbol, language, highDemandOnly } = params;
+  const isAr = language === 'ar';
+  const rows = items.slice(0, 90);
+
+  const width = 794;
+  const rowH = 32;
+  const height = Math.max(1123, 330 + Math.max(1, rows.length) * rowH + 120);
+  const scale = Math.min(2, 12000 / Math.max(1, height));
+
+  const canvas = document.createElement('canvas');
+  canvas.width = Math.round(width * scale);
+  canvas.height = Math.round(height * scale);
+  const ctx = canvas.getContext('2d')!;
+  ctx.scale(scale, scale);
+
+  ctx.fillStyle = '#ffffff';
+  ctx.fillRect(0, 0, width, height);
+
+  const padX = 36;
+  const contentW = width - padX * 2;
+  const rightEdge = width - padX;
+  let curY = 36;
+
+  const drawText = (
+    text: string,
+    x: number,
+    y: number,
+    opts?: { font?: string; color?: string; align?: CanvasTextAlign; maxWidth?: number }
+  ) => {
+    ctx.save();
+    ctx.font = opts?.font || '11px "Cairo", "Segoe UI", Tahoma, sans-serif';
+    ctx.fillStyle = opts?.color || '#0f172a';
+    ctx.textAlign = opts?.align || (isAr ? 'right' : 'left');
+    ctx.direction = isAr ? 'rtl' : 'ltr';
+    if (opts?.maxWidth) ctx.fillText(text, x, y, opts.maxWidth);
+    else ctx.fillText(text, x, y);
+    ctx.restore();
+  };
+
+  // Header
+  ctx.fillStyle = '#0f172a';
+  ctx.fillRect(padX, curY, contentW, 88);
+  const logoDrawn = drawStoreLogoBadge(ctx, settings.storeLogo, rightEdge - 72, curY + 15, 58);
+  const anchor = logoDrawn ? rightEdge - 84 : rightEdge - 18;
+
+  drawText(settings.storeName || 'Kadi POS', anchor, curY + 32, {
+    font: 'bold 18px "Cairo", sans-serif',
+    color: '#ffffff',
+    align: 'right'
+  });
+  drawText(
+    isAr
+      ? highDemandOnly
+        ? 'قائمة تسوق الجملة — السلع المطلوبة بكثرة (ودن الحانوت)'
+        : 'ورقة ودن الحانوت — قائمة تسوق الجملة الجاهزة'
+      : 'Shop Ear Wholesale Shopping List',
+    anchor,
+    curY + 58,
+    {
+      font: 'bold 13px "Cairo", sans-serif',
+      color: '#fbbf24',
+      align: 'right'
+    }
+  );
+  drawText(new Date().toISOString().slice(0, 10), padX + 16, curY + 48, {
+    font: 'bold 11px monospace',
+    color: '#cbd5e1',
+    align: 'left'
+  });
+
+  curY += 106;
+
+  // Totals summary strip
+  const totalBudget = rows.reduce((s, r) => s + r.wholesaleUnitCost * r.recommendedQty, 0);
+  const totalProfit = rows.reduce((s, r) => s + r.expectedTotalProfit, 0);
+  const totalRequests = rows.reduce((s, r) => s + Math.max(r.weekCount, r.todayCount), 0);
+
+  const kpis = [
+    { label: isAr ? 'عدد الأصناف' : 'Items', value: String(rows.length) },
+    { label: isAr ? 'طلبات الزبناء' : 'Requests', value: String(totalRequests) },
+    { label: isAr ? 'تكلفة تقديرية' : 'Est. Cost', value: `${totalBudget.toFixed(0)} ${currencySymbol}` },
+    { label: isAr ? 'ربح متوقع' : 'Est. Profit', value: `+${totalProfit.toFixed(0)} ${currencySymbol}` }
+  ];
+
+  const kpiW = (contentW - 30) / 4;
+  kpis.forEach((k, idx) => {
+    const kx = padX + idx * (kpiW + 10);
+    ctx.fillStyle = '#f8fafc';
+    ctx.fillRect(kx, curY, kpiW, 50);
+    ctx.strokeStyle = '#e2e8f0';
+    ctx.strokeRect(kx, curY, kpiW, 50);
+    drawText(k.label, kx + kpiW - 10, curY + 18, {
+      font: 'bold 10px "Cairo", sans-serif',
+      color: '#64748b',
+      align: 'right'
+    });
+    drawText(k.value, kx + kpiW - 10, curY + 38, {
+      font: 'bold 12px monospace',
+      color: idx === 3 ? '#059669' : '#0f172a',
+      align: 'right'
+    });
+  });
+
+  curY += 68;
+
+  // Table header
+  ctx.fillStyle = '#f1f5f9';
+  ctx.fillRect(padX, curY, contentW, rowH);
+  ctx.strokeStyle = '#cbd5e1';
+  ctx.strokeRect(padX, curY, contentW, rowH);
+
+  drawText(isAr ? 'السلعة والمورد المقترح' : 'Item & Supplier', rightEdge - 12, curY + 20, {
+    font: 'bold 10px "Cairo", sans-serif',
+    align: 'right'
+  });
+  drawText(isAr ? 'الطلب (سيمانة)' : 'Demand', padX + 340, curY + 20, {
+    font: 'bold 10px "Cairo", sans-serif',
+    align: 'center'
+  });
+  drawText(isAr ? 'الكمية للجملة' : 'Order Qty', padX + 235, curY + 20, {
+    font: 'bold 10px "Cairo", sans-serif',
+    align: 'center'
+  });
+  drawText(isAr ? 'الهامش المتوقع' : 'Est. Profit', padX + 125, curY + 20, {
+    font: 'bold 10px "Cairo", sans-serif',
+    align: 'center'
+  });
+  drawText(isAr ? 'تم' : 'Done', padX + 24, curY + 20, {
+    font: 'bold 10px "Cairo", sans-serif',
+    align: 'left'
+  });
+
+  curY += rowH;
+
+  rows.forEach((r, idx) => {
+    ctx.fillStyle = idx % 2 === 0 ? '#ffffff' : '#f8fafc';
+    ctx.fillRect(padX, curY, contentW, rowH);
+    ctx.strokeStyle = '#e2e8f0';
+    ctx.strokeRect(padX, curY, contentW, rowH);
+
+    const itemLine = r.supplierHint ? `${r.itemName} (${r.supplierHint})` : r.itemName;
+    drawText(itemLine, rightEdge - 12, curY + 20, {
+      font: 'bold 10px "Cairo", sans-serif',
+      align: 'right',
+      maxWidth: 270
+    });
+    drawText(`${r.weekCount} (${r.todayCount} ${isAr ? 'اليوم' : 'td'})`, padX + 340, curY + 20, {
+      font: '10px "Cairo", sans-serif',
+      align: 'center'
+    });
+    drawText(`${r.recommendedQty}`, padX + 235, curY + 20, {
+      font: 'bold 11px monospace',
+      align: 'center',
+      color: '#b45309'
+    });
+    drawText(
+      r.expectedTotalProfit > 0
+        ? `+${r.expectedTotalProfit.toFixed(0)} ${currencySymbol} (${r.marginPct}%)`
+        : '-',
+      padX + 125,
+      curY + 20,
+      {
+        font: 'bold 10px monospace',
+        align: 'center',
+        color: '#059669'
+      }
+    );
+
+    // Printable checkbox square
+    ctx.strokeStyle = '#94a3b8';
+    ctx.strokeRect(padX + 16, curY + 9, 14, 14);
+    curY += rowH;
+  });
+
+  const filename = `KadiPOS_Wholesale_ShopEar_${new Date().toISOString().slice(0, 10)}.pdf`;
+  saveCanvasAsPaginatedA4Pdf(canvas, width, height, filename);
+  return filename;
+}
+

@@ -554,10 +554,19 @@ export interface RemoteOrder {
 // =========================
 // Supplier Purchase Invoices (فواتير الموردين ومشتريات السلعة)
 // =========================
+export interface SupplierInvoiceItemSnapshot {
+  productName: string;
+  quantity: number;
+  unitCost: number;
+  unitType?: UnitType;
+}
+
 export interface SupplierInvoice {
   id: string;
   supplierName: string;
   supplierPhone?: string;
+  supplierIce?: string;
+  invoiceType?: 'official_ice' | 'informal_noir';
   invoiceNumber: string;
   date: string; // YYYY-MM-DD
   dueDate?: string; // YYYY-MM-DD
@@ -565,6 +574,9 @@ export interface SupplierInvoice {
   paidAmount: number;
   status: 'unpaid' | 'partial' | 'paid';
   notes?: string;
+  itemsCount?: number;
+  itemsSummary?: SupplierInvoiceItemSnapshot[];
+  scannedViaCamera?: boolean;
   recordedBy?: string;
   createdAt: string;
 }

@@ -17,8 +17,9 @@ import {
 } from 'lucide-react';
 import {
   ResponsiveContainer,
-  BarChart,
+  ComposedChart,
   Bar,
+  Area,
   XAxis,
   YAxis,
   CartesianGrid,
@@ -982,17 +983,32 @@ export const CustomersPeakView: React.FC = () => {
           </div>
         ) : (
           <div className="grid grid-cols-1 xl:grid-cols-3 gap-4">
-            <div className="xl:col-span-2 h-60 w-full">
+            <div className="xl:col-span-2 h-64 w-full" dir="ltr">
               <ResponsiveContainer width="100%" height="100%">
-                <BarChart data={peakAnalysis.slots} margin={{ top: 10, right: 10, left: 0, bottom: 0 }}>
+                <ComposedChart
+                  data={peakAnalysis.slots}
+                  margin={{ top: 10, right: 12, left: 0, bottom: 0 }}
+                >
+                  <defs>
+                    <linearGradient id="peakRevGradient" x1="0" y1="0" x2="0" y2="1">
+                      <stop offset="5%" stopColor="#3b82f6" stopOpacity={0.28} />
+                      <stop offset="95%" stopColor="#3b82f6" stopOpacity={0.02} />
+                    </linearGradient>
+                  </defs>
                   <CartesianGrid strokeDasharray="3 3" stroke={isDark ? '#1e293b' : '#e2e8f0'} />
                   <XAxis
                     dataKey="label"
                     tick={{ fontSize: 11, fill: isDark ? '#94a3b8' : '#64748b' }}
                   />
                   <YAxis
+                    yAxisId="left"
                     allowDecimals={false}
                     tick={{ fontSize: 11, fill: isDark ? '#94a3b8' : '#64748b' }}
+                  />
+                  <YAxis
+                    yAxisId="right"
+                    orientation="right"
+                    tick={{ fontSize: 10, fill: isDark ? '#60a5fa' : '#2563eb' }}
                   />
                   <Tooltip
                     contentStyle={{
@@ -1005,15 +1021,29 @@ export const CustomersPeakView: React.FC = () => {
                       name === 'ordersCount'
                         ? `${val ?? 0} ${isAr ? 'زبون/فاتورة' : 'orders'}`
                         : `${Number(val ?? 0).toFixed(2)} ${currencySymbol}`,
-                      name === 'ordersCount' ? (isAr ? 'الزبناء' : 'Orders') : isAr ? 'المبيعات' : 'Revenue'
+                      name === 'ordersCount'
+                        ? isAr
+                          ? 'الزبناء'
+                          : 'Orders'
+                        : isAr
+                        ? 'المداخيل الزمنية'
+                        : 'Revenue Timeline'
                     ]}
                   />
-                  <Bar dataKey="ordersCount" radius={[6, 6, 0, 0]}>
+                  <Area
+                    yAxisId="right"
+                    type="monotone"
+                    dataKey="revenue"
+                    stroke="#3b82f6"
+                    strokeWidth={2}
+                    fill="url(#peakRevGradient)"
+                  />
+                  <Bar yAxisId="left" dataKey="ordersCount" radius={[6, 6, 0, 0]} barSize={22}>
                     {peakAnalysis.slots.map((slot) => (
                       <Cell key={slot.hour} fill={TRAFFIC_STYLES[slot.tier].barHex} />
                     ))}
                   </Bar>
-                </BarChart>
+                </ComposedChart>
               </ResponsiveContainer>
             </div>
 

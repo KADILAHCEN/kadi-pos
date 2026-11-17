@@ -22,8 +22,10 @@ import { PublicCatalogView } from './components/remote/PublicCatalogView';
 import { CpuTaxView } from './components/cpu/CpuTaxView';
 import { AnalyticsView } from './components/analytics/AnalyticsView';
 import { CustomersPeakView } from './components/analytics/CustomersPeakView';
+import { DreamView } from './components/analytics/DreamView';
 import { ShopEarView } from './components/shopEar/ShopEarView';
 import { ShopEarQuickModal } from './components/shopEar/ShopEarQuickModal';
+import { PurchaseInvoiceScanModal } from './components/inventory/PurchaseInvoiceScanModal';
 import { AiAssistantView } from './components/ai/AiAssistantView';
 import { FloatingAiChatButton } from './components/ai/FloatingAiChatButton';
 import { VoiceAssistantModal } from './components/voice/VoiceAssistantModal';
@@ -590,6 +592,7 @@ const PosMainContent: React.FC = () => {
         {currentTab === 'cpu_tax' && <CpuTaxView />}
         {currentTab === 'analytics' && <AnalyticsView />}
         {currentTab === 'customers_peak' && <CustomersPeakView />}
+        {currentTab === 'dream' && <DreamView />}
         {currentTab === 'shop_ear' && <ShopEarView />}
         {currentTab === 'ai_assistant' && <AiAssistantView />}
         {currentTab === 'alerts' && <AlertsView />}
@@ -628,6 +631,7 @@ const PosMainContent: React.FC = () => {
       )}
 
       <ShopEarQuickModal />
+      <PurchaseInvoiceScanModal />
 
       {/* PIN Gate Modal for protected routes */}
       <PinGateModal

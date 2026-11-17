@@ -5,6 +5,7 @@ import { DailySalesReportModal } from './DailySalesReportModal';
 import { ZakatCalculatorSection } from './ZakatCalculatorSection';
 import { PeriodProfitTargetPanel } from './PeriodProfitTargetPanel';
 import { generateAndDownloadDailySalesPdf } from '../../utils/pdfReport';
+import { exportShopEarWholesalePdf, ShopEarWholesalePdfItem } from '../../utils/exportReports';
 import {
   EXPENSE_CATEGORIES,
   computeExpenseMetrics,
@@ -26,7 +27,14 @@ import {
   BarChart3,
   Scale,
   Wallet,
-  Landmark
+  Landmark,
+  Ear,
+  Compass,
+  Clock,
+  AlertTriangle,
+  FileDown,
+  Copy,
+  Check
 } from 'lucide-react';
 import {
   ResponsiveContainer,
@@ -54,6 +62,9 @@ export const AnalyticsView: React.FC = () => {
     updateSettings,
     activeBranch,
     currentShift,
+    shiftsHistory,
+    shopEarRequests,
+    supplierInvoices,
     zakatSummary,
     cpuRecords,
     setCurrentTab,
@@ -67,6 +78,7 @@ export const AnalyticsView: React.FC = () => {
 
   const [showReportModal, setShowReportModal] = useState(false);
   const [pdfToast, setPdfToast] = useState<string | null>(null);
+  const [copiedShopEarSheet, setCopiedShopEarSheet] = useState(false);
   const [activeChartMetric, setActiveChartMetric] = useState<'both' | 'sales' | 'profit'>('both');
   const [chartType, setChartType] = useState<'bar' | 'line'>('bar');
   const [weeklyChartMode, setWeeklyChartMode] = useState<'composed' | 'area'>('composed');
@@ -382,6 +394,182 @@ export const AnalyticsView: React.FC = () => {
     [filteredReportExpenses]
   );
 
+  // =========================================================================
+  // MISSED OPPORTUNITIES ALERTS & WEEKLY SHOP EAR REPORT SUMMARY
+  // =========================================================================
+  const missedOpportunitiesInsights = useMemo(() => {
+    const sevenDaysAgo = Date.now() - 7 * 86400000;
+    const shopEarMap = new Map<
+      string,
+      {
+        normalizedName: string;
+        itemName: string;
+        weekCount: number;
+        todayCount: number;
+        unitPrice: number;
+        unitCost: number;
+        missedRev: number;
+        supplierHint: string;
+      }
+    >();
+    const todayStr = getLocalTodayYMD();
+
+    shopEarRequests.forEach((req) => {
+      if (req.status === 'notified') return;
+      const ms = new Date(req.requestedAt).getTime();
+      const inWeek = !Number.isNaN(ms) && ms >= sevenDaysAgo;
+      if (!inWeek && req.status !== 'pending') return;
+
+      const matched =
+        (req.productId ? products.find((p) => p.id === req.productId) : undefined) ||
+        products.find((p) => p.name.trim().toLowerCase() === req.itemName.trim().toLowerCase());
+      const unitPrice = req.estimatedUnitPrice ?? matched?.price ?? 12;
+      const unitCost = matched?.costPrice ?? Number((unitPrice * 0.78).toFixed(2));
+
+      const matchedSup =
+        supplierInvoices.find(
+          (inv) =>
+            (inv.notes && inv.notes.toLowerCase().includes(req.itemName.toLowerCase())) ||
+            inv.supplierName.toLowerCase().includes(req.itemName.toLowerCase())
+        )?.supplierName || (isAr ? 'مورد الجملة المقترح' : 'Wholesale Market');
+
+      const prev = shopEarMap.get(req.normalizedName);
+      if (prev) {
+        prev.weekCount += 1;
+        if (req.dateKey === todayStr) prev.todayCount += 1;
+        prev.missedRev = Number((prev.missedRev + unitPrice).toFixed(2));
+      } else {
+        shopEarMap.set(req.normalizedName, {
+          normalizedName: req.normalizedName,
+          itemName: req.itemName,
+          weekCount: 1,
+          todayCount: req.dateKey === todayStr ? 1 : 0,
+          unitPrice,
+          unitCost,
+          missedRev: unitPrice,
+          supplierHint: matchedSup
+        });
+      }
+    });
+
+    const weeklyShopEarItems = Array.from(shopEarMap.values()).sort(
+      (a, b) => b.weekCount - a.weekCount || b.missedRev - a.missedRev
+    );
+
+    const weeklyMissedSales = weeklyShopEarItems.reduce((s, it) => s + it.missedRev, 0);
+    const estMonthlyExtraShopEarProfit = Math.round(
+      weeklyShopEarItems.reduce(
+        (s, it) => s + Math.max(2, it.unitPrice - it.unitCost) * it.weekCount * 4.3,
+        0
+      )
+    );
+
+    // Operating hours vs historical order hours analysis
+    const allShifts = [currentShift, ...shiftsHistory].filter((s) => Boolean(s?.openedAt));
+    const openHourNumbers = allShifts
+      .map((s) => new Date(s.openedAt).getHours())
+      .filter((h) => !Number.isNaN(h));
+    const avgOpenHour =
+      openHourNumbers.length > 0
+        ? Math.round(openHourNumbers.reduce((s, h) => s + h, 0) / openHourNumbers.length)
+        : 9;
+
+    const hourSalesMap = new Map<number, { count: number; sales: number }>();
+    completedOrders.forEach((o) => {
+      const d = new Date(o.date);
+      if (Number.isNaN(d.getTime())) return;
+      const h = d.getHours();
+      const prev = hourSalesMap.get(h) || { count: 0, sales: 0 };
+      hourSalesMap.set(h, { count: prev.count + 1, sales: prev.sales + o.grandTotal });
+    });
+
+    const bestHourEntry = Array.from(hourSalesMap.entries()).sort(
+      (a, b) => b[1].sales - a[1].sales
+    )[0];
+    const peakHourLabel = bestHourEntry
+      ? `${String(bestHourEntry[0]).padStart(2, '0')}:00`
+      : '19:00';
+
+    const lateMorningOpportunity = avgOpenHour > 8;
+    const estMorningExtraProfit = lateMorningOpportunity
+      ? Math.max(450, Math.round((avgOpenHour - 8) * 18 * 28))
+      : 0;
+
+    const zeroStockFastMovers = products.filter((p) => p.stock <= 0).slice(0, 4);
+
+    return {
+      weeklyShopEarItems,
+      weeklyMissedSales,
+      estMonthlyExtraShopEarProfit,
+      avgOpenHour,
+      lateMorningOpportunity,
+      estMorningExtraProfit,
+      peakHourLabel,
+      zeroStockFastMovers
+    };
+  }, [
+    shopEarRequests,
+    products,
+    supplierInvoices,
+    currentShift,
+    shiftsHistory,
+    completedOrders,
+    isAr
+  ]);
+
+  const handleExportAnalyticsShopEarPdf = () => {
+    const items: ShopEarWholesalePdfItem[] =
+      missedOpportunitiesInsights.weeklyShopEarItems.map((it) => {
+        const recommendedQty = Math.max(6, it.weekCount * 2);
+        const unitProfit = Math.max(1, it.unitPrice - it.unitCost);
+        const marginPct = it.unitPrice > 0 ? Math.round((unitProfit / it.unitPrice) * 100) : 22;
+        return {
+          itemName: it.itemName,
+          todayCount: it.todayCount,
+          weekCount: it.weekCount,
+          recommendedQty,
+          wholesaleUnitCost: it.unitCost,
+          suggestedSellPrice: it.unitPrice,
+          expectedTotalProfit: Number((unitProfit * recommendedQty).toFixed(2)),
+          marginPct,
+          supplierHint: it.supplierHint
+        };
+      });
+
+    const filename = exportShopEarWholesalePdf({
+      items,
+      settings,
+      currencySymbol,
+      language
+    });
+    setPdfToast(
+      isAr
+        ? `تم تصدير ورقة الجملة (ودن الحانوت) بصيغة PDF: ${filename}`
+        : `Exported Shop Ear Wholesale PDF: ${filename}`
+    );
+    setTimeout(() => setPdfToast(null), 4000);
+  };
+
+  const handleCopyAnalyticsShopEar = async () => {
+    const lines = missedOpportunitiesInsights.weeklyShopEarItems.map(
+      (it, idx) =>
+        `${idx + 1}. ${it.itemName} — ${it.weekCount} طلب هاد السيمانة (${it.supplierHint})`
+    );
+    const text =
+      lines.length > 0
+        ? `📝 ورقة ودن الحانوت الأسبوعية:\n${lines.join('\n')}`
+        : isAr
+        ? 'لا توجد طلبات ناقصة مسجلة هذا الأسبوع.'
+        : 'No weekly missed items recorded.';
+    try {
+      await navigator.clipboard.writeText(text);
+      setCopiedShopEarSheet(true);
+      setTimeout(() => setCopiedShopEarSheet(false), 2000);
+    } catch {
+      // ignore clipboard errors
+    }
+  };
+
   return (
     <div className="flex-1 flex flex-col h-full overflow-y-auto bg-slate-50 dark:bg-slate-950 p-3 sm:p-6 space-y-4 sm:space-y-6">
       {/* Title & Daily Report Button */}
@@ -613,6 +801,249 @@ export const AnalyticsView: React.FC = () => {
             {isAr ? 'إدارة المصاريف' : 'Manage Expenses'}
           </button>
         </div>
+      </div>
+
+      {/* =================================================================== */}
+      {/* MISSED OPPORTUNITIES ALERTS & WEEKLY SHOP EAR REPORT SECTION        */}
+      {/* =================================================================== */}
+      <div className="grid grid-cols-1 xl:grid-cols-2 gap-4">
+        {/* 1. Missed Opportunities Alerts (تنبيهات الفرص الضائعة) */}
+        <section className="p-5 rounded-3xl bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 space-y-4">
+          <div className="flex flex-wrap items-center justify-between gap-2 pb-3 border-b border-slate-100 dark:border-slate-800">
+            <div className="flex items-center gap-2.5">
+              <div className="w-9 h-9 rounded-xl bg-amber-100 dark:bg-amber-950/60 text-amber-700 dark:text-amber-300 flex items-center justify-center shrink-0">
+                <AlertTriangle className="w-5 h-5" />
+              </div>
+              <div>
+                <h3 className="text-sm sm:text-base font-black text-slate-900 dark:text-white">
+                  {isAr ? 'تنبيهات الفرص الضائعة' : 'Missed Opportunities Alerts'}
+                </h3>
+                <p className="text-[11px] text-slate-500 dark:text-slate-400">
+                  {isAr
+                    ? 'اقتراحات عملية لتحسين ساعات العمل وإضافة السلع اللي كيطلبوها الزبناء'
+                    : 'Actionable suggestions from sales hours & customer Shop Ear requests'}
+                </p>
+              </div>
+            </div>
+            <button
+              type="button"
+              onClick={() => setCurrentTab('dream')}
+              className="px-3 py-1.5 rounded-xl bg-amber-400 hover:bg-amber-500 text-slate-950 text-xs font-black flex items-center gap-1.5 transition-colors whitespace-nowrap"
+            >
+              <Compass className="w-3.5 h-3.5" />
+              <span>{isAr ? 'بوصلة الحلم' : 'Dream Compass'}</span>
+            </button>
+          </div>
+
+          <div className="space-y-2.5 text-xs">
+            {/* Hours Optimization Alert */}
+            <div className="p-3.5 rounded-2xl bg-slate-50 dark:bg-slate-800/60 border border-slate-200 dark:border-slate-700/80 flex items-start justify-between gap-3">
+              <div className="space-y-1">
+                <div className="font-bold text-slate-900 dark:text-white flex items-center gap-1.5">
+                  <Clock className="w-4 h-4 text-amber-600 dark:text-amber-400 shrink-0" />
+                  <span>
+                    {missedOpportunitiesInsights.lateMorningOpportunity
+                      ? isAr
+                        ? `متوسط الافتتاح (${String(missedOpportunitiesInsights.avgOpenHour).padStart(
+                            2,
+                            '0'
+                          )}:00) كيفوّت طلب الصباح`
+                        : `Late average opening (${String(missedOpportunitiesInsights.avgOpenHour).padStart(
+                            2,
+                            '0'
+                          )}:00)`
+                      : isAr
+                      ? `أقوى ساعة ذروة عندك هي ${missedOpportunitiesInsights.peakHourLabel}`
+                      : `Strongest peak sales hour is ${missedOpportunitiesInsights.peakHourLabel}`}
+                  </span>
+                </div>
+                <p className="text-[11px] text-slate-600 dark:text-slate-300 leading-relaxed">
+                  {missedOpportunitiesInsights.lateMorningOpportunity
+                    ? isAr
+                      ? `اقتراح: حل الصندوق على 08:00 صباحاً وخلي السد حتى ما بعد ${missedOpportunitiesInsights.peakHourLabel} باش تلتقط زبناء الفطور والخدمة.`
+                      : `Suggestion: Open by 08:00 AM and keep peak coverage around ${missedOpportunitiesInsights.peakHourLabel}.`
+                    : isAr
+                    ? `ساعات الافتتاح ممتازة. ركّز على توفر السلع السريعة قبل ${missedOpportunitiesInsights.peakHourLabel}.`
+                    : `Good opening time. Ensure fast-moving stock is ready before ${missedOpportunitiesInsights.peakHourLabel}.`}
+                </p>
+              </div>
+              {missedOpportunitiesInsights.estMorningExtraProfit > 0 && (
+                <div className="text-end font-mono tabular-nums shrink-0">
+                  <div className="text-[10px] font-bold text-slate-500">
+                    {isAr ? 'فرصة شهرية' : 'Est. Lift/mo'}
+                  </div>
+                  <div className="text-sm font-black text-emerald-600 dark:text-emerald-400">
+                    +{missedOpportunitiesInsights.estMorningExtraProfit} {currencySymbol}
+                  </div>
+                </div>
+              )}
+            </div>
+
+            {/* Requested Unstocked Products Opportunity */}
+            <div className="p-3.5 rounded-2xl bg-slate-50 dark:bg-slate-800/60 border border-slate-200 dark:border-slate-700/80 flex items-start justify-between gap-3">
+              <div className="space-y-1">
+                <div className="font-bold text-slate-900 dark:text-white flex items-center gap-1.5">
+                  <Ear className="w-4 h-4 text-rose-500 shrink-0" />
+                  <span>
+                    {missedOpportunitiesInsights.weeklyShopEarItems.length > 0
+                      ? isAr
+                        ? `${missedOpportunitiesInsights.weeklyShopEarItems.length} سلع سولو عليها الزبناء وما كايناش هاد السيمانة`
+                        : `${missedOpportunitiesInsights.weeklyShopEarItems.length} requested items missing this week`
+                      : isAr
+                      ? 'لا توجد طلبات ضائعة مسجلة في ودن الحانوت هذا الأسبوع'
+                      : 'No missed Shop Ear requests this week'}
+                  </span>
+                </div>
+                <p className="text-[11px] text-slate-600 dark:text-slate-300 leading-relaxed">
+                  {missedOpportunitiesInsights.weeklyShopEarItems.length > 0
+                    ? isAr
+                      ? `أولوية الإضافة: ${missedOpportunitiesInsights.weeklyShopEarItems
+                          .slice(0, 3)
+                          .map((i) => `${i.itemName} (${i.weekCount}×)`)
+                          .join(' · ')}`
+                      : `Top requested: ${missedOpportunitiesInsights.weeklyShopEarItems
+                          .slice(0, 3)
+                          .map((i) => `${i.itemName} (${i.weekCount}x)`)
+                          .join(' · ')}`
+                    : isAr
+                    ? 'أي منتج سول عليه الزبون وما لقاهش سجلو بزر ودن الحانوت باش يبان هنا الربح الضائع.'
+                    : 'Log customer missing-item requests via Shop Ear to quantify opportunity lift.'}
+                </p>
+              </div>
+              {missedOpportunitiesInsights.estMonthlyExtraShopEarProfit > 0 && (
+                <div className="text-end font-mono tabular-nums shrink-0">
+                  <div className="text-[10px] font-bold text-slate-500">
+                    {isAr ? 'ربح شهري ممكن' : 'Est. Profit/mo'}
+                  </div>
+                  <div className="text-sm font-black text-emerald-600 dark:text-emerald-400">
+                    +{missedOpportunitiesInsights.estMonthlyExtraShopEarProfit} {currencySymbol}
+                  </div>
+                </div>
+              )}
+            </div>
+
+            {/* Out-of-stock Catalog Items Alert */}
+            {missedOpportunitiesInsights.zeroStockFastMovers.length > 0 && (
+              <div className="p-3 rounded-2xl bg-rose-50/70 dark:bg-rose-950/30 border border-rose-200 dark:border-rose-800/70 flex items-center justify-between gap-2">
+                <div className="text-[11px] font-bold text-rose-800 dark:text-rose-300 truncate">
+                  {isAr
+                    ? `منتجات نافدة (0 بالمخزون): ${missedOpportunitiesInsights.zeroStockFastMovers
+                        .map((p) => p.name)
+                        .join(' · ')}`
+                    : `Zero stock items: ${missedOpportunitiesInsights.zeroStockFastMovers
+                        .map((p) => p.name)
+                        .join(' · ')}`}
+                </div>
+                <button
+                  type="button"
+                  onClick={() => setCurrentTab('shop_ear')}
+                  className="text-[11px] font-black text-rose-700 dark:text-rose-300 underline shrink-0"
+                >
+                  {isAr ? 'توريد الجملة' : 'Restock'}
+                </button>
+              </div>
+            )}
+          </div>
+        </section>
+
+        {/* 2. Shop Ear Wholesale Sheet inside Reports (واجهة ورقة ودن الحانوت في التقارير) */}
+        <section className="p-5 rounded-3xl bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 flex flex-col justify-between gap-4">
+          <div className="space-y-3">
+            <div className="flex flex-wrap items-center justify-between gap-2 pb-3 border-b border-slate-100 dark:border-slate-800">
+              <div className="flex items-center gap-2.5">
+                <div className="w-9 h-9 rounded-xl bg-emerald-100 dark:bg-emerald-950/60 text-emerald-700 dark:text-emerald-300 flex items-center justify-center shrink-0">
+                  <Ear className="w-5 h-5" />
+                </div>
+                <div>
+                  <h3 className="text-sm sm:text-base font-black text-slate-900 dark:text-white">
+                    {isAr
+                      ? 'ورقة ودن الحانوت — خلاصة التقارير الأسبوعية'
+                      : 'Shop Ear Wholesale Summary (Weekly Reports)'}
+                  </h3>
+                  <p className="text-[11px] text-slate-500 dark:text-slate-400">
+                    {isAr
+                      ? 'السلع غير المتوفرة الأكثر طلباً هاد السيمانة جاهزة للتصدير PDF أو التوريد'
+                      : 'Top missing items requested this week ready for PDF wholesale export'}
+                  </p>
+                </div>
+              </div>
+
+              <div className="flex items-center gap-1.5">
+                <button
+                  type="button"
+                  onClick={() => void handleCopyAnalyticsShopEar()}
+                  className="px-2.5 py-1.5 rounded-xl border border-slate-200 dark:border-slate-700 bg-slate-50 dark:bg-slate-800 text-xs font-bold text-slate-700 dark:text-slate-200 flex items-center gap-1"
+                >
+                  {copiedShopEarSheet ? (
+                    <Check className="w-3.5 h-3.5 text-emerald-600" />
+                  ) : (
+                    <Copy className="w-3.5 h-3.5" />
+                  )}
+                  <span>{copiedShopEarSheet ? (isAr ? 'نسخ ✓' : 'Copied') : isAr ? 'نسخ' : 'Copy'}</span>
+                </button>
+                <button
+                  type="button"
+                  onClick={handleExportAnalyticsShopEarPdf}
+                  className="px-3 py-1.5 rounded-xl bg-slate-900 dark:bg-amber-400 text-white dark:text-slate-950 text-xs font-black flex items-center gap-1.5"
+                >
+                  <FileDown className="w-3.5 h-3.5" />
+                  <span>{isAr ? 'PDF الجملة' : 'PDF'}</span>
+                </button>
+              </div>
+            </div>
+
+            {missedOpportunitiesInsights.weeklyShopEarItems.length === 0 ? (
+              <div className="py-6 text-center text-xs text-slate-500 dark:text-slate-400 border border-dashed border-slate-200 dark:border-slate-800 rounded-2xl">
+                {isAr
+                  ? 'ورقة ودن الحانوت خاوية هذا الأسبوع — كل الطلبات متوفرة.'
+                  : 'Shop Ear list is empty this week.'}
+              </div>
+            ) : (
+              <div className="divide-y divide-slate-100 dark:divide-slate-800 max-h-52 overflow-y-auto border border-slate-200 dark:border-slate-800 rounded-2xl">
+                {missedOpportunitiesInsights.weeklyShopEarItems.slice(0, 6).map((item) => (
+                  <div
+                    key={item.normalizedName}
+                    className="px-3.5 py-2.5 flex items-center justify-between gap-2 text-xs"
+                  >
+                    <div className="min-w-0">
+                      <div className="font-bold text-slate-900 dark:text-white truncate">
+                        {item.itemName}
+                      </div>
+                      <div className="text-[11px] text-slate-500 dark:text-slate-400 truncate">
+                        {item.supplierHint}
+                      </div>
+                    </div>
+                    <div className="text-end font-mono tabular-nums shrink-0">
+                      <div className="font-black text-amber-600 dark:text-amber-400">
+                        {item.weekCount} {isAr ? 'طلبات' : 'reqs'}
+                      </div>
+                      <div className="text-[10px] text-rose-600 dark:text-rose-400">
+                        -{item.missedRev.toFixed(0)} {currencySymbol}
+                      </div>
+                    </div>
+                  </div>
+                ))}
+              </div>
+            )}
+          </div>
+
+          <div className="flex items-center justify-between gap-2 pt-2 border-t border-slate-100 dark:border-slate-800 text-xs">
+            <span className="font-bold text-slate-600 dark:text-slate-300 font-mono tabular-nums">
+              {isAr ? 'المبيعات الضائعة هذا الأسبوع:' : 'Weekly Missed Sales:'}{' '}
+              <strong className="text-rose-600 dark:text-rose-400">
+                {missedOpportunitiesInsights.weeklyMissedSales.toFixed(0)} {currencySymbol}
+              </strong>
+            </span>
+            <button
+              type="button"
+              onClick={() => setCurrentTab('shop_ear')}
+              className="px-3 py-1.5 rounded-xl bg-amber-50 dark:bg-amber-950/60 hover:bg-amber-100 text-amber-800 dark:text-amber-300 font-bold flex items-center gap-1 transition-colors"
+            >
+              <span>{isAr ? 'فتح ورقة ودن الحانوت الكاملة' : 'Open Full Shop Ear'}</span>
+              <ArrowUpRight className="w-3.5 h-3.5" />
+            </button>
+          </div>
+        </section>
       </div>
 
       {/* Automatic Zakat Due Alert Strip when 85g Gold Nisab Exceeded */}
