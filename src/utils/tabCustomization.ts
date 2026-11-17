@@ -299,6 +299,7 @@ export const TAB_COLOR_PRESETS: Record<TabColorKey, TabColorPreset> = {
 export interface PosTabDefinition {
   id:
     | 'pos'
+    | 'bourse'
     | 'inventory'
     | 'orders'
     | 'shifts'
@@ -334,6 +335,18 @@ export const POS_TAB_CATALOG: PosTabDefinition[] = [
     shortLabelFr: 'Caisse',
     shortLabelEn: 'POS',
     defaultIcon: 'store',
+    defaultColor: 'emerald',
+    showInTopNav: true
+  },
+  {
+    id: 'bourse',
+    labelAr: 'بورصة الحانوت',
+    labelFr: 'Bourse Hanout',
+    labelEn: 'Bourse Hanout',
+    shortLabelAr: 'البورصة',
+    shortLabelFr: 'Bourse',
+    shortLabelEn: 'Bourse',
+    defaultIcon: 'trending_up',
     defaultColor: 'emerald',
     showInTopNav: true
   },

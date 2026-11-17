@@ -688,6 +688,12 @@ export const ReceiptModal: React.FC<ReceiptModalProps> = ({
                   </div>
                 </>
               )}
+              {order.pointsRedeemed && order.pointsRedeemed > 0 && (
+                <div className="flex justify-between text-amber-700 font-bold pt-1">
+                  <span>{isAr ? 'النقاط المستبدلة كخصم' : 'Points redeemed'}:</span>
+                  <span>-{order.pointsRedeemed} pts</span>
+                </div>
+              )}
               {order.pointsEarned && order.pointsEarned > 0 && (
                 <div className="flex justify-between text-emerald-700 font-bold pt-1">
                   <span>{isAr ? 'النقاط المكتسبة' : 'Points earned'}:</span>

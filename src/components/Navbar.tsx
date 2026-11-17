@@ -225,6 +225,23 @@ export const Navbar: React.FC = () => {
             >
               <IconComponent className={`w-3.5 h-3.5 shrink-0 ${isActive ? '' : colorPreset.iconTintClass}`} />
               <span>{label}</span>
+              {item.id === 'bourse' && (
+                <span
+                  className="relative flex h-2 w-2 shrink-0"
+                  title={isAr ? 'بث مباشر لحظي للبورصة' : 'Live Bourse Market Feed'}
+                >
+                  <span
+                    className={`animate-ping absolute inline-flex h-full w-full rounded-full opacity-75 ${
+                      isActive ? 'bg-white' : 'bg-emerald-400'
+                    }`}
+                  />
+                  <span
+                    className={`relative inline-flex rounded-full h-2 w-2 ${
+                      isActive ? 'bg-white' : 'bg-emerald-500'
+                    }`}
+                  />
+                </span>
+              )}
               {isProtected && (
                 <Lock className="w-3 h-3 text-amber-500 opacity-80" />
               )}

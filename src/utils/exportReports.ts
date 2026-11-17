@@ -1,6 +1,8 @@
 import * as XLSX from 'xlsx';
+import { jsPDF } from 'jspdf';
 import { Order, Product, Category, StoreSettings, Expense } from '../types';
-import { drawStoreLogoBadge, saveCanvasAsPaginatedA4Pdf } from './pdfReport';
+import { drawStoreLogoBadge, saveCanvasAsPaginatedA4Pdf, triggerPdfDownload } from './pdfReport';
+import { BourseProductStock, BourseSnapshot } from './bourseEngine';
 
 export interface ReplenishmentOrderLine {
   productId: string;
@@ -1211,4 +1213,558 @@ export function exportShopEarWholesalePdf(params: {
   saveCanvasAsPaginatedA4Pdf(canvas, width, height, filename);
   return filename;
 }
+
+// ======================================================
+// 6. Bourse Hanout Thermal Printer PDF Export (80mm / 58mm)
+// ======================================================
+export function exportBourseThermalPdf(params: {
+  snapshot: BourseSnapshot;
+  stocksToExport: BourseProductStock[];
+  settings: StoreSettings;
+  currencySymbol: string;
+  language: 'ar' | 'fr' | 'en';
+  filterLabel?: string;
+}): { filename: string; paperWidth: '80mm' | '58mm'; itemsCount: number } {
+  const { snapshot, stocksToExport, settings, currencySymbol, language, filterLabel } = params;
+  const { index: idx, counts } = snapshot;
+  const isAr = language === 'ar';
+  const isFr = language === 'fr';
+
+  const paperWidth: '80mm' | '58mm' = settings.receiptPaperWidth === '58mm' ? '58mm' : '80mm';
+  const paperWidthMm = paperWidth === '58mm' ? 58 : 80;
+  const is58 = paperWidth === '58mm';
+
+  // Standard 203 DPI thermal roll logical widths
+  const width = is58 ? 384 : 540;
+  const padX = is58 ? 14 : 18;
+  const contentW = width - padX * 2;
+  const startEdge = isAr ? width - padX : padX;
+  const endEdge = isAr ? padX : width - padX;
+
+  const hasLogo = Boolean(settings.storeLogo);
+  const logoSize = is58 ? 42 : 48;
+  const headerH = (hasLogo ? logoSize + 10 : 0) + (settings.phone || settings.address ? 116 : 98) + (filterLabel ? 18 : 0);
+  const indexSectionH = 248;
+  const advisorSummaryH = 96;
+  const rowH = is58 ? 48 : 44;
+  const listHeaderH = 38;
+  const rowsBlockH = stocksToExport.length === 0 ? 44 : stocksToExport.length * rowH;
+  const footerTotalsH = 152;
+
+  const height = headerH + indexSectionH + advisorSummaryH + listHeaderH + rowsBlockH + footerTotalsH;
+  const scale = Math.max(1.2, Math.min(2, 11800 / Math.max(1, height)));
+
+  const canvas = document.createElement('canvas');
+  canvas.width = Math.round(width * scale);
+  canvas.height = Math.round(height * scale);
+  const ctx = canvas.getContext('2d');
+  if (!ctx) {
+    throw new Error('Could not initialize thermal PDF canvas context');
+  }
+  ctx.scale(scale, scale);
+
+  // Pure white paper & high-contrast monochrome black ink for crisp thermal printing
+  ctx.fillStyle = '#ffffff';
+  ctx.fillRect(0, 0, width, height);
+
+  const drawText = (
+    text: string,
+    x: number,
+    y: number,
+    opts?: {
+      font?: string;
+      color?: string;
+      align?: CanvasTextAlign;
+      dir?: CanvasDirection;
+      maxWidth?: number;
+    }
+  ) => {
+    ctx.save();
+    ctx.font = opts?.font || `${is58 ? 11 : 13}px "Cairo", "Segoe UI", Tahoma, sans-serif`;
+    ctx.fillStyle = opts?.color || '#000000';
+    ctx.textAlign = opts?.align || (isAr ? 'right' : 'left');
+    ctx.direction = opts?.dir || (isAr ? 'rtl' : 'ltr');
+    if (opts?.maxWidth) {
+      ctx.fillText(text, x, y, opts.maxWidth);
+    } else {
+      ctx.fillText(text, x, y);
+    }
+    ctx.restore();
+  };
+
+  const drawDashedDivider = (y: number, thick = false) => {
+    ctx.save();
+    ctx.strokeStyle = '#000000';
+    ctx.lineWidth = thick ? 1.5 : 1;
+    ctx.setLineDash(thick ? [6, 4] : [4, 4]);
+    ctx.beginPath();
+    ctx.moveTo(padX, y);
+    ctx.lineTo(width - padX, y);
+    ctx.stroke();
+    ctx.restore();
+  };
+
+  const drawKvRow = (label: string, value: string, y: number, boldValue = true) => {
+    const labelFont = `${is58 ? 11 : 12.5}px "Cairo", "Segoe UI", Tahoma, sans-serif`;
+    const valFont = `${boldValue ? 'bold ' : ''}${is58 ? 11 : 12.5}px monospace`;
+    drawText(label, startEdge, y, {
+      font: labelFont,
+      color: '#000000',
+      maxWidth: contentW * 0.56
+    });
+    drawText(value, endEdge, y, {
+      font: valFont,
+      color: '#000000',
+      align: isAr ? 'left' : 'right',
+      dir: 'ltr',
+      maxWidth: contentW * 0.44
+    });
+  };
+
+  let curY = 18;
+
+  // --- HEADER ---
+  if (hasLogo) {
+    const drawn = drawStoreLogoBadge(
+      ctx,
+      settings.storeLogo,
+      Math.round((width - logoSize) / 2),
+      curY,
+      logoSize
+    );
+    if (drawn) curY += logoSize + 10;
+  }
+
+  drawText(settings.storeName || 'Kadi POS', width / 2, curY + 18, {
+    font: `bold ${is58 ? 16 : 20}px "Cairo", "Segoe UI", Tahoma, sans-serif`,
+    align: 'center',
+    maxWidth: contentW
+  });
+  curY += 26;
+
+  if (settings.phone || settings.address) {
+    const contactLine = [settings.phone, settings.address].filter(Boolean).join(' · ');
+    drawText(contactLine, width / 2, curY + 12, {
+      font: `${is58 ? 10 : 11}px "Cairo", "Segoe UI", Tahoma, sans-serif`,
+      align: 'center',
+      maxWidth: contentW
+    });
+    curY += 18;
+  }
+
+  // Title box (crisp monochrome outline, no heavy dark fill)
+  ctx.strokeStyle = '#000000';
+  ctx.lineWidth = 1.5;
+  ctx.strokeRect(padX, curY + 4, contentW, 30);
+  drawText(
+    isAr
+      ? 'بورصة الحانوت · تقرير المخزون والمبيعات'
+      : isFr
+      ? 'BOURSE HANOUT · STOCK & VENTES'
+      : 'BOURSE HANOUT · STOCK & SALES',
+    width / 2,
+    curY + 23,
+    {
+      font: `bold ${is58 ? 11 : 13}px "Cairo", "Segoe UI", Tahoma, sans-serif`,
+      align: 'center',
+      maxWidth: contentW - 12
+    }
+  );
+  curY += 42;
+
+  const now = new Date();
+  const stamp = `${now.toISOString().slice(0, 10)} ${now.toLocaleTimeString([], {
+    hour: '2-digit',
+    minute: '2-digit'
+  })}`;
+  drawText(`${paperWidth} THERMAL · ${stamp}`, width / 2, curY + 12, {
+    font: `bold ${is58 ? 10 : 11}px monospace`,
+    align: 'center',
+    dir: 'ltr',
+    maxWidth: contentW
+  });
+  curY += 20;
+
+  if (filterLabel) {
+    drawText(filterLabel, width / 2, curY + 11, {
+      font: `bold ${is58 ? 10 : 11}px "Cairo", "Segoe UI", Tahoma, sans-serif`,
+      align: 'center',
+      maxWidth: contentW
+    });
+    curY += 18;
+  }
+
+  curY += 4;
+  drawDashedDivider(curY, true);
+  curY += 18;
+
+  // --- SECTION 1: HANOUT MARKET INDEX ---
+  drawText(
+    isAr ? '1. مؤشر الحانوت اليومي' : isFr ? '1. INDICE HANOUT DU JOUR' : '1. HANOUT MARKET INDEX',
+    width / 2,
+    curY,
+    {
+      font: `bold ${is58 ? 12 : 14}px "Cairo", "Segoe UI", Tahoma, sans-serif`,
+      align: 'center'
+    }
+  );
+  curY += 22;
+
+  const trendSign = idx.changePctVsYesterday >= 0 ? '+' : '';
+  const trendGlyph = idx.indexTrend === 'up' ? '▲' : idx.indexTrend === 'down' ? '▼' : '=';
+
+  drawKvRow(
+    isAr ? `مبيعات اليوم (${idx.todayOrdersCount})` : `Today Sales (${idx.todayOrdersCount})`,
+    `${idx.todaySales.toFixed(2)} ${currencySymbol}`,
+    curY
+  );
+  curY += 20;
+
+  drawKvRow(
+    isAr ? 'التغير عن البارح' : 'vs Yesterday',
+    `${trendGlyph} ${trendSign}${idx.changePctVsYesterday.toFixed(1)}%`,
+    curY
+  );
+  curY += 20;
+
+  drawKvRow(
+    isAr ? 'مبيعات البارح' : 'Yesterday Sales',
+    `${idx.yesterdaySales.toFixed(2)} ${currencySymbol}`,
+    curY,
+    false
+  );
+  curY += 20;
+
+  drawKvRow(
+    isAr ? 'الربح الإجمالي اليوم' : 'Gross Profit Today',
+    `+${idx.todayGrossProfit.toFixed(2)} ${currencySymbol}`,
+    curY
+  );
+  curY += 20;
+
+  drawKvRow(
+    isAr ? 'مصاريف اليوم' : 'Today Expenses',
+    `-${idx.todayExpensesTotal.toFixed(2)} ${currencySymbol}`,
+    curY,
+    false
+  );
+  curY += 20;
+
+  drawKvRow(
+    isAr ? `اشتراكات (${idx.subscriptionsSalesPct}%)` : `Subs (${idx.subscriptionsSalesPct}%)`,
+    `-${idx.todaySubscriptionsTotal.toFixed(2)} ${currencySymbol}`,
+    curY,
+    false
+  );
+  curY += 24;
+
+  // Net Profit Highlight Box
+  ctx.strokeStyle = '#000000';
+  ctx.lineWidth = 1.5;
+  ctx.strokeRect(padX, curY - 14, contentW, 26);
+  drawText(
+    isAr ? 'صافي الربح اليوم' : 'NET PROFIT TODAY',
+    startEdge - (isAr ? 6 : -6),
+    curY + 3,
+    { font: `bold ${is58 ? 11.5 : 13}px "Cairo", "Segoe UI", Tahoma, sans-serif` }
+  );
+  drawText(
+    `${idx.netProfitToday >= 0 ? '+' : ''}${idx.netProfitToday.toFixed(2)} ${currencySymbol}`,
+    endEdge + (isAr ? 6 : -6),
+    curY + 3,
+    {
+      font: `bold ${is58 ? 12 : 13.5}px monospace`,
+      align: isAr ? 'left' : 'right',
+      dir: 'ltr'
+    }
+  );
+  curY += 26;
+
+  drawKvRow(
+    isAr ? 'نقطة التعادل 0' : 'Break-even 0',
+    idx.isBreakEvenReached
+      ? isAr
+        ? 'مُحقق ✓'
+        : 'REACHED ✓'
+      : `${isAr ? 'باقي' : 'Rem.'} ${idx.remainingToBreakEven.toFixed(2)} ${currencySymbol}`,
+    curY
+  );
+  curY += 20;
+
+  drawKvRow(
+    isAr ? 'الهدف السنوي' : 'Yearly Target',
+    `${idx.yearlyProgressPct.toFixed(1)}% (${idx.yearNetProfit.toFixed(0)}/${idx.yearlyTarget.toFixed(0)})`,
+    curY
+  );
+  curY += 16;
+
+  drawDashedDivider(curY, true);
+  curY += 18;
+
+  // --- SECTION 2: ADVISOR COUNTS ---
+  drawText(
+    isAr ? '2. ملخص توصيات المستشار' : '2. ADVISOR SUMMARY',
+    width / 2,
+    curY,
+    {
+      font: `bold ${is58 ? 12 : 14}px "Cairo", "Segoe UI", Tahoma, sans-serif`,
+      align: 'center'
+    }
+  );
+  curY += 20;
+
+  drawKvRow(
+    isAr ? `▲ شري أكثر (BUY): ${counts.buyMore}` : `▲ BUY MORE: ${counts.buyMore}`,
+    isAr ? `● بيع دابا (SELL): ${counts.sellNow}` : `● SELL NOW: ${counts.sellNow}`,
+    curY
+  );
+  curY += 20;
+
+  drawKvRow(
+    isAr ? `▼ تخفيض (DISC): ${counts.discount}` : `▼ DISCOUNT: ${counts.discount}`,
+    isAr ? `■ حبس (STOP): ${counts.stop}` : `■ STOP: ${counts.stop}`,
+    curY
+  );
+  curY += 20;
+
+  drawKvRow(
+    isAr ? `▲ زيد فالثمن (INC): ${counts.increasePrice}` : `▲ INCREASE PRICE: ${counts.increasePrice}`,
+    isAr ? `⚠ صلاحية قريبة: ${counts.expiring}` : `⚠ EXPIRING: ${counts.expiring}`,
+    curY
+  );
+  curY += 16;
+
+  drawDashedDivider(curY, true);
+  curY += 18;
+
+  // --- SECTION 3: PRODUCT STOCKS & SALES ANALYSIS ---
+  drawText(
+    isAr
+      ? `3. تحليل المخزون والمبيعات (${stocksToExport.length})`
+      : `3. STOCK & SALES ANALYSIS (${stocksToExport.length})`,
+    width / 2,
+    curY,
+    {
+      font: `bold ${is58 ? 12 : 14}px "Cairo", "Segoe UI", Tahoma, sans-serif`,
+      align: 'center'
+    }
+  );
+  curY += 14;
+  drawDashedDivider(curY, false);
+  curY += 12;
+
+  const actionTag = (action: BourseProductStock['advisor']['action']): string => {
+    if (isAr) {
+      if (action === 'BUY_MORE') return '[شري أكثر]';
+      if (action === 'SELL_NOW') return '[بيع دابا]';
+      if (action === 'INCREASE_PRICE') return '[زيد فالثمن]';
+      if (action === 'DISCOUNT') return '[تخفيض]';
+      return '[حبس]';
+    }
+    if (action === 'BUY_MORE') return '[BUY+]';
+    if (action === 'SELL_NOW') return '[SELL]';
+    if (action === 'INCREASE_PRICE') return '[PRICE+]';
+    if (action === 'DISCOUNT') return '[DISC]';
+    return '[STOP]';
+  };
+
+  if (stocksToExport.length === 0) {
+    drawText(
+      isAr ? 'لا توجد سلع مطابقة للفلتر الحالي' : 'No matching products in current view',
+      width / 2,
+      curY + 18,
+      {
+        font: `${is58 ? 11 : 12}px "Cairo", "Segoe UI", Tahoma, sans-serif`,
+        align: 'center'
+      }
+    );
+    curY += 40;
+  } else {
+    stocksToExport.forEach((s, i) => {
+      const topY = curY + 12;
+      const subY = curY + (is58 ? 30 : 28);
+      const tag = actionTag(s.advisor.action);
+      const displayName = !isAr && s.nameEn ? s.nameEn : s.name;
+
+      // Line 1: Product index + Name & Advisor Tag
+      drawText(`${i + 1}. ${displayName}`, startEdge, topY, {
+        font: `bold ${is58 ? 11 : 12.5}px "Cairo", "Segoe UI", Tahoma, sans-serif`,
+        maxWidth: contentW * 0.68
+      });
+      drawText(tag, endEdge, topY, {
+        font: `bold ${is58 ? 10 : 11}px "Cairo", "Segoe UI", Tahoma, sans-serif`,
+        align: isAr ? 'left' : 'right',
+        maxWidth: contentW * 0.3
+      });
+
+      // Line 2: Sale Price | Margin % | Stock | Today Sales & Change %
+      const chgSign = s.changePct >= 0 ? '+' : '';
+      const chgArrow = s.trend === 'up' ? '▲' : s.trend === 'down' ? '▼' : '=';
+      const line2 = isAr
+        ? `بيع:${s.salePrice.toFixed(1)} | هامش:${s.marginPct.toFixed(0)}% | ستوك:${s.stock} | اليوم:${s.todaySales.toFixed(0)} (${chgArrow}${chgSign}${s.changePct.toFixed(0)}%)`
+        : `P:${s.salePrice.toFixed(1)} | M:${s.marginPct.toFixed(0)}% | Stk:${s.stock} | Td:${s.todaySales.toFixed(0)} (${chgArrow}${chgSign}${s.changePct.toFixed(0)}%)`;
+
+      drawText(line2, startEdge, subY, {
+        font: `${is58 ? 9.5 : 10.5}px "Cairo", monospace`,
+        maxWidth: contentW
+      });
+
+      curY += rowH;
+
+      // Thin dotted thermal row separator
+      if (i < stocksToExport.length - 1) {
+        ctx.save();
+        ctx.strokeStyle = '#475569';
+        ctx.lineWidth = 0.75;
+        ctx.setLineDash([2, 3]);
+        ctx.beginPath();
+        ctx.moveTo(padX, curY - 4);
+        ctx.lineTo(width - padX, curY - 4);
+        ctx.stroke();
+        ctx.restore();
+      }
+    });
+  }
+
+  curY += 6;
+  drawDashedDivider(curY, true);
+  curY += 18;
+
+  // --- SECTION 4: STOCK VALUATION & SALES FOOTER TOTALS ---
+  const listedCostVal = stocksToExport.reduce((sum, s) => sum + s.stockCostValue, 0);
+  const listedRetailVal = stocksToExport.reduce((sum, s) => sum + s.stockRetailValue, 0);
+  const listedPotentialProfit = listedRetailVal - listedCostVal;
+
+  drawText(
+    isAr ? '4. خلاصة تقييم المخزون' : '4. INVENTORY VALUATION SUMMARY',
+    width / 2,
+    curY,
+    {
+      font: `bold ${is58 ? 11.5 : 13}px "Cairo", "Segoe UI", Tahoma, sans-serif`,
+      align: 'center'
+    }
+  );
+  curY += 20;
+
+  drawKvRow(
+    isAr ? 'قيمة المخزون (ثمن الشراء)' : 'Stock Cost Value',
+    `${listedCostVal.toFixed(2)} ${currencySymbol}`,
+    curY
+  );
+  curY += 20;
+
+  drawKvRow(
+    isAr ? 'قيمة المخزون (ثمن البيع)' : 'Stock Retail Value',
+    `${listedRetailVal.toFixed(2)} ${currencySymbol}`,
+    curY
+  );
+  curY += 20;
+
+  drawKvRow(
+    isAr ? 'الربح الكامن في الستوك' : 'Potential Stock Profit',
+    `+${listedPotentialProfit.toFixed(2)} ${currencySymbol}`,
+    curY
+  );
+  curY += 20;
+
+  drawKvRow(
+    isAr ? 'متوسط هامش الربح' : 'Avg Margin %',
+    `${idx.averageMarginPct.toFixed(1)}%`,
+    curY
+  );
+  curY += 22;
+
+  drawDashedDivider(curY, false);
+  curY += 16;
+
+  drawText('Kadi POS · Bourse Hanout Thermal Report', width / 2, curY, {
+    font: `bold ${is58 ? 9.5 : 10.5}px monospace`,
+    align: 'center',
+    dir: 'ltr',
+    maxWidth: contentW
+  });
+
+  // Build exact thermal roll-sized PDF (slicing across roll pages if very tall)
+  const usedHeight = Math.min(height, curY + 18);
+  const totalHeightMm = Math.max(60, (usedHeight * paperWidthMm) / width);
+  const maxPageMm = 1400; // safe roll slice length for thermal drivers
+
+  const pdf = new jsPDF({
+    orientation: 'portrait',
+    unit: 'mm',
+    format: [paperWidthMm, Math.min(maxPageMm, totalHeightMm)]
+  });
+
+  if (totalHeightMm <= maxPageMm) {
+    const croppedCanvas = document.createElement('canvas');
+    croppedCanvas.width = canvas.width;
+    croppedCanvas.height = Math.max(1, Math.round(usedHeight * scale));
+    const cCtx = croppedCanvas.getContext('2d');
+    if (cCtx) {
+      cCtx.fillStyle = '#ffffff';
+      cCtx.fillRect(0, 0, croppedCanvas.width, croppedCanvas.height);
+      cCtx.drawImage(
+        canvas,
+        0,
+        0,
+        canvas.width,
+        croppedCanvas.height,
+        0,
+        0,
+        canvas.width,
+        croppedCanvas.height
+      );
+      const imgData = croppedCanvas.toDataURL('image/png');
+      pdf.addImage(imgData, 'PNG', 0, 0, paperWidthMm, totalHeightMm);
+    }
+  } else {
+    const pxPerMm = (width * scale) / paperWidthMm;
+    const slicePixelH = Math.max(1, Math.floor(maxPageMm * pxPerMm));
+    const maxSrcH = Math.round(usedHeight * scale);
+    let offsetY = 0;
+    let pageIdx = 0;
+
+    while (offsetY < maxSrcH) {
+      const remainingPx = Math.min(slicePixelH, maxSrcH - offsetY);
+      const pageMmH = Math.max(20, remainingPx / pxPerMm);
+      const pageCanvas = document.createElement('canvas');
+      pageCanvas.width = canvas.width;
+      pageCanvas.height = remainingPx;
+      const pCtx = pageCanvas.getContext('2d');
+      if (pCtx) {
+        pCtx.fillStyle = '#ffffff';
+        pCtx.fillRect(0, 0, pageCanvas.width, pageCanvas.height);
+        pCtx.drawImage(
+          canvas,
+          0,
+          offsetY,
+          canvas.width,
+          remainingPx,
+          0,
+          0,
+          canvas.width,
+          remainingPx
+        );
+        const pageImg = pageCanvas.toDataURL('image/png');
+        if (pageIdx > 0) {
+          pdf.addPage([paperWidthMm, pageMmH], 'portrait');
+        }
+        pdf.addImage(pageImg, 'PNG', 0, 0, paperWidthMm, pageMmH);
+      }
+      offsetY += slicePixelH;
+      pageIdx += 1;
+    }
+  }
+
+  const blob = pdf.output('blob');
+  const filename = `Bourse_Hanout_Thermal_${paperWidth}_${new Date().toISOString().slice(0, 10)}.pdf`;
+  triggerPdfDownload(blob, filename, pdf);
+
+  return {
+    filename,
+    paperWidth,
+    itemsCount: stocksToExport.length
+  };
+}
+
 

@@ -523,6 +523,19 @@ export const initialSettings: StoreSettings = {
   whatsappBusinessPhone: '+212661234567',
   cpuSettings: DEFAULT_CPU_SETTINGS,
   monthlyProfitTarget: 6000,
+  yearlyProfitTarget: 72000,
+  subscriptionsSalesPct: 3,
+  marketMode: 'normal',
+  dailyFixedExpenses: {
+    rentPerDay: 50,
+    electricityPerDay: 15,
+    internetPerDay: 5,
+    transportPerDay: 10,
+    otherPerDay: 5
+  },
+  loyaltyEnabled: true,
+  loyaltyPointsPer100: 10,
+  loyaltyPointValue: 1,
   theftAlertSettings: DEFAULT_THEFT_ALERT_SETTINGS
 };
 

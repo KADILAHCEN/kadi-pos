@@ -402,7 +402,8 @@ export const AlertsView: React.FC = () => {
             ) : (
               <div className="divide-y divide-slate-100 dark:divide-slate-800">
                 {lowStockProducts.map((p: Product) => {
-                  const isCritical = p.lowStockThreshold > 0 && p.stock <= p.lowStockThreshold * 0.2;
+                  const isBelowFive = p.stock < 5;
+                  const isCritical = isBelowFive || (p.lowStockThreshold > 0 && p.stock <= p.lowStockThreshold * 0.2);
                   return (
                     <div
                       key={p.id}
@@ -417,7 +418,12 @@ export const AlertsView: React.FC = () => {
                           <span className="font-extrabold text-xs sm:text-sm text-slate-900 dark:text-white">
                             {p.name}
                           </span>
-                          {isCritical && (
+                          {isBelowFive && (
+                            <span className="px-2 py-0.5 rounded-md text-[10px] font-black bg-rose-600 text-white">
+                              {isAr ? 'باقي قل من 5 — خاصها كوموند!' : '< 5 Left — Reorder!'}
+                            </span>
+                          )}
+                          {!isBelowFive && isCritical && (
                             <span className="px-2 py-0.5 rounded-md text-[10px] font-black bg-rose-600 text-white">
                               {isAr ? 'حرج < 20%' : 'Critical < 20%'}
                             </span>

@@ -92,6 +92,7 @@ import { BUILT_IN_PALETTES, applyPaletteToDocument } from '../utils/palettes';
 
 export type AppTabId =
   | 'pos'
+  | 'bourse'
   | 'inventory'
   | 'orders'
   | 'shifts'
@@ -200,7 +201,13 @@ interface PosContextType {
 
   // Checkout & Orders
   orders: Order[];
-  completeCheckout: (paymentMethod: PaymentMethod, splitDetails?: SplitPaymentDetail, amountTendered?: number, note?: string) => Order | null;
+  completeCheckout: (
+    paymentMethod: PaymentMethod,
+    splitDetails?: SplitPaymentDetail,
+    amountTendered?: number,
+    note?: string,
+    options?: { pointsToRedeem?: number }
+  ) => Order | null;
   recordVoiceSale: (params: {
     customerName: string;
     productName?: string;
@@ -702,9 +709,17 @@ export const PosProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
 
   const updateSettings = (newSettings: Partial<StoreSettings>) => {
     setSettings((prev) => {
-      const updated = { ...prev, ...newSettings };
-      localStorage.setItem('kadi_pos_settings_v3', JSON.stringify(updated));
-      return updated;
+      const merged: StoreSettings = { ...prev, ...newSettings };
+      if (newSettings.yearlyProfitTarget !== undefined && newSettings.monthlyProfitTarget === undefined) {
+        merged.monthlyProfitTarget = Math.max(100, Math.round(Number(newSettings.yearlyProfitTarget) / 12));
+      } else if (
+        newSettings.monthlyProfitTarget !== undefined &&
+        newSettings.yearlyProfitTarget === undefined
+      ) {
+        merged.yearlyProfitTarget = Math.max(1200, Math.round(Number(newSettings.monthlyProfitTarget) * 12));
+      }
+      localStorage.setItem('kadi_pos_settings_v3', JSON.stringify(merged));
+      return merged;
     });
 
     if (newSettings.storeName || newSettings.taxNumber || newSettings.currency || newSettings.protectSettingsWithPin !== undefined) {
@@ -1056,6 +1071,31 @@ export const PosProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
     setProducts((prev) =>
       prev.map((p) => (p.id === id ? { ...p, ...updated } : p))
     );
+    if (
+      updated.costPrice !== undefined &&
+      prevProd &&
+      Number(updated.costPrice) !== Number(prevProd.costPrice)
+    ) {
+      const cleanCost = Math.max(0, Number(Number(updated.costPrice).toFixed(2)));
+      setOrders((prevOrders) =>
+        prevOrders.map((ord) => {
+          if (!ord.items.some((it) => it.productId === id)) return ord;
+          const newItems = ord.items.map((it) =>
+            it.productId === id ? { ...it, costPrice: cleanCost } : it
+          );
+          const newCostTotal = Number(
+            newItems.reduce((s, it) => s + Number(it.costPrice) * Number(it.quantity), 0).toFixed(2)
+          );
+          const newProfitTotal = Number((ord.grandTotal - newCostTotal).toFixed(2));
+          return {
+            ...ord,
+            items: newItems,
+            costTotal: newCostTotal,
+            profitTotal: newProfitTotal
+          };
+        })
+      );
+    }
     if (updated.stock !== undefined && updated.stock > 0 && (!prevProd || prevProd.stock <= 0)) {
       markMatchingShopEarArrivedInternal({
         id,
@@ -1168,6 +1208,12 @@ export const PosProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
     const createdProductsCount = resolvedItems.filter((it) => it.created).length;
     const primaryProduct = resolvedItems[0].product;
 
+    const loyaltyEnabled = settings.loyaltyEnabled !== false;
+    const pointsPer100 = Math.max(0, Number(settings.loyaltyPointsPer100 ?? 10));
+    const voicePointsEarned = loyaltyEnabled
+      ? Math.floor((totalPrice / 100) * pointsPer100 + 1e-9)
+      : 0;
+
     // 2. Find or auto-create Customer (supports any spoken name)
     let targetCust = matchEntityByName(customers, cleanCustName);
     let createdCustomer = false;
@@ -1179,7 +1225,7 @@ export const PosProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
         id: `cust-${Date.now()}-${Math.random().toString(36).slice(2, 5)}`,
         name: cleanCustName,
         phone: '',
-        points: Math.floor(totalPrice / 10),
+        points: voicePointsEarned,
         balance: newBalance,
         tier: 'Silver',
         totalSpent: totalPrice,
@@ -1200,7 +1246,7 @@ export const PosProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
         ...targetCust,
         totalSpent: nextTotalSpent,
         ordersCount: targetCust.ordersCount + 1,
-        points: targetCust.points + Math.floor(totalPrice / 10),
+        points: targetCust.points + voicePointsEarned,
         balance: nextBal,
         tier: nextTier
       };
@@ -1254,7 +1300,7 @@ export const PosProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
       customerId: targetCust.id,
       customerName: targetCust.name,
       customerPhone: targetCust.phone,
-      pointsEarned: Math.floor(totalPrice / 10),
+      pointsEarned: voicePointsEarned,
       status: 'completed',
       note: params.note || 'مسجل بالصوت (Kadi Voice)',
       zatcaQrString: zatcaQr,
@@ -2327,23 +2373,26 @@ export const PosProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
       nextMap.set(p.id, { stock: p.stock, threshold: p.lowStockThreshold });
       const prev = prevMap?.get(p.id);
 
-      if (p.lowStockThreshold > 0 && p.stock > p.lowStockThreshold) {
+      const isBelowThresholdOrFive =
+        p.stock < 5 || (p.lowStockThreshold > 0 && p.stock <= p.lowStockThreshold);
+
+      if (!isBelowThresholdOrFive) {
         recoveredIds.add(p.id);
       }
 
       if (!prevMap) return;
       if (!prev) {
-        if (p.lowStockThreshold > 0 && p.stock <= p.lowStockThreshold) {
+        if (isBelowThresholdOrFive) {
           crossedItems.push({
             productId: p.id,
             name: p.name,
             stock: p.stock,
-            threshold: p.lowStockThreshold,
+            threshold: Math.max(5, p.lowStockThreshold),
             unitType: p.unitType,
             severity:
               p.stock <= 0
                 ? 'out_of_stock'
-                : p.stock <= p.lowStockThreshold * 0.2
+                : p.stock < 5 || (p.lowStockThreshold > 0 && p.stock <= p.lowStockThreshold * 0.2)
                 ? 'critical'
                 : 'low',
             triggeredAt: new Date().toISOString()
@@ -2352,26 +2401,33 @@ export const PosProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
         return;
       }
 
-      const wasAboveMin = prev.stock > prev.threshold;
-      const isNowAtOrBelowMin = p.lowStockThreshold > 0 && p.stock <= p.lowStockThreshold;
+      const wasAboveMin = prev.stock >= 5 && (prev.threshold <= 0 || prev.stock > prev.threshold);
+      const isNowAtOrBelowMin = isBelowThresholdOrFive;
       const droppedToZero = prev.stock > 0 && p.stock <= 0;
+      const droppedBelowFive = prev.stock >= 5 && p.stock < 5;
       const droppedIntoCritical =
         p.lowStockThreshold > 0 &&
         prev.stock > p.lowStockThreshold * 0.2 &&
         p.stock <= p.lowStockThreshold * 0.2;
       const stockDecreasedWhileLow = isNowAtOrBelowMin && p.stock < prev.stock;
 
-      if ((wasAboveMin && isNowAtOrBelowMin) || droppedToZero || droppedIntoCritical || stockDecreasedWhileLow) {
+      if (
+        (wasAboveMin && isNowAtOrBelowMin) ||
+        droppedToZero ||
+        droppedBelowFive ||
+        droppedIntoCritical ||
+        stockDecreasedWhileLow
+      ) {
         crossedItems.push({
           productId: p.id,
           name: p.name,
           stock: p.stock,
-          threshold: p.lowStockThreshold,
+          threshold: Math.max(5, p.lowStockThreshold),
           unitType: p.unitType,
           severity:
             p.stock <= 0
               ? 'out_of_stock'
-              : p.stock <= p.lowStockThreshold * 0.2
+              : p.stock < 5 || (p.lowStockThreshold > 0 && p.stock <= p.lowStockThreshold * 0.2)
               ? 'critical'
               : 'low',
           triggeredAt: new Date().toISOString()
@@ -2391,12 +2447,14 @@ export const PosProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
   }, [products, dispatchLowStockNotifications]);
 
   const lowStockProducts = useMemo(() => {
-    return products.filter((p) => p.lowStockThreshold > 0 && p.stock <= p.lowStockThreshold);
+    return products.filter(
+      (p) => p.stock < 5 || (p.lowStockThreshold > 0 && p.stock <= p.lowStockThreshold)
+    );
   }, [products]);
 
   const criticalLowStockProducts = useMemo(() => {
     return products.filter(
-      (p) => p.lowStockThreshold > 0 && p.stock <= p.lowStockThreshold * 0.2
+      (p) => p.stock < 5 || (p.lowStockThreshold > 0 && p.stock <= p.lowStockThreshold * 0.2)
     );
   }, [products]);
 
@@ -4727,7 +4785,8 @@ export const PosProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
     paymentMethod: PaymentMethod,
     splitDetails?: SplitPaymentDetail,
     amountTendered?: number,
-    note?: string
+    note?: string,
+    options?: { pointsToRedeem?: number }
   ): Order | null => {
     if (cart.length === 0) return null;
 
@@ -4758,19 +4817,46 @@ export const PosProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
       };
     });
 
+    // Loyalty points configuration & redemption calculation
+    const loyaltyEnabled = settings.loyaltyEnabled !== false;
+    const pointsPer100 = Math.max(0, Number(settings.loyaltyPointsPer100 ?? 10));
+    const pointValue = Math.max(0, Number(settings.loyaltyPointValue ?? 1));
+
+    const requestedRedeem = Math.max(0, Math.floor(Number(options?.pointsToRedeem || 0)));
+    const maxCustomerPoints =
+      loyaltyEnabled && selectedCustomer ? Math.max(0, Math.floor(selectedCustomer.points)) : 0;
+    const maxRedeemableByTotal =
+      pointValue > 0 ? Math.floor(cartGrandTotal / pointValue + 1e-9) : 0;
+    const pointsRedeemed =
+      loyaltyEnabled && selectedCustomer && pointValue > 0 && requestedRedeem > 0
+        ? Math.min(requestedRedeem, maxCustomerPoints, maxRedeemableByTotal)
+        : 0;
+    const loyaltyDiscount = Number(Math.min(cartGrandTotal, pointsRedeemed * pointValue).toFixed(2));
+    const finalGrandTotal = Number(Math.max(0, cartGrandTotal - loyaltyDiscount).toFixed(2));
+    const finalDiscountTotal = Number((cartDiscountTotal + loyaltyDiscount).toFixed(2));
+    const finalProfitTotal = Number((finalGrandTotal - cartCostTotal).toFixed(2));
+
     // ZATCA TLV Base64 String for Simplified Tax Invoice
     const zatcaQr = generateZatcaTlvBase64(
       settings.storeName,
       settings.taxNumber,
       orderDate,
-      cartGrandTotal.toString(),
+      finalGrandTotal.toFixed(2),
       cartTaxTotal.toString()
     );
 
-    // Calculate Loyalty Points (1 point per 10 currency spent)
-    const pointsEarned = Math.floor(cartGrandTotal / 10);
+    // Calculate Loyalty Points (configurable points per 100 currency spent)
+    const pointsEarned =
+      loyaltyEnabled && selectedCustomer
+        ? Math.floor((finalGrandTotal / 100) * pointsPer100 + 1e-9)
+        : 0;
 
-    const changeAmount = amountTendered && amountTendered > cartGrandTotal ? Number((amountTendered - cartGrandTotal).toFixed(2)) : 0;
+    const resolvedAmountTendered =
+      amountTendered !== undefined ? amountTendered : finalGrandTotal;
+    const changeAmount =
+      resolvedAmountTendered > finalGrandTotal
+        ? Number((resolvedAmountTendered - finalGrandTotal).toFixed(2))
+        : 0;
 
     const onlineNow = typeof navigator !== 'undefined' ? navigator.onLine : isOnline;
 
@@ -4785,20 +4871,21 @@ export const PosProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
       branchName: activeBranch.name,
       items: orderItems,
       subtotal: cartSubtotal,
-      discountTotal: cartDiscountTotal,
+      discountTotal: finalDiscountTotal,
       taxTotal: cartTaxTotal,
-      grandTotal: cartGrandTotal,
+      grandTotal: finalGrandTotal,
       costTotal: cartCostTotal,
-      profitTotal: cartProfitTotal,
+      profitTotal: finalProfitTotal,
       paymentMethod,
       splitDetails,
-      amountTendered: amountTendered || cartGrandTotal,
+      amountTendered: resolvedAmountTendered,
       changeAmount,
       cashierName: currentShift.cashierName,
       customerId: selectedCustomer?.id,
       customerName: selectedCustomer?.name,
       customerPhone: selectedCustomer?.phone,
       pointsEarned,
+      pointsRedeemed: pointsRedeemed > 0 ? pointsRedeemed : undefined,
       status: 'completed',
       note,
       zatcaQrString: zatcaQr,
@@ -4835,10 +4922,10 @@ export const PosProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
       addActivityLog({
         category: 'system',
         title: `تخزين مبيعة أوفلاين في IndexedDB (${orderNum})`,
-        description: `تم حفظ الفاتورة ${orderNum} بقيمة ${cartGrandTotal.toFixed(2)} ${settings.currencySymbol} محلياً في IndexedDB وستتم مزامنتها تلقائياً فور عودة الإنترنت`,
+        description: `تم حفظ الفاتورة ${orderNum} بقيمة ${finalGrandTotal.toFixed(2)} ${settings.currencySymbol} محلياً في IndexedDB وستتم مزامنتها تلقائياً فور عودة الإنترنت`,
         actor: currentShift.cashierName || currentUser.name,
         actorRole: currentUser.role,
-        amount: cartGrandTotal,
+        amount: finalGrandTotal,
         severity: 'warning',
         metadata: {
           orderNumber: orderNum,
@@ -4930,15 +5017,15 @@ export const PosProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
       setCustomers((prev) =>
         prev.map((c) => {
           if (c.id === selectedCustomer.id) {
-            const newTotalSpent = c.totalSpent + cartGrandTotal;
-            const newPoints = c.points + pointsEarned;
+            const newTotalSpent = c.totalSpent + finalGrandTotal;
+            const newPoints = Math.max(0, c.points - pointsRedeemed) + pointsEarned;
             const newOrdersCount = c.ordersCount + 1;
             let tier: 'Silver' | 'Gold' | 'Platinum' = c.tier;
             if (newTotalSpent >= 3000) tier = 'Platinum';
             else if (newTotalSpent >= 1000) tier = 'Gold';
 
             // If credit payment method, add to customer balance
-            const newBalance = paymentMethod === 'credit' ? c.balance + cartGrandTotal : c.balance;
+            const newBalance = paymentMethod === 'credit' ? c.balance + finalGrandTotal : c.balance;
 
             return {
               ...c,
@@ -4956,15 +5043,18 @@ export const PosProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
       // Record credit ledger transaction if on-account purchase
       if (paymentMethod === 'credit') {
         const prevBal = selectedCustomer.balance;
-        const newBal = Number((prevBal + cartGrandTotal).toFixed(2));
+        const newBal = Number((prevBal + finalGrandTotal).toFixed(2));
         const creditTx: CreditTransaction = {
           id: `cred-tx-${Date.now()}`,
           customerId: selectedCustomer.id,
           customerName: selectedCustomer.name,
           type: 'debt',
-          amount: cartGrandTotal,
+          amount: finalGrandTotal,
           date: orderDate,
-          notes: `مشتريات على الحساب (فاتورة #${orderNum})`,
+          notes:
+            pointsRedeemed > 0
+              ? `مشتريات على الحساب (فاتورة #${orderNum} · خصم ${pointsRedeemed} نقطة)`
+              : `مشتريات على الحساب (فاتورة #${orderNum})`,
           receiptNumber: orderNum,
           previousBalance: prevBal,
           newBalance: newBal,
@@ -4980,14 +5070,14 @@ export const PosProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
     }
 
     // 5. Document large sales (>= 200) in Activity Log
-    if (cartGrandTotal >= 200) {
+    if (finalGrandTotal >= 200) {
       addActivityLog({
         category: 'sale_large',
-        title: `إتمام عملية بيع كبرى (${cartGrandTotal.toFixed(2)} ${settings.currencySymbol})`,
-        description: `فاتورة ${orderNum} بقيمة إجمالية ${cartGrandTotal.toFixed(2)} ${settings.currencySymbol} تتضمن ${orderItems.length} صنف/أصناف (${paymentMethod === 'cash' ? 'نقداً' : paymentMethod === 'card' ? 'بطاقة بنكية' : paymentMethod === 'split' ? 'دفع مجزأ' : 'آجل'})`,
+        title: `إتمام عملية بيع كبرى (${finalGrandTotal.toFixed(2)} ${settings.currencySymbol})`,
+        description: `فاتورة ${orderNum} بقيمة إجمالية ${finalGrandTotal.toFixed(2)} ${settings.currencySymbol} تتضمن ${orderItems.length} صنف/أصناف (${paymentMethod === 'cash' ? 'نقداً' : paymentMethod === 'card' ? 'بطاقة بنكية' : paymentMethod === 'split' ? 'دفع مجزأ' : 'آجل'})`,
         actor: currentShift.cashierName || currentUser.name,
         actorRole: currentUser.role,
-        amount: cartGrandTotal,
+        amount: finalGrandTotal,
         severity: 'success',
         metadata: {
           orderNumber: orderNum,

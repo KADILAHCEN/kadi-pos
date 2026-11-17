@@ -260,10 +260,12 @@ export const InventoryView: React.FC = () => {
         const dailyVelocity = soldLast30d / 30;
         const safetyBuffer = Math.max(2, Math.round(p.lowStockThreshold * 0.5));
         const reorderPoint = Math.max(
+          5,
           p.lowStockThreshold,
           Math.ceil(dailyVelocity * 5) + safetyBuffer
         );
-        const needsReorder = p.stock <= reorderPoint;
+        const isBelowFive = p.stock < 5;
+        const needsReorder = isBelowFive || p.stock <= reorderPoint;
 
         const daysToZero =
           p.stock <= 0
@@ -276,8 +278,8 @@ export const InventoryView: React.FC = () => {
             ? new Date(Date.now() + daysToZero * 86_400_000).toISOString().slice(0, 10)
             : null;
         const isCriticalThreshold =
-          p.stock <= 0 || (p.lowStockThreshold > 0 && p.stock <= p.lowStockThreshold * 0.2);
-        const isBelowMin = p.stock <= p.lowStockThreshold;
+          p.stock <= 0 || isBelowFive || (p.lowStockThreshold > 0 && p.stock <= p.lowStockThreshold * 0.2);
+        const isBelowMin = isBelowFive || p.stock <= p.lowStockThreshold;
 
         const targetStock = Math.max(
           Math.ceil(dailyVelocity * poTargetDays),
@@ -288,7 +290,7 @@ export const InventoryView: React.FC = () => {
         const estimatedCost = Number((recommendedQty * p.costPrice).toFixed(2));
 
         const urgency: 'critical' | 'warning' | 'healthy' =
-          p.stock <= 0 || isCriticalThreshold || (daysToZero !== null && daysToZero <= 5)
+          p.stock <= 0 || isBelowFive || isCriticalThreshold || (daysToZero !== null && daysToZero <= 5)
             ? 'critical'
             : needsReorder || isBelowMin || (daysToZero !== null && daysToZero <= 14)
             ? 'warning'
@@ -303,6 +305,7 @@ export const InventoryView: React.FC = () => {
           soldLast30d,
           dailyVelocity,
           reorderPoint,
+          isBelowFive,
           needsReorder,
           daysToZero,
           estimatedZeroDate,
@@ -1117,7 +1120,8 @@ export const InventoryView: React.FC = () => {
                   {paginatedProducts.map((p) => {
                     const unitProfit = p.price - p.costPrice;
                     const marginPercent = p.price > 0 ? ((unitProfit / p.price) * 100).toFixed(1) : '0';
-                    const isLow = p.stock > 0 && p.stock <= p.lowStockThreshold;
+                    const isBelowFive = p.stock > 0 && p.stock < 5;
+                    const isLow = p.stock > 0 && (isBelowFive || p.stock <= p.lowStockThreshold);
                     const isOut = p.stock <= 0;
                     const isSelected = selectedProductIds.has(p.id);
 
@@ -1241,7 +1245,7 @@ export const InventoryView: React.FC = () => {
                           })()}
                         </td>
                         <td className="py-3 px-3">
-                          <div className="flex items-center gap-2">
+                          <div className="flex flex-wrap items-center gap-1.5">
                             <span
                               className={`px-2.5 py-1 text-xs font-bold rounded-lg tabular-nums ${
                                 isOut
@@ -1253,6 +1257,11 @@ export const InventoryView: React.FC = () => {
                             >
                               {p.stock} {getUnitName(p.unitType)}
                             </span>
+                            {p.stock < 5 && (
+                              <span className="px-1.5 py-0.5 rounded-md text-[10px] font-black bg-rose-600 text-white">
+                                {isAr ? 'قل من 5!' : '< 5!'}
+                              </span>
+                            )}
                           </div>
                         </td>
                         <td className="py-3 px-3">
@@ -1614,6 +1623,43 @@ export const InventoryView: React.FC = () => {
                   </button>
                 </div>
               </div>
+
+              {/* Alert Banner for Smart Stock < 5 in Simple Hanout Darija */}
+              {aiPredictions.some((r) => r.isBelowFive) && (() => {
+                const belowFiveList = aiPredictions.filter((r) => r.isBelowFive);
+                return (
+                  <div className="px-4 py-2.5 bg-rose-50 dark:bg-rose-950/40 border-b border-rose-200 dark:border-rose-900 flex flex-wrap items-center justify-between gap-2 text-xs">
+                    <div className="flex items-center gap-2 min-w-0">
+                      <span className="p-1.5 rounded-xl bg-rose-600 text-white shrink-0">
+                        <AlertTriangle className="w-4 h-4" />
+                      </span>
+                      <div className="min-w-0">
+                        <span className="font-black text-rose-800 dark:text-rose-200">
+                          {isAr
+                            ? `تنبيه المخزون الذكي (< 5): كاين ${belowFiveList.length} سلع بقى فيها قل من 5 حبات!`
+                            : `Smart Stock Alert (< 5): ${belowFiveList.length} items have less than 5 units left!`}
+                        </span>
+                        <span className="hidden md:inline text-rose-700 dark:text-rose-300 ms-2 font-semibold">
+                          {belowFiveList
+                            .slice(0, 4)
+                            .map((r) => `${r.product.name} (${r.product.stock})`)
+                            .join(' · ')}
+                        </span>
+                      </div>
+                    </div>
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setAiSubView('forecast_table');
+                        setOnlyNeedsReorder(true);
+                      }}
+                      className="px-3 py-1 rounded-lg bg-rose-600 hover:bg-rose-700 text-white font-black text-[11px] shrink-0"
+                    >
+                      {isAr ? 'شوف السلع اللي < 5' : 'View < 5 Items'}
+                    </button>
+                  </div>
+                );
+              })()}
 
               {/* View A: Auto Purchase List Grouped by Supplier */}
               {aiSubView === 'supplier_po' ? (

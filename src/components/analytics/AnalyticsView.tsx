@@ -4,6 +4,8 @@ import { getT } from '../../utils/translations';
 import { DailySalesReportModal } from './DailySalesReportModal';
 import { ZakatCalculatorSection } from './ZakatCalculatorSection';
 import { PeriodProfitTargetPanel } from './PeriodProfitTargetPanel';
+import { SmartDreamGoalBanner } from './SmartDreamGoalBanner';
+import { WeeklyTrendAnalysisSection } from './WeeklyTrendAnalysisSection';
 import { generateAndDownloadDailySalesPdf } from '../../utils/pdfReport';
 import { exportShopEarWholesalePdf, ShopEarWholesalePdfItem } from '../../utils/exportReports';
 import {
@@ -17,7 +19,6 @@ import { ExpenseCategory } from '../../types';
 import {
   TrendingUp,
   ArrowUpRight,
-  ArrowDownRight,
   CreditCard,
   Award,
   Printer,
@@ -38,9 +39,6 @@ import {
 } from 'lucide-react';
 import {
   ResponsiveContainer,
-  ComposedChart,
-  AreaChart,
-  Area,
   LineChart,
   Line,
   BarChart,
@@ -57,7 +55,6 @@ export const AnalyticsView: React.FC = () => {
     orders,
     expenses,
     products,
-    categories,
     settings,
     updateSettings,
     activeBranch,
@@ -81,7 +78,6 @@ export const AnalyticsView: React.FC = () => {
   const [copiedShopEarSheet, setCopiedShopEarSheet] = useState(false);
   const [activeChartMetric, setActiveChartMetric] = useState<'both' | 'sales' | 'profit'>('both');
   const [chartType, setChartType] = useState<'bar' | 'line'>('bar');
-  const [weeklyChartMode, setWeeklyChartMode] = useState<'composed' | 'area'>('composed');
   const [expensePeriodFilter, setExpensePeriodFilter] = useState<'all' | 'today' | 'month'>('all');
   const [expenseCatFilter, setExpenseCatFilter] = useState<'all' | ExpenseCategory>('all');
   const [topProdPeriod, setTopProdPeriod] = useState<'7d' | '30d' | '90d' | 'year' | 'all'>('all');
@@ -307,61 +303,6 @@ export const AnalyticsView: React.FC = () => {
 
     return list;
   }, [completedOrders, isAr, isFr]);
-
-  // 7-Day Daily Sales Comparison & Growth Trend Data
-  const {
-    last7DaysComparison,
-    sevenDayTotalSales,
-    prevSevenDayTotalSales,
-    weeklyGrowthPct,
-    sevenDayAvgSales,
-    peakDay
-  } = useMemo(() => {
-    const current7 = last30DaysTrend.slice(-7);
-    const previous7 = last30DaysTrend.slice(-14, -7);
-
-    const enriched = current7.map((day, idx) => {
-      const prevDay = idx > 0 ? current7[idx - 1] : previous7[previous7.length - 1];
-      const prevWeekDay = previous7[idx];
-
-      const dayOverDayPct =
-        prevDay && prevDay.sales > 0
-          ? Number((((day.sales - prevDay.sales) / prevDay.sales) * 100).toFixed(1))
-          : 0;
-
-      const weekOverWeekPct =
-        prevWeekDay && prevWeekDay.sales > 0
-          ? Number((((day.sales - prevWeekDay.sales) / prevWeekDay.sales) * 100).toFixed(1))
-          : 0;
-
-      return {
-        ...day,
-        label: `${day.weekdayName} ${day.displayDate}`,
-        prevWeekSales: prevWeekDay ? prevWeekDay.sales : 0,
-        dayOverDayPct,
-        weekOverWeekPct
-      };
-    });
-
-    const totalCurrent = enriched.reduce((sum, d) => sum + d.sales, 0);
-    const totalPrev = previous7.reduce((sum, d) => sum + d.sales, 0);
-    const growthPct =
-      totalPrev > 0 ? Number((((totalCurrent - totalPrev) / totalPrev) * 100).toFixed(1)) : 0;
-    const avgSales = enriched.length > 0 ? totalCurrent / enriched.length : 0;
-    const best = enriched.reduce(
-      (max, d) => (d.sales > max.sales ? d : max),
-      enriched[0] || { label: '-', sales: 0, weekdayName: '-', displayDate: '' }
-    );
-
-    return {
-      last7DaysComparison: enriched,
-      sevenDayTotalSales: totalCurrent,
-      prevSevenDayTotalSales: totalPrev,
-      weeklyGrowthPct: growthPct,
-      sevenDayAvgSales: avgSales,
-      peakDay: best
-    };
-  }, [last30DaysTrend]);
 
   const thirtyDayTotalSales = useMemo(() => {
     return last30DaysTrend.reduce((sum, it) => sum + it.sales, 0);
@@ -616,6 +557,9 @@ export const AnalyticsView: React.FC = () => {
         </div>
       )}
 
+      {/* Smart Daily Dream Progress & Proactive Sales Alert Banner */}
+      <SmartDreamGoalBanner variant="dashboard" />
+
       {/* Daily / Monthly / Yearly Linked P&L Equation, Seuil & Target System */}
       <PeriodProfitTargetPanel
         orders={orders}
@@ -624,6 +568,9 @@ export const AnalyticsView: React.FC = () => {
         cpuRecords={cpuRecords}
         zakatSummary={zakatSummary}
         monthlyProfitTarget={settings.monthlyProfitTarget ?? 6000}
+        subscriptionsSalesPct={settings.subscriptionsSalesPct ?? 3}
+        dailyFixedExpenses={settings.dailyFixedExpenses}
+        marketMode={settings.marketMode || 'normal'}
         onUpdateMonthlyTarget={(val) => updateSettings({ monthlyProfitTarget: val })}
         currencySymbol={currencySymbol}
         language={language}
@@ -1089,357 +1036,8 @@ export const AnalyticsView: React.FC = () => {
         </div>
       )}
 
-      {/* 7-Day Daily Sales Comparison & Growth Trends Chart (Recharts) */}
-      <div className="p-6 rounded-3xl bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 shadow-xs space-y-5">
-        {/* Card Header */}
-        <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 pb-3 border-b border-slate-100 dark:border-slate-800">
-          <div>
-            <div className="flex items-center gap-2">
-              <Calendar className="w-5 h-5 text-blue-600 dark:text-blue-400" />
-              <h3 className="font-extrabold text-sm sm:text-base text-slate-900 dark:text-white">
-                {isAr
-                  ? 'مقارنة المبيعات اليومية لآخر 7 أيام واتجاهات النمو'
-                  : isFr
-                  ? 'Comparaison des ventes (7 derniers jours) & croissance'
-                  : 'Last 7 Days Daily Sales Comparison & Growth Trends'}
-              </h3>
-            </div>
-            <p className="text-xs text-slate-500 dark:text-slate-400 mt-0.5">
-              {isAr
-                ? 'مقارنة أداء الأيام السبعة الأخيرة مع الأسبوع السابق لتوضيح اتجاه النمو اليومي'
-                : 'Comparing the last 7 days against the prior week to highlight daily growth trends'}
-            </p>
-          </div>
-
-          {/* Chart Style Toggle */}
-          <div className="flex items-center gap-1 p-1 bg-slate-100 dark:bg-slate-800 rounded-xl text-xs font-bold border border-slate-200 dark:border-slate-700 self-start sm:self-auto">
-            <button
-              type="button"
-              onClick={() => setWeeklyChartMode('composed')}
-              className={`flex items-center gap-1.5 px-3 py-1.5 rounded-lg transition-colors ${
-                weeklyChartMode === 'composed'
-                  ? 'bg-blue-600 text-white shadow-2xs'
-                  : 'text-slate-600 dark:text-slate-400 hover:text-slate-900 dark:hover:text-white'
-              }`}
-            >
-              <BarChart3 className="w-3.5 h-3.5" />
-              <span>{isAr ? 'مقارنة + اتجاه النمو' : 'Compare + Trend'}</span>
-            </button>
-            <button
-              type="button"
-              onClick={() => setWeeklyChartMode('area')}
-              className={`flex items-center gap-1.5 px-3 py-1.5 rounded-lg transition-colors ${
-                weeklyChartMode === 'area'
-                  ? 'bg-blue-600 text-white shadow-2xs'
-                  : 'text-slate-600 dark:text-slate-400 hover:text-slate-900 dark:hover:text-white'
-              }`}
-            >
-              <TrendingUp className="w-3.5 h-3.5" />
-              <span>{isAr ? 'منحنى النمو' : 'Growth Curve'}</span>
-            </button>
-          </div>
-        </div>
-
-        {/* 7-Day Growth KPI Strip */}
-        <div className="grid grid-cols-2 lg:grid-cols-4 gap-3">
-          <div className="p-3.5 rounded-2xl bg-blue-50/80 dark:bg-blue-950/35 border border-blue-200/80 dark:border-blue-800/60">
-            <div className="text-[11px] font-bold text-blue-800 dark:text-blue-300">
-              {isAr ? 'مبيعات آخر 7 أيام' : 'Last 7 Days Sales'}
-            </div>
-            <div className="text-lg font-black text-blue-950 dark:text-white font-mono tabular-nums mt-0.5">
-              {sevenDayTotalSales.toFixed(2)} {currencySymbol}
-            </div>
-            <div className="text-[10px] text-blue-700/80 dark:text-blue-300/80 mt-0.5 font-mono tabular-nums">
-              {isAr ? 'الأسبوع السابق:' : 'Prior week:'} {prevSevenDayTotalSales.toFixed(2)} {currencySymbol}
-            </div>
-          </div>
-
-          <div
-            className={`p-3.5 rounded-2xl border ${
-              weeklyGrowthPct >= 0
-                ? 'bg-emerald-50/80 dark:bg-emerald-950/35 border-emerald-200/80 dark:border-emerald-800/60'
-                : 'bg-rose-50/80 dark:bg-rose-950/35 border-rose-200/80 dark:border-rose-800/60'
-            }`}
-          >
-            <div
-              className={`text-[11px] font-bold ${
-                weeklyGrowthPct >= 0
-                  ? 'text-emerald-800 dark:text-emerald-300'
-                  : 'text-rose-800 dark:text-rose-300'
-              }`}
-            >
-              {isAr ? 'مؤشر النمو الأسبوعي' : 'Weekly Growth'}
-            </div>
-            <div
-              className={`text-lg font-black font-mono tabular-nums mt-0.5 flex items-center gap-1 ${
-                weeklyGrowthPct >= 0
-                  ? 'text-emerald-700 dark:text-emerald-400'
-                  : 'text-rose-600 dark:text-rose-400'
-              }`}
-            >
-              {weeklyGrowthPct >= 0 ? (
-                <ArrowUpRight className="w-4 h-4 shrink-0" />
-              ) : (
-                <ArrowDownRight className="w-4 h-4 shrink-0" />
-              )}
-              <span>
-                {weeklyGrowthPct >= 0 ? `+${weeklyGrowthPct}%` : `${weeklyGrowthPct}%`}
-              </span>
-            </div>
-            <div className="text-[10px] text-slate-500 dark:text-slate-400 mt-0.5">
-              {isAr ? 'مقارنة بـ 7 أيام السابقة' : 'vs previous 7 days'}
-            </div>
-          </div>
-
-          <div className="p-3.5 rounded-2xl bg-slate-50 dark:bg-slate-800/60 border border-slate-200 dark:border-slate-700">
-            <div className="text-[11px] font-bold text-slate-600 dark:text-slate-400">
-              {isAr ? 'متوسط المبيعات اليومي' : 'Daily Average'}
-            </div>
-            <div className="text-lg font-black text-slate-900 dark:text-white font-mono tabular-nums mt-0.5">
-              {sevenDayAvgSales.toFixed(2)} {currencySymbol}
-            </div>
-            <div className="text-[10px] text-slate-400 mt-0.5">
-              {isAr ? 'المعدل اليومي للأسبوع' : '7-day daily mean'}
-            </div>
-          </div>
-
-          <div className="p-3.5 rounded-2xl bg-amber-50/80 dark:bg-amber-950/35 border border-amber-200/80 dark:border-amber-800/60">
-            <div className="text-[11px] font-bold text-amber-800 dark:text-amber-300">
-              {isAr ? 'أعلى يوم مبيعاً' : 'Peak Day'}
-            </div>
-            <div className="text-lg font-black text-amber-700 dark:text-amber-400 font-mono tabular-nums mt-0.5">
-              {peakDay.sales.toFixed(2)} {currencySymbol}
-            </div>
-            <div className="text-[10px] text-amber-700/90 dark:text-amber-300/80 mt-0.5 truncate">
-              {peakDay.label}
-            </div>
-          </div>
-        </div>
-
-        {/* Recharts 7-Day Comparison Canvas */}
-        <div className="w-full h-72 pt-1">
-          <ResponsiveContainer width="100%" height="100%">
-            {weeklyChartMode === 'composed' ? (
-              <ComposedChart
-                data={last7DaysComparison}
-                margin={{ top: 10, right: 12, left: 0, bottom: 0 }}
-              >
-                <CartesianGrid strokeDasharray="3 3" stroke={isDark ? '#1e293b' : '#e2e8f0'} strokeOpacity={isDark ? 0.85 : 0.6} />
-                <XAxis
-                  dataKey="label"
-                  tick={{ fontSize: 11, fill: isDark ? '#b7c6db' : '#64748b' }}
-                  axisLine={{ stroke: isDark ? '#26344a' : '#cbd5e1' }}
-                  tickLine={false}
-                />
-                <YAxis
-                  tick={{ fontSize: 11, fill: isDark ? '#b7c6db' : '#64748b' }}
-                  axisLine={{ stroke: isDark ? '#26344a' : '#cbd5e1' }}
-                  tickLine={false}
-                />
-                <Tooltip
-                  content={({ active, payload }) => {
-                    if (active && payload && payload.length) {
-                      const item = payload[0].payload;
-                      const isPositive = item.dayOverDayPct >= 0;
-                      return (
-                        <div className="bg-slate-900 text-white p-3 rounded-xl shadow-xl text-xs space-y-1.5 border border-slate-700">
-                          <div className="font-bold text-slate-200">
-                            {item.label} <span className="text-slate-400 font-mono">({item.date})</span>
-                          </div>
-                          <div className="font-mono text-emerald-400 font-bold">
-                            {isAr ? 'مبيعات اليوم:' : 'Sales:'} {item.sales.toFixed(2)} {currencySymbol}
-                          </div>
-                          <div className="font-mono text-slate-300">
-                            {isAr ? 'نفس اليوم الأسبوع الماضي:' : 'Prior Week:'} {item.prevWeekSales.toFixed(2)} {currencySymbol}
-                          </div>
-                          <div className="font-mono text-amber-300 font-bold">
-                            {isAr ? 'صافي الربح:' : 'Profit:'} +{item.profit.toFixed(2)} {currencySymbol}
-                          </div>
-                          <div className={`font-mono font-bold ${isPositive ? 'text-emerald-400' : 'text-rose-400'}`}>
-                            {isAr ? 'النمو عن اليوم السابق:' : 'DoD Growth:'}{' '}
-                            {isPositive ? `+${item.dayOverDayPct}%` : `${item.dayOverDayPct}%`}
-                          </div>
-                        </div>
-                      );
-                    }
-                    return null;
-                  }}
-                />
-                <Legend
-                  wrapperStyle={{ fontSize: 12, paddingTop: 10 }}
-                  formatter={(val) => {
-                    if (val === 'sales') return isAr ? `مبيعات آخر 7 أيام (${currencySymbol})` : `Last 7 Days (${currencySymbol})`;
-                    if (val === 'prevWeekSales') return isAr ? `الأسبوع السابق (${currencySymbol})` : `Prior Week (${currencySymbol})`;
-                    if (val === 'profit') return isAr ? `صافي الربح (${currencySymbol})` : `Net Profit (${currencySymbol})`;
-                    return val;
-                  }}
-                />
-                <Bar
-                  dataKey="prevWeekSales"
-                  name="prevWeekSales"
-                  fill="#94a3b8"
-                  radius={[6, 6, 0, 0]}
-                  barSize={18}
-                />
-                <Bar
-                  dataKey="sales"
-                  name="sales"
-                  fill="#2563eb"
-                  radius={[6, 6, 0, 0]}
-                  barSize={22}
-                />
-                <Line
-                  type="monotone"
-                  dataKey="sales"
-                  name="sales"
-                  stroke="#059669"
-                  strokeWidth={2.5}
-                  dot={{ r: 4, fill: '#059669', strokeWidth: 2, stroke: '#fff' }}
-                  activeDot={{ r: 6 }}
-                  legendType="none"
-                />
-                <Line
-                  type="monotone"
-                  dataKey="profit"
-                  name="profit"
-                  stroke="#f59e0b"
-                  strokeWidth={2}
-                  strokeDasharray="4 4"
-                  dot={{ r: 3, fill: '#f59e0b' }}
-                />
-              </ComposedChart>
-            ) : (
-              <AreaChart
-                data={last7DaysComparison}
-                margin={{ top: 10, right: 12, left: 0, bottom: 0 }}
-              >
-                <defs>
-                  <linearGradient id="weeklySalesGradient" x1="0" y1="0" x2="0" y2="1">
-                    <stop offset="5%" stopColor="#2563eb" stopOpacity={0.35} />
-                    <stop offset="95%" stopColor="#2563eb" stopOpacity={0.02} />
-                  </linearGradient>
-                  <linearGradient id="weeklyProfitGradient" x1="0" y1="0" x2="0" y2="1">
-                    <stop offset="5%" stopColor="#059669" stopOpacity={0.3} />
-                    <stop offset="95%" stopColor="#059669" stopOpacity={0.02} />
-                  </linearGradient>
-                </defs>
-                <CartesianGrid strokeDasharray="3 3" stroke={isDark ? '#1e293b' : '#e2e8f0'} strokeOpacity={isDark ? 0.85 : 0.6} />
-                <XAxis
-                  dataKey="label"
-                  tick={{ fontSize: 11, fill: isDark ? '#b7c6db' : '#64748b' }}
-                  axisLine={{ stroke: isDark ? '#26344a' : '#cbd5e1' }}
-                  tickLine={false}
-                />
-                <YAxis
-                  tick={{ fontSize: 11, fill: isDark ? '#b7c6db' : '#64748b' }}
-                  axisLine={{ stroke: isDark ? '#26344a' : '#cbd5e1' }}
-                  tickLine={false}
-                />
-                <Tooltip
-                  content={({ active, payload }) => {
-                    if (active && payload && payload.length) {
-                      const item = payload[0].payload;
-                      const isPositive = item.dayOverDayPct >= 0;
-                      return (
-                        <div className="bg-slate-900 text-white p-3 rounded-xl shadow-xl text-xs space-y-1.5 border border-slate-700">
-                          <div className="font-bold text-slate-200">
-                            {item.label} <span className="text-slate-400 font-mono">({item.date})</span>
-                          </div>
-                          <div className="font-mono text-blue-300 font-bold">
-                            {isAr ? 'مبيعات اليوم:' : 'Sales:'} {item.sales.toFixed(2)} {currencySymbol}
-                          </div>
-                          <div className="font-mono text-slate-300">
-                            {isAr ? 'الأسبوع السابق:' : 'Prior Week:'} {item.prevWeekSales.toFixed(2)} {currencySymbol}
-                          </div>
-                          <div className="font-mono text-emerald-400 font-bold">
-                            {isAr ? 'صافي الربح:' : 'Profit:'} +{item.profit.toFixed(2)} {currencySymbol}
-                          </div>
-                          <div className={`font-mono font-bold ${isPositive ? 'text-emerald-400' : 'text-rose-400'}`}>
-                            {isAr ? 'النمو اليومي:' : 'DoD Growth:'}{' '}
-                            {isPositive ? `+${item.dayOverDayPct}%` : `${item.dayOverDayPct}%`}
-                          </div>
-                        </div>
-                      );
-                    }
-                    return null;
-                  }}
-                />
-                <Legend
-                  wrapperStyle={{ fontSize: 12, paddingTop: 10 }}
-                  formatter={(val) => {
-                    if (val === 'sales') return isAr ? `مبيعات آخر 7 أيام (${currencySymbol})` : `Last 7 Days (${currencySymbol})`;
-                    if (val === 'prevWeekSales') return isAr ? `الأسبوع السابق (${currencySymbol})` : `Prior Week (${currencySymbol})`;
-                    if (val === 'profit') return isAr ? `صافي الربح (${currencySymbol})` : `Net Profit (${currencySymbol})`;
-                    return val;
-                  }}
-                />
-                <Area
-                  type="monotone"
-                  dataKey="sales"
-                  name="sales"
-                  stroke="#2563eb"
-                  strokeWidth={2.5}
-                  fill="url(#weeklySalesGradient)"
-                  dot={{ r: 3.5, fill: '#2563eb' }}
-                  activeDot={{ r: 6 }}
-                />
-                <Area
-                  type="monotone"
-                  dataKey="profit"
-                  name="profit"
-                  stroke="#059669"
-                  strokeWidth={2}
-                  fill="url(#weeklyProfitGradient)"
-                  dot={{ r: 2.5, fill: '#059669' }}
-                />
-                <Line
-                  type="monotone"
-                  dataKey="prevWeekSales"
-                  name="prevWeekSales"
-                  stroke="#94a3b8"
-                  strokeWidth={2}
-                  strokeDasharray="5 5"
-                  dot={{ r: 2.5, fill: '#94a3b8' }}
-                />
-              </AreaChart>
-            )}
-          </ResponsiveContainer>
-        </div>
-
-        {/* Daily Day-by-Day Growth Breakdown Strip */}
-        <div className="grid grid-cols-2 sm:grid-cols-4 lg:grid-cols-7 gap-2 pt-2 border-t border-slate-100 dark:border-slate-800">
-          {last7DaysComparison.map((day, idx) => {
-            const isUp = day.dayOverDayPct >= 0;
-            const isToday = idx === last7DaysComparison.length - 1;
-            return (
-              <div
-                key={day.date}
-                className={`p-2.5 rounded-2xl border text-center transition-colors ${
-                  isToday
-                    ? 'bg-blue-50/70 dark:bg-blue-950/30 border-blue-300 dark:border-blue-800'
-                    : 'bg-slate-50/80 dark:bg-slate-800/40 border-slate-200/80 dark:border-slate-800'
-                }`}
-              >
-                <div className="text-[11px] font-bold text-slate-600 dark:text-slate-300 truncate">
-                  {isToday ? (isAr ? 'اليوم' : 'Today') : day.weekdayName}{' '}
-                  <span className="font-mono text-slate-400">{day.displayDate}</span>
-                </div>
-                <div className="text-xs font-black text-slate-900 dark:text-white font-mono tabular-nums mt-1">
-                  {day.sales.toFixed(0)} {currencySymbol}
-                </div>
-                <div
-                  className={`text-[10px] font-bold font-mono tabular-nums mt-0.5 inline-flex items-center justify-center gap-0.5 ${
-                    isUp ? 'text-emerald-600 dark:text-emerald-400' : 'text-rose-600 dark:text-rose-400'
-                  }`}
-                >
-                  {isUp ? <ArrowUpRight className="w-3 h-3" /> : <ArrowDownRight className="w-3 h-3" />}
-                  <span>{isUp ? `+${day.dayOverDayPct}%` : `${day.dayOverDayPct}%`}</span>
-                </div>
-              </div>
-            );
-          })}
-        </div>
-      </div>
+      {/* Weekly Trend Analysis (Multi-Week WoW, 7-Day vs Prior, Weekday Pattern, Movers) */}
+      <WeeklyTrendAnalysisSection />
 
       {/* 30-Day Daily Sales Revenue Trend Line Chart (Recharts) */}
       <div className="p-6 rounded-3xl bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 shadow-xs space-y-4">

@@ -36,6 +36,7 @@ export const DreamView: React.FC = () => {
     orders,
     expenses,
     products,
+    updateProduct,
     customers,
     creditTransactions,
     currentShift,
@@ -66,9 +67,18 @@ export const DreamView: React.FC = () => {
   const [isEditingMonthlyInline, setIsEditingMonthlyInline] = useState(false);
   const [inlineMonthlyInput, setInlineMonthlyInput] = useState(String(monthlyTarget));
 
-  // Product Margin Table state
+  // Product Margin Table & Interactive Hanout Margin Tool State
   const [marginSearch, setMarginSearch] = useState('');
   const [marginSort, setMarginSort] = useState<'profit30d' | 'marginDesc' | 'marginAsc' | 'unitProfit'>('profit30d');
+  const [calcProductId, setCalcProductId] = useState<string>('');
+  const [calcAchat, setCalcAchat] = useState<string>('10');
+  const [calcVente, setCalcVente] = useState<string>('13');
+  const [calcSavedNotice, setCalcSavedNotice] = useState<string | null>(null);
+
+  const calcNumAchat = Math.max(0, Number(calcAchat) || 0);
+  const calcNumVente = Math.max(0, Number(calcVente) || 0);
+  const calcProfit = Number((calcNumVente - calcNumAchat).toFixed(2));
+  const calcMarginPct = calcNumVente > 0 ? Number(((calcProfit / calcNumVente) * 100).toFixed(1)) : 0;
 
   const saveDreamConfig = (e: React.FormEvent) => {
     e.preventDefault();
@@ -82,6 +92,7 @@ export const DreamView: React.FC = () => {
     updateSettings({ monthlyProfitTarget: nextMonthly });
     try {
       localStorage.setItem('kadi_pos_dream_goal_v1', JSON.stringify(next));
+      window.dispatchEvent(new CustomEvent('kadi:dream-updated'));
     } catch {
       // ignore storage errors
     }
@@ -715,17 +726,17 @@ export const DreamView: React.FC = () => {
       </section>
 
       {/* =================================================================== */}
-      {/* 3. هامش الربح ديال كل سلعة (تحليل الأرباح حسب المنتوج) */}
+      {/* 3. أداة حساب الربح وهامش الربح لكل سلعة (الربح = البيع - الشراء) */}
       {/* =================================================================== */}
       <section className="bg-slate-900 border border-slate-800 rounded-2xl p-5 space-y-4">
         <div className="flex flex-col lg:flex-row lg:items-center justify-between gap-3">
           <div>
             <div className="flex items-center gap-2 text-emerald-400 text-xs font-bold">
               <BarChart3 className="w-4 h-4" />
-              <span>3. لوحة هامش الربح ديال كل سلعة (آخر 30 يوم)</span>
+              <span>3. أداة حساب الربح والهامش لكل سلعة (الربح = البيع - الشراء)</span>
             </div>
             <h2 className="text-lg font-black text-white mt-0.5">
-              شحال كتربح فكل منتوج وسلعة فالمحال
+              شحال كتربح فكل سلعة فالحانوت (Vente - Achat)
             </h2>
           </div>
 
@@ -762,6 +773,106 @@ export const DreamView: React.FC = () => {
                   {s.label}
                 </button>
               ))}
+            </div>
+          </div>
+        </div>
+
+        {/* Interactive Darija Hanout Margin Calculator (حاسبة الربح والهامش للحانوت) */}
+        <div className="p-4 rounded-2xl bg-slate-950 border border-emerald-500/35 space-y-3">
+          <div className="flex flex-wrap items-center justify-between gap-2">
+            <div className="text-xs font-black text-emerald-400">
+              🧮 حاسبة الربح السريعة للحانوت: الربح = ثمن البيع (Vente) − ثمن الشراء (Achat)
+            </div>
+            {calcSavedNotice && (
+              <span className="px-2.5 py-0.5 rounded-lg bg-emerald-500/20 text-emerald-300 text-[11px] font-bold">
+                {calcSavedNotice}
+              </span>
+            )}
+          </div>
+
+          <div className="grid grid-cols-1 md:grid-cols-5 gap-3 items-end">
+            <div className="md:col-span-2">
+              <label className="block text-[11px] font-bold text-slate-400 mb-1">
+                اختار سلعة من المحال (اختياري)
+              </label>
+              <select
+                value={calcProductId}
+                onChange={(e) => {
+                  const id = e.target.value;
+                  setCalcProductId(id);
+                  const prod = products.find((pr) => pr.id === id);
+                  if (prod) {
+                    setCalcAchat(String(prod.costPrice));
+                    setCalcVente(String(prod.price));
+                  }
+                }}
+                className="w-full px-3 py-2 rounded-xl bg-slate-900 border border-slate-700 text-xs font-bold text-white focus:outline-none focus:border-emerald-400"
+              >
+                <option value="">-- حساب حر (أي سلعة جديدة) --</option>
+                {products.slice(0, 150).map((pr) => (
+                  <option key={pr.id} value={pr.id}>
+                    {pr.name} (شراء: {pr.costPrice} / بيع: {pr.price})
+                  </option>
+                ))}
+              </select>
+            </div>
+
+            <div>
+              <label className="block text-[11px] font-bold text-slate-400 mb-1">
+                ثمن الشراء Achat ({currencySymbol})
+              </label>
+              <input
+                type="number"
+                min="0"
+                step="0.5"
+                value={calcAchat}
+                onChange={(e) => setCalcAchat(e.target.value)}
+                className="w-full px-3 py-2 rounded-xl bg-slate-900 border border-slate-700 text-sm font-mono font-bold text-white focus:outline-none focus:border-emerald-400"
+              />
+            </div>
+
+            <div>
+              <label className="block text-[11px] font-bold text-slate-400 mb-1">
+                ثمن البيع Vente ({currencySymbol})
+              </label>
+              <input
+                type="number"
+                min="0"
+                step="0.5"
+                value={calcVente}
+                onChange={(e) => setCalcVente(e.target.value)}
+                className="w-full px-3 py-2 rounded-xl bg-slate-900 border border-slate-700 text-sm font-mono font-bold text-white focus:outline-none focus:border-amber-400"
+              />
+            </div>
+
+            <div className="p-2.5 rounded-xl bg-slate-900 border border-slate-800 flex items-center justify-between gap-2">
+              <div>
+                <div className="text-[10px] text-slate-400">الربح الصافي / الهامش %</div>
+                <div
+                  className={`text-sm font-black font-mono tabular-nums ${
+                    calcProfit >= 0 ? 'text-emerald-400' : 'text-rose-400'
+                  }`}
+                >
+                  {calcProfit >= 0 ? '+' : ''}
+                  {calcProfit} {currencySymbol} · {calcMarginPct}%
+                </div>
+              </div>
+              {calcProductId && (
+                <button
+                  type="button"
+                  onClick={() => {
+                    updateProduct(calcProductId, {
+                      costPrice: calcNumAchat,
+                      price: calcNumVente
+                    });
+                    setCalcSavedNotice('✓ تحفظ الثمن فالمحال!');
+                    setTimeout(() => setCalcSavedNotice(null), 2500);
+                  }}
+                  className="px-2.5 py-1.5 rounded-lg bg-emerald-500 hover:bg-emerald-400 text-slate-950 text-[10px] font-black shrink-0"
+                >
+                  حفظ
+                </button>
+              )}
             </div>
           </div>
         </div>
@@ -809,11 +920,11 @@ export const DreamView: React.FC = () => {
             <table className="w-full text-start border-collapse text-xs">
               <thead className="sticky top-0 bg-slate-900 text-slate-300 border-b border-slate-800 font-bold">
                 <tr>
-                  <th className="py-2.5 px-3 text-start">السلعة</th>
-                  <th className="py-2.5 px-3 text-end">ثمن الشراء</th>
-                  <th className="py-2.5 px-3 text-end">ثمن البيع</th>
-                  <th className="py-2.5 px-3 text-end">الربح / وحدة</th>
-                  <th className="py-2.5 px-3 text-center">هامش الربح %</th>
+                  <th className="py-2.5 px-3 text-start">السلعة (والمخزون)</th>
+                  <th className="py-2.5 px-3 text-end">ثمن الشراء (Achat)</th>
+                  <th className="py-2.5 px-3 text-end">ثمن البيع (Vente)</th>
+                  <th className="py-2.5 px-3 text-end">الربح (البيع - الشراء)</th>
+                  <th className="py-2.5 px-3 text-center">الهامش % (Margin)</th>
                   <th className="py-2.5 px-3 text-center">المباع (30 يوم)</th>
                   <th className="py-2.5 px-3 text-end">إجمالي ربح 30 يوم</th>
                 </tr>
@@ -822,7 +933,14 @@ export const DreamView: React.FC = () => {
                 {productMarginAnalytics.rows.slice(0, 80).map((row) => (
                   <tr key={row.id} className="hover:bg-slate-900/70">
                     <td className="py-2.5 px-3">
-                      <div className="font-bold text-white">{row.name}</div>
+                      <div className="font-bold text-white flex flex-wrap items-center gap-1.5">
+                        <span>{row.name}</span>
+                        {row.stock < 5 && (
+                          <span className="px-1.5 py-0.2 rounded text-[9px] font-black bg-rose-600 text-white">
+                            قل من 5 ({row.stock})
+                          </span>
+                        )}
+                      </div>
                       <div className="text-[10px] font-mono text-slate-500">
                         {row.sku} · المخزون: {row.stock}
                       </div>

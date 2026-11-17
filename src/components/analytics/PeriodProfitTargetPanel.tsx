@@ -1,12 +1,15 @@
 import React, { useMemo, useState } from 'react';
 import {
+  BourseMarketMode,
   CpuQuarterRecord,
+  DailyFixedExpenses,
   Expense,
   Order,
   Product
 } from '../../types';
 import { ZakatSummary } from '../../utils/zakat';
 import { computeExpenseMetrics, getLocalTodayYMD } from '../../utils/expenses';
+import { DEFAULT_DAILY_FIXED_EXPENSES, getMarketModeMeta } from '../../utils/bourseEngine';
 import {
   Calendar,
   CalendarDays,
@@ -40,6 +43,9 @@ interface PeriodProfitTargetPanelProps {
   cpuRecords: CpuQuarterRecord[];
   zakatSummary: ZakatSummary;
   monthlyProfitTarget: number;
+  subscriptionsSalesPct?: number;
+  dailyFixedExpenses?: DailyFixedExpenses;
+  marketMode?: BourseMarketMode;
   onUpdateMonthlyTarget: (val: number) => void;
   currencySymbol: string;
   language: 'ar' | 'fr' | 'en';
@@ -63,6 +69,9 @@ export const PeriodProfitTargetPanel: React.FC<PeriodProfitTargetPanelProps> = (
   cpuRecords,
   zakatSummary,
   monthlyProfitTarget,
+  subscriptionsSalesPct = 3,
+  dailyFixedExpenses,
+  marketMode = 'normal',
   onUpdateMonthlyTarget,
   currencySymbol,
   language,
@@ -73,6 +82,9 @@ export const PeriodProfitTargetPanel: React.FC<PeriodProfitTargetPanelProps> = (
   const [targetInputStr, setTargetInputStr] = useState<string>(
     String(monthlyProfitTarget ?? 6000)
   );
+  React.useEffect(() => {
+    setTargetInputStr(String(monthlyProfitTarget ?? 6000));
+  }, [monthlyProfitTarget]);
 
   const todayYMD = getLocalTodayYMD();
   const monthPrefix = todayYMD.slice(0, 7); // YYYY-MM
@@ -89,17 +101,21 @@ export const PeriodProfitTargetPanel: React.FC<PeriodProfitTargetPanelProps> = (
     [orders]
   );
 
+  const modeMeta = getMarketModeMeta(marketMode);
+  const costShockFactor = modeMeta.costShockFactor;
+
   const computeOrderRealCost = (o: Order): number => {
     if (o.items && o.items.length > 0) {
       return o.items.reduce((sum, it) => {
+        const liveCost = productCostMap.get(it.productId);
         const unitCost =
-          it.costPrice !== undefined && it.costPrice !== null
-            ? Number(it.costPrice)
-            : productCostMap.get(it.productId) || 0;
-        return sum + unitCost * (Number(it.quantity) || 0);
+          liveCost !== undefined
+            ? liveCost
+            : Number(it.costPrice) || 0;
+        return sum + unitCost * costShockFactor * (Number(it.quantity) || 0);
       }, 0);
     }
-    return Number(o.costTotal) || 0;
+    return (Number(o.costTotal) || 0) * costShockFactor;
   };
 
   // Fallback Average Margin % from all completed orders or product catalog
@@ -117,20 +133,28 @@ export const PeriodProfitTargetPanel: React.FC<PeriodProfitTargetPanelProps> = (
     let catMarginSum = 0;
     let catCount = 0;
     products.forEach((p) => {
-      if (p.price > 0 && p.price > p.costPrice) {
-        catMarginSum += (p.price - p.costPrice) / p.price;
+      const adjCost = (Number(p.costPrice) || 0) * costShockFactor;
+      if (p.price > 0 && p.price > adjCost) {
+        catMarginSum += (p.price - adjCost) / p.price;
         catCount++;
       }
     });
     if (catCount > 0) return catMarginSum / catCount;
     return 0.25;
-  }, [completedOrders, products, productCostMap]);
+  }, [completedOrders, products, productCostMap, costShockFactor]);
 
-  // Expenses (Monthly baseline -> Daily / 30, Yearly * 12)
+  // Expenses (Daily fixed overhead breakdown + Ledger expenses)
+  const fixedDailyTotal =
+    Math.max(0, Number(dailyFixedExpenses?.rentPerDay ?? DEFAULT_DAILY_FIXED_EXPENSES.rentPerDay) || 0) +
+    Math.max(0, Number(dailyFixedExpenses?.electricityPerDay ?? DEFAULT_DAILY_FIXED_EXPENSES.electricityPerDay) || 0) +
+    Math.max(0, Number(dailyFixedExpenses?.internetPerDay ?? DEFAULT_DAILY_FIXED_EXPENSES.internetPerDay) || 0) +
+    Math.max(0, Number(dailyFixedExpenses?.transportPerDay ?? DEFAULT_DAILY_FIXED_EXPENSES.transportPerDay) || 0) +
+    Math.max(0, Number(dailyFixedExpenses?.otherPerDay ?? DEFAULT_DAILY_FIXED_EXPENSES.otherPerDay) || 0);
+
   const expenseMetrics = useMemo(() => computeExpenseMetrics(expenses), [expenses]);
-  const monthlyExpenses = expenseMetrics.monthTotal;
-  const dailyExpenses = monthlyExpenses / 30;
-  const yearlyExpenses = monthlyExpenses * 12;
+  const monthlyExpenses = fixedDailyTotal * 30 + expenseMetrics.monthTotal;
+  const dailyExpenses = fixedDailyTotal + expenseMetrics.todayTotal + (expenseMetrics.monthTotal - expenseMetrics.todayTotal) / 30;
+  const yearlyExpenses = fixedDailyTotal * 365 + expenseMetrics.monthTotal * 12;
 
   // Subscriptions = CPU Tax + AMO + CNSS Retirement (Quarterly / 3 => Monthly)
   const subscriptionsBreakdown = useMemo(() => {
@@ -182,9 +206,12 @@ export const PeriodProfitTargetPanel: React.FC<PeriodProfitTargetPanelProps> = (
     const marginRatio =
       sales > 0 && sales > cost ? (sales - cost) / sales : baselineMarginRatio;
     const safeMargin = Math.max(0.01, marginRatio);
+    const dynamicSubs = (sales * Math.max(0, subscriptionsSalesPct)) / 100;
+    const effectiveSubs = dailySubscriptions + dynamicSubs;
     const fixedCosts = dailyExpenses + dailySubscriptions + dailyZakat;
-    const netProfit = sales - cost - fixedCosts;
-    const seuilDaily = fixedCosts / safeMargin;
+    const netProfit = sales - cost - fixedCosts - dynamicSubs;
+    const effectiveContrib = Math.max(0.02, safeMargin - Math.max(0, subscriptionsSalesPct) / 100);
+    const seuilDaily = fixedCosts / effectiveContrib;
     const progressPct =
       seuilDaily > 0 ? Math.min(100, Math.max(0, (sales / seuilDaily) * 100)) : 100;
     const neededToReachZero = Math.max(0, seuilDaily - sales);
@@ -194,7 +221,7 @@ export const PeriodProfitTargetPanel: React.FC<PeriodProfitTargetPanelProps> = (
       cost,
       ordersCount,
       expenses: dailyExpenses,
-      subscriptions: dailySubscriptions,
+      subscriptions: effectiveSubs,
       zakat: dailyZakat,
       fixedCosts,
       marginRatio: safeMargin,
@@ -210,7 +237,9 @@ export const PeriodProfitTargetPanel: React.FC<PeriodProfitTargetPanelProps> = (
     dailySubscriptions,
     dailyZakat,
     baselineMarginRatio,
-    productCostMap
+    subscriptionsSalesPct,
+    productCostMap,
+    costShockFactor
   ]);
 
   // 2. MONTHLY METRICS + TARGET SYSTEM
@@ -231,13 +260,16 @@ export const PeriodProfitTargetPanel: React.FC<PeriodProfitTargetPanelProps> = (
     const marginRatio =
       sales > 0 && sales > cost ? (sales - cost) / sales : baselineMarginRatio;
     const safeMargin = Math.max(0.01, marginRatio);
+    const dynamicSubs = (sales * Math.max(0, subscriptionsSalesPct)) / 100;
+    const effectiveSubs = monthlySubscriptions + dynamicSubs;
     const fixedCosts = monthlyExpenses + monthlySubscriptions + monthlyZakat;
-    const netProfit = sales - cost - fixedCosts;
-    const seuilMonthly = fixedCosts / safeMargin;
+    const netProfit = sales - cost - fixedCosts - dynamicSubs;
+    const effectiveContrib = Math.max(0.02, safeMargin - Math.max(0, subscriptionsSalesPct) / 100);
+    const seuilMonthly = fixedCosts / effectiveContrib;
 
     const desiredProfit = Math.max(0, Number(monthlyProfitTarget) || 0);
-    // Target Sales = Seuil + (Desired Profit / Margin %)
-    const targetSales = seuilMonthly + desiredProfit / safeMargin;
+    // Target Sales = Seuil + (Desired Profit / Effective Margin %)
+    const targetSales = seuilMonthly + desiredProfit / effectiveContrib;
 
     const now = new Date();
     const totalDaysInMonth = new Date(now.getFullYear(), now.getMonth() + 1, 0).getDate();
@@ -254,7 +286,7 @@ export const PeriodProfitTargetPanel: React.FC<PeriodProfitTargetPanelProps> = (
       cost,
       ordersCount,
       expenses: monthlyExpenses,
-      subscriptions: monthlySubscriptions,
+      subscriptions: effectiveSubs,
       zakat: monthlyZakat,
       fixedCosts,
       marginRatio: safeMargin,
@@ -277,7 +309,9 @@ export const PeriodProfitTargetPanel: React.FC<PeriodProfitTargetPanelProps> = (
     monthlyZakat,
     baselineMarginRatio,
     monthlyProfitTarget,
-    productCostMap
+    subscriptionsSalesPct,
+    productCostMap,
+    costShockFactor
   ]);
 
   // 3. YEARLY METRICS + 12 MONTHS CHART + BEST MONTH / BEST DAY
@@ -340,9 +374,12 @@ export const PeriodProfitTargetPanel: React.FC<PeriodProfitTargetPanelProps> = (
     const marginRatio =
       yearSales > 0 && yearSales > yearCost ? (yearSales - yearCost) / yearSales : baselineMarginRatio;
     const safeMargin = Math.max(0.01, marginRatio);
+    const dynamicYearSubs = (yearSales * Math.max(0, subscriptionsSalesPct)) / 100;
+    const effectiveYearSubs = yearlySubscriptions + dynamicYearSubs;
     const fixedCosts = yearlyExpenses + yearlySubscriptions + yearlyZakat;
-    const netProfit = yearSales - yearCost - fixedCosts;
-    const seuilYearly = fixedCosts / safeMargin;
+    const netProfit = yearSales - yearCost - fixedCosts - dynamicYearSubs;
+    const effectiveContrib = Math.max(0.02, safeMargin - Math.max(0, subscriptionsSalesPct) / 100);
+    const seuilYearly = fixedCosts / effectiveContrib;
     const averageMonthlyProfit = netProfit / 12;
 
     const bestMonth = monthlyBuckets.reduce(
@@ -361,7 +398,7 @@ export const PeriodProfitTargetPanel: React.FC<PeriodProfitTargetPanelProps> = (
       cost: yearCost,
       ordersCount: yearOrdersCount,
       expenses: yearlyExpenses,
-      subscriptions: yearlySubscriptions,
+      subscriptions: effectiveYearSubs,
       zakat: yearlyZakat,
       fixedCosts,
       marginRatio: safeMargin,
@@ -386,7 +423,9 @@ export const PeriodProfitTargetPanel: React.FC<PeriodProfitTargetPanelProps> = (
     yearlySubscriptions,
     yearlyZakat,
     baselineMarginRatio,
-    productCostMap
+    subscriptionsSalesPct,
+    productCostMap,
+    costShockFactor
   ]);
 
   const activeData =

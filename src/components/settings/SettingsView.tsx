@@ -42,7 +42,8 @@ import {
   ShieldAlert,
   Siren,
   QrCode,
-  ExternalLink
+  ExternalLink,
+  Gift
 } from 'lucide-react';
 import { OFFICIAL_APP_URL, buildQrImageUrl, openExternalLinkSafely } from '../../utils/remoteCatalog';
 import { PWAInstallButton } from '../pwa/PWAInstallButton';
@@ -121,6 +122,9 @@ export const SettingsView: React.FC = () => {
   const [currency, setCurrency] = useState<CurrencyCode>(settings.currency);
   const [currencySymbol, setCurrencySymbol] = useState(settings.currencySymbol);
   const [taxRate, setTaxRate] = useState(settings.taxRate);
+  const [loyaltyEnabled, setLoyaltyEnabled] = useState<boolean>(settings.loyaltyEnabled ?? true);
+  const [loyaltyPointsPer100, setLoyaltyPointsPer100] = useState<number>(settings.loyaltyPointsPer100 ?? 10);
+  const [loyaltyPointValue, setLoyaltyPointValue] = useState<number>(settings.loyaltyPointValue ?? 1);
   const [receiptHeaderMsg, setReceiptHeaderMsg] = useState(
     settings.receiptHeaderMsg ?? 'أهلاً وسهلاً بكم! نتمنى لكم تسوقاً سعيداً ومباركاً.'
   );
@@ -291,6 +295,9 @@ export const SettingsView: React.FC = () => {
       currency,
       currencySymbol,
       taxRate: Number(taxRate),
+      loyaltyEnabled,
+      loyaltyPointsPer100: Math.max(0, Number(loyaltyPointsPer100) || 0),
+      loyaltyPointValue: Math.max(0, Number(loyaltyPointValue) || 0),
       receiptHeaderMsg: receiptHeaderMsg.trim(),
       showReceiptHeaderMsg,
       receiptFooterMsg: receiptFooterMsg.trim(),
@@ -858,6 +865,75 @@ export const SettingsView: React.FC = () => {
                 onChange={(e) => setTaxRate(parseFloat(e.target.value) || 0)}
                 className="w-full px-3.5 py-2.5 text-xs font-mono font-bold bg-slate-50 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 rounded-xl"
               />
+            </div>
+          </div>
+
+          {/* Loyalty Points Program Configuration */}
+          <div className="p-4 rounded-2xl bg-emerald-50/70 dark:bg-emerald-950/30 border border-emerald-200 dark:border-emerald-800/60 space-y-4">
+            <div className="flex flex-wrap items-center justify-between gap-2">
+              <div className="flex items-center gap-2">
+                <div className="p-2 rounded-xl bg-emerald-600 text-white">
+                  <Gift className="w-4 h-4" />
+                </div>
+                <div>
+                  <div className="text-xs font-extrabold text-slate-900 dark:text-white">
+                    {isAr
+                      ? 'برنامج نقاط الولاء للزبناء (كسب واستبدال عند الدفع)'
+                      : isFr
+                      ? 'Programme de Points de Fidélité'
+                      : 'Customer Loyalty Points Program'}
+                  </div>
+                  <div className="text-[11px] text-slate-500 dark:text-slate-400">
+                    {isAr
+                      ? `كل 100 ${currencySymbol} مشتريات = ${loyaltyPointsPer100} نقطة · كل 1 نقطة = ${loyaltyPointValue} ${currencySymbol} خصم`
+                      : `Every 100 ${currencySymbol} spent = ${loyaltyPointsPer100} pts · 1 pt = ${loyaltyPointValue} ${currencySymbol} discount`}
+                  </div>
+                </div>
+              </div>
+
+              <label className="flex items-center gap-2 px-3 py-1.5 rounded-xl bg-white dark:bg-slate-900 border border-emerald-200 dark:border-emerald-800 cursor-pointer">
+                <input
+                  type="checkbox"
+                  checked={loyaltyEnabled}
+                  onChange={(e) => setLoyaltyEnabled(e.target.checked)}
+                  className="w-4 h-4 text-emerald-600 rounded"
+                />
+                <span className="text-xs font-bold text-slate-800 dark:text-slate-100">
+                  {isAr ? 'تفعيل نظام النقاط' : 'Enable Loyalty'}
+                </span>
+              </label>
+            </div>
+
+            <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+              <div>
+                <label className="block text-xs font-semibold text-slate-700 dark:text-slate-300 mb-1">
+                  {isAr ? `النقاط المكتسبة لكل 100 ${currencySymbol}` : `Points Earned per 100 ${currencySymbol}`}
+                </label>
+                <input
+                  type="number"
+                  min={0}
+                  step="1"
+                  disabled={!loyaltyEnabled}
+                  value={loyaltyPointsPer100}
+                  onChange={(e) => setLoyaltyPointsPer100(Math.max(0, parseFloat(e.target.value) || 0))}
+                  className="w-full px-3.5 py-2.5 text-xs font-mono font-bold bg-white dark:bg-slate-900 border border-emerald-200 dark:border-emerald-800 rounded-xl disabled:opacity-50"
+                />
+              </div>
+
+              <div>
+                <label className="block text-xs font-semibold text-slate-700 dark:text-slate-300 mb-1">
+                  {isAr ? `قيمة الخصم لكل 1 نقطة (${currencySymbol})` : `Discount Value per 1 Point (${currencySymbol})`}
+                </label>
+                <input
+                  type="number"
+                  min={0}
+                  step="0.1"
+                  disabled={!loyaltyEnabled}
+                  value={loyaltyPointValue}
+                  onChange={(e) => setLoyaltyPointValue(Math.max(0, parseFloat(e.target.value) || 0))}
+                  className="w-full px-3.5 py-2.5 text-xs font-mono font-bold bg-white dark:bg-slate-900 border border-emerald-200 dark:border-emerald-800 rounded-xl disabled:opacity-50"
+                />
+              </div>
             </div>
           </div>
 

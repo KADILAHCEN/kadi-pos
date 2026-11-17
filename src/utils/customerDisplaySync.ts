@@ -22,6 +22,7 @@ export interface CustomerDisplayCompletedOrder {
   amountTendered?: number;
   changeAmount?: number;
   pointsEarned?: number;
+  pointsRedeemed?: number;
   completedAt: string;
 }
 
@@ -134,6 +135,7 @@ export function buildCustomerDisplaySnapshot(params: {
           amountTendered: completedOrder.amountTendered,
           changeAmount: completedOrder.changeAmount,
           pointsEarned: completedOrder.pointsEarned,
+          pointsRedeemed: completedOrder.pointsRedeemed,
           completedAt: completedOrder.date || new Date().toISOString()
         }
       : undefined

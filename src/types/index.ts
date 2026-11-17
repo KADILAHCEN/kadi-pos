@@ -336,6 +336,16 @@ export interface AppPalette {
   createdAt?: string;
 }
 
+export type BourseMarketMode = 'normal' | 'high_season' | 'low_season' | 'purchase_increase';
+
+export interface DailyFixedExpenses {
+  rentPerDay: number;
+  electricityPerDay: number;
+  internetPerDay: number;
+  transportPerDay: number;
+  otherPerDay: number;
+}
+
 export interface StoreSettings {
   storeName: string;
   storeNameEn: string;
@@ -388,8 +398,16 @@ export interface StoreSettings {
   autoBackupEnabled?: boolean;
   // CPU Tax & CNSS Settings (ضرائبي CPU)
   cpuSettings?: CpuTaxSettings;
-  // Monthly Profit Target (الهدف الشهري للأرباح)
+  // Monthly & Yearly Profit Targets + Dynamic Subscriptions % of Sales + Bourse Market Mode & Daily Overhead
   monthlyProfitTarget?: number;
+  yearlyProfitTarget?: number;
+  subscriptionsSalesPct?: number;
+  marketMode?: BourseMarketMode;
+  dailyFixedExpenses?: DailyFixedExpenses;
+  // Loyalty Points Program (برنامج نقاط الولاء)
+  loyaltyEnabled?: boolean;
+  loyaltyPointsPer100?: number;
+  loyaltyPointValue?: number;
   // Store Branding Logo (base64 Data URL)
   storeLogo?: string;
   // Google Workspace Drive & Scheduled Gmail Reports

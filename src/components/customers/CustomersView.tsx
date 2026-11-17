@@ -1119,10 +1119,10 @@ export const CustomersView: React.FC = () => {
 
                     {/* Secondary Metrics: Loyalty Points & Purchases */}
                     <div className="grid grid-cols-2 gap-2 text-[11px] p-2.5 rounded-xl bg-slate-50 dark:bg-slate-800/40 text-slate-600 dark:text-slate-400 mb-3 font-medium">
-                      <div className="flex items-center justify-between">
+                      <div className="flex items-center justify-between gap-1">
                         <span>{t.points}:</span>
-                        <span className="font-bold text-emerald-600 dark:text-emerald-400">
-                          {cust.points} pts · {cust.tier}
+                        <span className="font-bold text-emerald-600 dark:text-emerald-400 tabular-nums">
+                          {cust.points} pts · {((cust.points || 0) * (settings.loyaltyPointValue ?? 1)).toFixed(0)} {currencySymbol}
                         </span>
                       </div>
                       <div className="flex items-center justify-between">

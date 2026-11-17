@@ -23,6 +23,8 @@ import { CpuTaxView } from './components/cpu/CpuTaxView';
 import { AnalyticsView } from './components/analytics/AnalyticsView';
 import { CustomersPeakView } from './components/analytics/CustomersPeakView';
 import { DreamView } from './components/analytics/DreamView';
+import { BourseHanoutView } from './components/bourse/BourseHanoutView';
+import { SmartDreamGoalBanner } from './components/analytics/SmartDreamGoalBanner';
 import { ShopEarView } from './components/shopEar/ShopEarView';
 import { ShopEarQuickModal } from './components/shopEar/ShopEarQuickModal';
 import { PurchaseInvoiceScanModal } from './components/inventory/PurchaseInvoiceScanModal';
@@ -128,6 +130,9 @@ const PosMainContent: React.FC = () => {
 
   // Mobile cart sheet toggle
   const [showMobileCart, setShowMobileCart] = useState(false);
+
+  // Smart Dream Progress Banner toggle on main screen
+  const [isDreamBannerDismissed, setIsDreamBannerDismissed] = useState(false);
 
   // Low stock banner dismissed state tied to current low-stock signature (auto-resets on any new stock drop)
   const [dismissedLowStockSignature, setDismissedLowStockSignature] = useState<string>('');
@@ -512,6 +517,14 @@ const PosMainContent: React.FC = () => {
         </div>
       )}
 
+      {/* Smart Daily Dream Goal & Proactive Tip Banner (Main Home Screen) */}
+      {currentTab === 'pos' && !isDreamBannerDismissed && (
+        <SmartDreamGoalBanner
+          variant="compact"
+          onDismiss={() => setIsDreamBannerDismissed(true)}
+        />
+      )}
+
       {/* Main View Area */}
       <main className="flex-1 flex overflow-hidden relative pb-16 lg:pb-0">
         {currentTab === 'pos' && (
@@ -583,6 +596,7 @@ const PosMainContent: React.FC = () => {
           </div>
         )}
 
+        {currentTab === 'bourse' && <BourseHanoutView />}
         {currentTab === 'inventory' && <InventoryView />}
         {currentTab === 'orders' && <OrdersView />}
         {currentTab === 'shifts' && <ShiftsView />}
