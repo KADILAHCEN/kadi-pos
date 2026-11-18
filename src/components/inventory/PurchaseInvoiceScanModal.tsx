@@ -3,11 +3,6 @@ import { usePos } from '../../context/PosContext';
 import { Product, SupplierInvoiceItemSnapshot, UnitType } from '../../types';
 import { safeParseJsonResponse } from '../../utils/aiVoice';
 import { getLocalTodayYMD } from '../../utils/expenses';
-import {
-  assessImageSharpness,
-  loadBlobToImage,
-  runOfflineInvoiceNumberOcr
-} from '../../utils/offlineInvoiceOcr';
 import { bluetoothScanner } from '../../utils/bluetoothScanner';
 import { playSound } from '../../utils/audio';
 import {
@@ -28,16 +23,23 @@ import {
   Hash,
   RotateCw,
   Edit3,
-  WifiOff,
   ZoomIn,
   Search,
   Flashlight,
   Focus,
   ShieldAlert,
-  RefreshCw
+  Code2,
+  Copy
 } from 'lucide-react';
 
 export type PurchaseInvoiceMode = 'official_ice' | 'informal_noir';
+
+export interface VisionInvoiceItem {
+  nom: string;
+  quantite: number;
+  prix: number;
+  total: number;
+}
 
 interface ScannedLineItem {
   id: string;
@@ -46,14 +48,14 @@ interface ScannedLineItem {
   matchedProductId: string; // '' means create new catalog product
   quantity: number;
   unitCost: number;
+  lineTotal: number;
   sellPrice: number;
   unitType: UnitType;
-  confidence?: 'high' | 'medium' | 'low';
-  source?: 'ai' | 'offline_ocr' | 'manual';
-  linePreviewDataUrl?: string;
+  source?: 'vision' | 'manual';
 }
 
 interface ScannedInvoiceResponse {
+  items?: VisionInvoiceItem[];
   invoice?: {
     supplierName?: string;
     supplierIce?: string;
@@ -63,94 +65,164 @@ interface ScannedInvoiceResponse {
     hasOfficialMarkers?: boolean;
     isHandwritten?: boolean;
     totalAmount?: number;
-    items?: Array<{
-      rawName?: string;
-      matchedCatalogName?: string;
-      quantity?: number;
-      unitCost?: number;
-      lineTotal?: number;
-      unitType?: string;
-      confidence?: string;
-    }>;
+    items?: VisionInvoiceItem[];
   };
   error?: string;
   code?: string;
 }
 
-const normalizeUnitType = (raw?: string): UnitType => {
-  const s = (raw || '').toLowerCase();
-  if (s === 'kg' || s.includes('كيلو')) return 'kg';
-  if (s === 'liter' || s.includes('لتر')) return 'liter';
-  if (s === 'box' || s.includes('كرتون') || s.includes('صندوق')) return 'box';
+const normalizeUnitType = (nameOrUnit?: string): UnitType => {
+  const s = (nameOrUnit || '').toLowerCase();
+  if (/\b(kg|كيلو)\b/i.test(s)) return 'kg';
+  if (/\b(l|ml|cl|liter|litre|لتر)\b/i.test(s)) return 'liter';
+  if (/\b(box|ctn|carton|pack|crt|صندوق|كرتون)\b/i.test(s)) return 'box';
   return 'piece';
 };
 
-const compressImageFileToJpeg = (
+/**
+ * Prepares any camera or gallery invoice photo for Gemini Vision:
+ * - Respects EXIF orientation (`imageOrientation: 'from-image'`)
+ * - Supports optional manual rotation (0/90/180/270)
+ * - Compresses cleanly up to 1600px JPEG so fine thermal receipt text stays sharp without memory overflow
+ * - Gently brightens severely underexposed photos (e.g. dim room / dark carpet background)
+ */
+const prepareInvoiceImageForVision = async (
   fileOrBlob: Blob,
-  maxDim = 800,
-  quality = 0.78
-): Promise<{ base64: string; dataUrl: string }> =>
-  new Promise((resolve, reject) => {
+  maxDim = 1600,
+  quality = 0.86,
+  rotationDeg: 0 | 90 | 180 | 270 = 0
+): Promise<{ base64: string; dataUrl: string }> => {
+  let source: CanvasImageSource;
+  let srcW = 1;
+  let srcH = 1;
+  let closeBitmap: (() => void) | null = null;
+  let revokeUrl: (() => void) | null = null;
+
+  if (typeof createImageBitmap === 'function') {
+    try {
+      const bitmap = await createImageBitmap(fileOrBlob, {
+        imageOrientation: 'from-image'
+      });
+      source = bitmap;
+      srcW = Math.max(1, bitmap.width);
+      srcH = Math.max(1, bitmap.height);
+      closeBitmap = () => bitmap.close();
+    } catch {
+      // Fallback to HTMLImageElement below
+    }
+  }
+
+  if (!closeBitmap) {
     const objectUrl = URL.createObjectURL(fileOrBlob);
-    const img = new Image();
-    img.onerror = () => {
-      URL.revokeObjectURL(objectUrl);
-      reject(new Error('صيغة الصورة غير مدعومة'));
-    };
-    img.onload = () => {
-      try {
-        const scale = Math.min(1, maxDim / Math.max(img.width || 1, img.height || 1));
-        const w = Math.max(1, Math.round((img.width || 1) * scale));
-        const h = Math.max(1, Math.round((img.height || 1) * scale));
-        const canvas = document.createElement('canvas');
-        canvas.width = w;
-        canvas.height = h;
-        const ctx = canvas.getContext('2d');
-        if (!ctx) {
-          URL.revokeObjectURL(objectUrl);
-          reject(new Error('Canvas unavailable'));
-          return;
-        }
-        ctx.drawImage(img, 0, 0, w, h);
-        const dataUrl = canvas.toDataURL('image/jpeg', quality);
-        const base64 = dataUrl.replace(/^data:image\/jpeg;base64,/, '');
-        canvas.width = 0;
-        canvas.height = 0;
-        URL.revokeObjectURL(objectUrl);
-        resolve({ base64, dataUrl });
-      } catch (err) {
-        URL.revokeObjectURL(objectUrl);
-        reject(err);
+    revokeUrl = () => URL.revokeObjectURL(objectUrl);
+    const img = await new Promise<HTMLImageElement>((resolve, reject) => {
+      const el = new Image();
+      el.onload = () => resolve(el);
+      el.onerror = () => reject(new Error('صيغة الصورة غير مدعومة'));
+      el.src = objectUrl;
+    });
+    source = img;
+    srcW = Math.max(1, img.naturalWidth || img.width || 1);
+    srcH = Math.max(1, img.naturalHeight || img.height || 1);
+  }
+
+  try {
+    const rotated = rotationDeg === 90 || rotationDeg === 270;
+    const orientedW = rotated ? srcH : srcW;
+    const orientedH = rotated ? srcW : srcH;
+    const scale = Math.min(1, maxDim / Math.max(orientedW, orientedH));
+    const outW = Math.max(1, Math.round(orientedW * scale));
+    const outH = Math.max(1, Math.round(orientedH * scale));
+
+    const canvas = document.createElement('canvas');
+    canvas.width = outW;
+    canvas.height = outH;
+    const ctx = canvas.getContext('2d');
+    if (!ctx) {
+      throw new Error('Canvas unavailable');
+    }
+
+    ctx.save();
+    ctx.translate(outW / 2, outH / 2);
+    if (rotationDeg !== 0) {
+      ctx.rotate((rotationDeg * Math.PI) / 180);
+    }
+    const drawW = Math.round(srcW * scale);
+    const drawH = Math.round(srcH * scale);
+    ctx.drawImage(source!, -drawW / 2, -drawH / 2, drawW, drawH);
+    ctx.restore();
+
+    // Auto-brighten only dark scenes without altering crisp normal photos
+    try {
+      const sampleStep = 4;
+      const imgData = ctx.getImageData(0, 0, outW, outH);
+      const px = imgData.data;
+      let lumSum = 0;
+      let samples = 0;
+      for (let i = 0; i < px.length; i += 4 * sampleStep) {
+        lumSum += 0.299 * px[i] + 0.587 * px[i + 1] + 0.114 * px[i + 2];
+        samples++;
       }
-    };
-    img.src = objectUrl;
-  });
+      const meanLum = samples > 0 ? lumSum / samples : 128;
+      if (meanLum < 88) {
+        const gain = Math.min(1.55, 118 / Math.max(25, meanLum));
+        for (let i = 0; i < px.length; i += 4) {
+          px[i] = Math.min(255, Math.round((px[i] - 12) * gain + 18));
+          px[i + 1] = Math.min(255, Math.round((px[i + 1] - 12) * gain + 18));
+          px[i + 2] = Math.min(255, Math.round((px[i + 2] - 12) * gain + 18));
+        }
+        ctx.putImageData(imgData, 0, 0);
+      }
+    } catch {
+      // Safe no-op if pixel read fails
+    }
+
+    const dataUrl = canvas.toDataURL('image/jpeg', quality);
+    const base64 = dataUrl.replace(/^data:image\/jpeg;base64,/, '');
+    canvas.width = 0;
+    canvas.height = 0;
+    return { base64, dataUrl };
+  } finally {
+    closeBitmap?.();
+    revokeUrl?.();
+  }
+};
 
 const findBestCatalogProduct = (
   rawName: string,
-  matchedCatalogName: string | undefined,
   products: Product[]
 ): Product | undefined => {
-  const byAi = (matchedCatalogName || '').trim().toLowerCase();
-  if (byAi) {
-    const exactAi = products.find(
-      (p) => p.name.trim().toLowerCase() === byAi || p.nameEn.trim().toLowerCase() === byAi
-    );
-    if (exactAi) return exactAi;
-  }
   const clean = rawName.trim().toLowerCase();
   if (!clean) return undefined;
-  return (
-    products.find(
-      (p) =>
-        p.name.trim().toLowerCase() === clean || p.nameEn.trim().toLowerCase() === clean
-    ) ||
-    products.find(
-      (p) =>
-        p.name.trim().toLowerCase().includes(clean) ||
-        clean.includes(p.name.trim().toLowerCase())
-    )
+
+  const exact = products.find(
+    (p) => p.name.trim().toLowerCase() === clean || p.nameEn.trim().toLowerCase() === clean
   );
+  if (exact) return exact;
+
+  const contains = products.find(
+    (p) =>
+      p.name.trim().toLowerCase().includes(clean) ||
+      p.nameEn.trim().toLowerCase().includes(clean) ||
+      clean.includes(p.name.trim().toLowerCase()) ||
+      (p.nameEn.trim().length > 2 && clean.includes(p.nameEn.trim().toLowerCase()))
+  );
+  if (contains) return contains;
+
+  const tokens = clean.split(/[\s\-_/.,*]+/).filter((t) => t.length >= 3);
+  if (tokens.length === 0) return undefined;
+
+  let bestProd: Product | undefined;
+  let bestScore = 0;
+  for (const p of products) {
+    const hay = `${p.name} ${p.nameEn}`.toLowerCase();
+    const hits = tokens.filter((t) => hay.includes(t)).length;
+    if (hits > bestScore && hits >= Math.min(2, tokens.length)) {
+      bestScore = hits;
+      bestProd = p;
+    }
+  }
+  return bestProd;
 };
 
 export const PurchaseInvoiceScanModal: React.FC = () => {
@@ -175,6 +247,8 @@ export const PurchaseInvoiceScanModal: React.FC = () => {
   // Camera / upload states
   const [previewDataUrl, setPreviewDataUrl] = useState<string | null>(null);
   const [showZoomPhoto, setShowZoomPhoto] = useState(false);
+  const [showRawJson, setShowRawJson] = useState(false);
+  const [rotationDeg, setRotationDeg] = useState<0 | 90 | 180 | 270>(0);
   const [isLiveCameraOpen, setIsLiveCameraOpen] = useState(false);
   const [cameraPermission, setCameraPermission] = useState<
     'idle' | 'requesting' | 'granted' | 'denied' | 'unsupported'
@@ -185,13 +259,8 @@ export const PurchaseInvoiceScanModal: React.FC = () => {
   const [focusReticle, setFocusReticle] = useState<{ x: number; y: number } | null>(null);
 
   const [isScanning, setIsScanning] = useState(false);
-  const [isBackgroundEnhancing, setIsBackgroundEnhancing] = useState(false);
   const [scanError, setScanError] = useState<string | null>(null);
-  const [isBlurryError, setIsBlurryError] = useState(false);
-  const [handwrittenMessage, setHandwrittenMessage] = useState<string | null>(null);
   const [scanNotice, setScanNotice] = useState<string | null>(null);
-  const [usedOfflineFallback, setUsedOfflineFallback] = useState(false);
-  const [isHandwrittenDoc, setIsHandwrittenDoc] = useState(false);
   const [completedMessage, setCompletedMessage] = useState<string | null>(null);
   const [quickCatalogQuery, setQuickCatalogQuery] = useState('');
 
@@ -211,17 +280,16 @@ export const PurchaseInvoiceScanModal: React.FC = () => {
   const itemsTableRef = useRef<HTMLDivElement | null>(null);
   const firstRowInputRef = useRef<HTMLInputElement | null>(null);
   const focusTimerRef = useRef<number | null>(null);
-  const bgAbortRef = useRef<AbortController | null>(null);
+  const visionAbortRef = useRef<AbortController | null>(null);
 
   const stopCameraStream = () => {
-    if (bgAbortRef.current) {
-      bgAbortRef.current.abort();
-      bgAbortRef.current = null;
+    if (visionAbortRef.current) {
+      visionAbortRef.current.abort();
+      visionAbortRef.current = null;
     }
     if (streamRef.current) {
       streamRef.current.getTracks().forEach((t) => {
         try {
-          // Ensure hardware torch turns off cleanly
           t.applyConstraints?.({ advanced: [{ torch: false } as MediaTrackConstraintSet] }).catch(
             () => {}
           );
@@ -243,15 +311,12 @@ export const PurchaseInvoiceScanModal: React.FC = () => {
     setInvoiceMode(mode);
     setPreviewDataUrl(null);
     setShowZoomPhoto(false);
+    setShowRawJson(false);
+    setRotationDeg(0);
     setCameraPermission('idle');
     setIsScanning(false);
-    setIsBackgroundEnhancing(false);
     setScanError(null);
-    setIsBlurryError(false);
-    setHandwrittenMessage(null);
     setScanNotice(null);
-    setUsedOfflineFallback(false);
-    setIsHandwrittenDoc(false);
     setCompletedMessage(null);
     setQuickCatalogQuery('');
     setSupplierName('');
@@ -391,9 +456,9 @@ export const PurchaseInvoiceScanModal: React.FC = () => {
     matchedProductId: '',
     quantity: 1,
     unitCost: 0,
+    lineTotal: 0,
     sellPrice: 0,
     unitType: 'piece',
-    confidence: 'medium',
     source: 'manual'
   });
 
@@ -427,10 +492,10 @@ export const PurchaseInvoiceScanModal: React.FC = () => {
           rawName: prod.name,
           matchedProductId: prod.id,
           quantity: 1,
-          unitCost: invoiceMode === 'informal_noir' ? prod.costPrice : prod.costPrice,
+          unitCost: prod.costPrice,
+          lineTotal: Number(prod.costPrice.toFixed(2)),
           sellPrice: prod.price,
           unitType: prod.unitType,
-          confidence: 'high',
           source: 'manual'
         }
       ];
@@ -438,271 +503,189 @@ export const PurchaseInvoiceScanModal: React.FC = () => {
   };
 
   /**
-   * Optional quick background AI name/metadata enrichment (never blocks offline OCR results,
-   * never shows a red network error if internet is slow or disconnected).
+   * Meta AI-style Gemini Vision Pipeline:
+   * - Accepts ANY Moroccan invoice (Atacadao, Marjane, Carrefour, Bim, Metro, wholesale, handwritten bons)
+   * - No white table or straight paper required — reads full scene even if tilted, wrinkled, or on a carpet
+   * - Extracts clean JSON: [{"nom": "...", "quantite": 0, "prix": 0, "total": 0}]
    */
-  const runBackgroundAiEnrichment = async (
-    base64: string,
-    hadOfflineRows: boolean
-  ): Promise<void> => {
-    if (typeof navigator !== 'undefined' && !navigator.onLine) return;
-    if (bgAbortRef.current) {
-      bgAbortRef.current.abort();
+  const analyzeImageBlob = async (
+    blob: Blob,
+    nextRotation: 0 | 90 | 180 | 270 = rotationDeg
+  ) => {
+    lastCapturedBlobRef.current = blob;
+    setScanError(null);
+    setScanNotice(null);
+    setCompletedMessage(null);
+    setIsScanning(true);
+
+    if (visionAbortRef.current) {
+      visionAbortRef.current.abort();
     }
     const controller = new AbortController();
-    bgAbortRef.current = controller;
-    const timeoutId = window.setTimeout(() => controller.abort(), 5000);
-    setIsBackgroundEnhancing(true);
+    visionAbortRef.current = controller;
+    const timeoutId = window.setTimeout(() => controller.abort(), 45000);
 
     try {
+      const { base64, dataUrl } = await prepareInvoiceImageForVision(blob, 1600, 0.86, nextRotation);
+      setPreviewDataUrl(dataUrl);
+
+      if (typeof navigator !== 'undefined' && !navigator.onLine) {
+        setScanError(
+          isAr
+            ? 'ما كاينش أنترنت دابا باش Gemini Vision يقرا التصويرة. شغّل الأنترنت واضغط "حاول مرة أخرى" أو دخّل يدوياً.'
+            : 'No internet connection for Gemini Vision. Reconnect and retry, or enter manually.'
+        );
+        setIsScanning(false);
+        return;
+      }
+
       const res = await fetch('/api/ai/scan-purchase-invoice', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         signal: controller.signal,
         body: JSON.stringify({
           imageBase64: base64,
-          mimeType: 'image/jpeg',
-          existingProducts: products.map((p) => p.name).slice(0, 400),
-          language
+          mimeType: 'image/jpeg'
         })
       });
 
-      const parsed = await safeParseJsonResponse<ScannedInvoiceResponse>(res);
-      if (controller.signal.aborted || parsed.isNonJson || !parsed.data || !res.ok) {
-        return;
-      }
+      const parsed = await safeParseJsonResponse<ScannedInvoiceResponse | VisionInvoiceItem[]>(res);
+      if (controller.signal.aborted) return;
 
-      const inv = parsed.data.invoice || {};
-      const extractedIce = (inv.supplierIce || '').replace(/\s+/g, '').trim();
-
-      if (inv.supplierName) setSupplierName(inv.supplierName.trim());
-      if (inv.supplierPhone) setSupplierPhone(inv.supplierPhone.trim());
-      if (extractedIce) setSupplierIce(extractedIce);
-      if (inv.invoiceNumber) setInvoiceNumber(inv.invoiceNumber.trim());
-      if (inv.invoiceDate && /^\d{4}-\d{2}-\d{2}$/.test(inv.invoiceDate)) {
-        setInvoiceDate(inv.invoiceDate);
-      }
-
-      if (invoiceMode !== 'informal_noir' && (extractedIce || inv.hasOfficialMarkers)) {
-        setInvoiceMode('official_ice');
-      }
-
-      const aiItems = inv.items || [];
-      if (aiItems.length > 0) {
-        const extractedRows: ScannedLineItem[] = aiItems.map((raw, idx) => {
-          const name = (raw.rawName || raw.matchedCatalogName || '').trim();
-          const matched = findBestCatalogProduct(name, raw.matchedCatalogName, products);
-          const qty = Math.max(0.1, Number(raw.quantity) || 1);
-          const rawUnitCost = Number(raw.unitCost);
-          const rawLineTotal = Number(raw.lineTotal);
-          const computedUnitCost =
-            Number.isFinite(rawUnitCost) && rawUnitCost > 0
-              ? rawUnitCost
-              : Number.isFinite(rawLineTotal) && rawLineTotal > 0
-              ? rawLineTotal / qty
-              : matched
-              ? matched.costPrice
-              : 0;
-
-          const suggestedSell = matched
-            ? matched.price
-            : computedUnitCost > 0
-            ? Number((computedUnitCost * 1.25).toFixed(2))
-            : 10;
-
-          const conf =
-            raw.confidence === 'high' || raw.confidence === 'medium' || raw.confidence === 'low'
-              ? raw.confidence
-              : inv.isHandwritten
-              ? 'medium'
-              : 'high';
-
-          return {
-            id: `scan-${Date.now()}-${idx}`,
-            include: true,
-            rawName: name,
-            matchedProductId: matched?.id || '',
-            quantity: Number(qty.toFixed(2)),
-            unitCost: Number(Math.max(0, computedUnitCost).toFixed(2)),
-            sellPrice: suggestedSell,
-            unitType: matched ? matched.unitType : normalizeUnitType(raw.unitType),
-            confidence: conf,
-            source: 'ai'
-          };
-        });
-
-        setItems(extractedRows);
-        setHandwrittenMessage(null);
-        setIsHandwrittenDoc(Boolean(inv.isHandwritten));
-        setScanNotice(
-          extractedIce
-            ? isAr
-              ? `✅ تقرات الفاتورة الرسمية (ICE: ${extractedIce}) وتطابقو ${extractedRows.length} سلع.`
-              : `✅ Official ICE (${extractedIce}) & ${extractedRows.length} items matched.`
-            : isAr
-            ? `✅ تحسنات الأسماء والكميات تلقائياً (${extractedRows.length} سلع) — راجعهم وأكد الإضافة.`
-            : `✅ Auto-matched ${extractedRows.length} items — review and confirm below.`
-        );
-      } else if (inv.isHandwritten && !hadOfflineRows) {
-        setIsHandwrittenDoc(true);
-        setHandwrittenMessage(
-          isAr
-            ? 'الخط غير واضح، عاود صور في إضاءة مزيانة'
-            : 'Handwriting is not clear — retake photo in good lighting'
-        );
-      }
-    } catch {
-      // Silent fail — never disturb offline OCR results or show connection errors when internet is slow/offline
-    } finally {
-      window.clearTimeout(timeoutId);
-      if (bgAbortRef.current === controller) {
-        bgAbortRef.current = null;
-      }
-      setIsBackgroundEnhancing(false);
-    }
-  };
-
-  /**
-   * OFFLINE-OCR-FIRST PIPELINE:
-   * 1. Compress <= 800px JPEG to avoid mobile memory crashes.
-   * 2. Run local blur check.
-   * 3. Read printed numbers & rows IMMEDIATELY via Offline OCR without waiting for internet.
-   * 4. If handwritten / low digit confidence: never show error -> show
-   *    "الخط غير واضح، عاود صور في إضاءة مزيانة" + "دخل يدوياً" button.
-   */
-  const analyzeImageBlob = async (
-    blob: Blob,
-    options: { skipBlurCheck?: boolean; forceOfflineOnly?: boolean } = {}
-  ) => {
-    lastCapturedBlobRef.current = blob;
-    setScanError(null);
-    setIsBlurryError(false);
-    setHandwrittenMessage(null);
-    setScanNotice(null);
-    setUsedOfflineFallback(false);
-    setIsHandwrittenDoc(false);
-    setCompletedMessage(null);
-    setIsScanning(true);
-
-    try {
-      const { base64, dataUrl } = await compressImageFileToJpeg(blob, 800, 0.78);
-      setPreviewDataUrl(dataUrl);
-
-      const decodedImg = await loadBlobToImage(dataUrl);
-
-      // Step 1: Local Blur Detection BEFORE OCR
-      if (!options.skipBlurCheck) {
-        const sharpness = assessImageSharpness(decodedImg);
-        if (sharpness.isBlurry) {
-          setIsBlurryError(true);
-          setScanError(
-            isAr
-              ? 'التصويرة مضببة، قرب التيليفون و عاود صور'
-              : 'Photo is blurry — move closer and retake photo'
-          );
-          setIsScanning(false);
-          return;
-        }
-      }
-
-      // Step 2: OFFLINE OCR FIRST (zero internet wait)
-      const ocr = runOfflineInvoiceNumberOcr(decodedImg);
-      setUsedOfflineFallback(true);
-
-      if (ocr.rows.length > 0 && !ocr.looksHandwritten) {
-        const offlineItems: ScannedLineItem[] = ocr.rows.map((r, idx) => ({
-          id: `ocr-${Date.now()}-${idx}`,
-          include: true,
-          rawName: isAr
-            ? `سلعة ${idx + 1} (اختار من اللائحة ولا اكتب الإسم)`
-            : `Scanned Item #${idx + 1}`,
-          matchedProductId: '',
-          quantity: r.quantity,
-          unitCost: r.unitCost,
-          sellPrice: r.unitCost > 0 ? Number((r.unitCost * 1.2).toFixed(2)) : 0,
-          unitType: 'piece',
-          confidence: r.confidence,
-          source: 'offline_ocr',
-          linePreviewDataUrl: r.linePreviewDataUrl
-        }));
-
-        setItems(offlineItems);
-        setScanNotice(
-          isAr
-            ? `⚡ القراءة المحلية السريعة (بلا أنترنت) جبدات ${offlineItems.length} سطور بالأرقام — اختار أسماء السلع وصحّح إلى احتجتي.`
-            : `⚡ Offline OCR immediately read ${offlineItems.length} numeric rows — link item names or confirm below.`
+      if (!res.ok || parsed.isNonJson || !parsed.data) {
+        const errPayload = !Array.isArray(parsed.data) ? parsed.data?.error : undefined;
+        setScanError(
+          errPayload ||
+            (isAr
+              ? 'تعذر قراءة الفاتورة بـ Gemini Vision دابا — عاود حاول مرة أخرى أو دخّل يدوياً.'
+              : 'Could not read invoice with Gemini Vision — try again or enter manually.')
         );
         setIsScanning(false);
-
-        // Optional non-blocking quick AI enrichment if online (won't erase or complain if slow)
-        if (!options.forceOfflineOnly && typeof navigator !== 'undefined' && navigator.onLine) {
-          void runBackgroundAiEnrichment(base64, true);
-        }
         return;
       }
 
-      // Handwritten / unclear lines: DO NOT show an error — show friendly lighting & manual prompt
-      setIsHandwrittenDoc(true);
-      setHandwrittenMessage(
-        isAr
-          ? 'الخط غير واضح، عاود صور في إضاءة مزيانة'
-          : 'Handwriting is not clear — retake photo in good lighting'
-      );
+      const payload = parsed.data;
+      const visionItems: VisionInvoiceItem[] = Array.isArray(payload)
+        ? payload
+        : payload.items || payload.invoice?.items || [];
 
-      if (ocr.rows.length > 0) {
-        const partialItems: ScannedLineItem[] = ocr.rows.map((r, idx) => ({
-          id: `ocr-hw-${Date.now()}-${idx}`,
+      if (!Array.isArray(payload) && payload.invoice) {
+        const inv = payload.invoice;
+        const extractedIce = (inv.supplierIce || '').replace(/\s+/g, '').trim();
+        if (inv.supplierName) setSupplierName(inv.supplierName.trim());
+        if (inv.supplierPhone) setSupplierPhone(inv.supplierPhone.trim());
+        if (extractedIce) setSupplierIce(extractedIce);
+        if (inv.invoiceNumber) setInvoiceNumber(inv.invoiceNumber.trim());
+        if (inv.invoiceDate && /^\d{4}-\d{2}-\d{2}$/.test(inv.invoiceDate)) {
+          setInvoiceDate(inv.invoiceDate);
+        }
+        if (invoiceMode !== 'informal_noir' && (extractedIce || inv.hasOfficialMarkers)) {
+          setInvoiceMode('official_ice');
+        }
+      }
+
+      if (visionItems.length === 0) {
+        setScanError(
+          isAr
+            ? 'ما بانوش السلع واضحين فهاد التصويرة — جرب تصويرة أوضح أو اضغط "حاول مرة أخرى" ولا "دخل يدوياً".'
+            : 'No invoice items detected in this photo — retake, retry, or enter manually.'
+        );
+        setIsScanning(false);
+        return;
+      }
+
+      const extractedRows: ScannedLineItem[] = visionItems.map((raw, idx) => {
+        const name = String(raw.nom || '').trim();
+        const qty = Math.max(0.01, Number(raw.quantite) || 1);
+        const rawPrix = Number(raw.prix);
+        const rawTotal = Number(raw.total);
+        const matched = findBestCatalogProduct(name, products);
+
+        const unitCost =
+          Number.isFinite(rawPrix) && rawPrix > 0
+            ? rawPrix
+            : Number.isFinite(rawTotal) && rawTotal > 0
+            ? rawTotal / qty
+            : matched
+            ? matched.costPrice
+            : 0;
+
+        const lineTotal =
+          Number.isFinite(rawTotal) && rawTotal > 0
+            ? rawTotal
+            : Number((qty * unitCost).toFixed(2));
+
+        const suggestedSell = matched
+          ? matched.price
+          : unitCost > 0
+          ? Number((unitCost * 1.2).toFixed(2))
+          : 0;
+
+        return {
+          id: `vision-${Date.now()}-${idx}`,
           include: true,
-          rawName: isAr ? `سلعة ${idx + 1}` : `Item #${idx + 1}`,
-          matchedProductId: '',
-          quantity: r.quantity,
-          unitCost: r.unitCost,
-          sellPrice: r.unitCost > 0 ? Number((r.unitCost * 1.2).toFixed(2)) : 0,
-          unitType: 'piece',
-          confidence: 'low',
-          source: 'offline_ocr',
-          linePreviewDataUrl: r.linePreviewDataUrl
-        }));
-        setItems(partialItems);
-      } else {
-        setItems((prev) => (prev.length > 0 ? prev : []));
-      }
+          rawName: name,
+          matchedProductId: matched?.id || '',
+          quantity: Number(qty.toFixed(3)),
+          unitCost: Number(Math.max(0, unitCost).toFixed(2)),
+          lineTotal: Number(Math.max(0, lineTotal).toFixed(2)),
+          sellPrice: suggestedSell,
+          unitType: matched ? matched.unitType : normalizeUnitType(name),
+          source: 'vision'
+        };
+      });
 
-      setIsScanning(false);
-
-      // Try quick non-blocking online read if available in background (silent fallback)
-      if (!options.forceOfflineOnly && typeof navigator !== 'undefined' && navigator.onLine) {
-        void runBackgroundAiEnrichment(base64, ocr.rows.length > 0);
-      }
-    } catch {
-      setIsHandwrittenDoc(true);
-      setHandwrittenMessage(
+      setItems(extractedRows);
+      setScanNotice(
         isAr
-          ? 'الخط غير واضح، عاود صور في إضاءة مزيانة'
-          : 'Could not clearly read handwriting — retake in brighter lighting'
+          ? `✅ قرا Gemini Vision التصويرة كاملة وجبد ${extractedRows.length} سلع (الإسم + الكمية + ثمن الوحدة + المجموع).`
+          : `✅ Gemini Vision extracted ${extractedRows.length} items from full invoice.`
       );
+      if (settings.enableSoundEffects) playSound('success');
       setIsScanning(false);
+    } catch (err) {
+      if (controller.signal.aborted) {
+        setScanError(
+          isAr
+            ? 'طالت عملية القراءة بزاف — حاول مرة أخرى أو دخّل يدوياً.'
+            : 'Scan timed out — please retry or enter manually.'
+        );
+      } else {
+        setScanError(
+          err instanceof Error && err.message
+            ? err.message
+            : isAr
+            ? 'وقع مشكل أثناء قراءة التصويرة — حاول مرة أخرى أو دخّل يدوياً.'
+            : 'Error reading invoice — please retry or enter manually.'
+        );
+      }
+      setIsScanning(false);
+    } finally {
+      window.clearTimeout(timeoutId);
+      if (visionAbortRef.current === controller) {
+        visionAbortRef.current = null;
+      }
     }
   };
 
   const handleRetryScan = () => {
     if (!lastCapturedBlobRef.current) return;
-    void analyzeImageBlob(lastCapturedBlobRef.current, { skipBlurCheck: true });
+    void analyzeImageBlob(lastCapturedBlobRef.current, rotationDeg);
   };
 
-  const handleRunOfflineOcrNow = () => {
+  const handleRotateAndRescan = () => {
     if (!lastCapturedBlobRef.current) return;
-    void analyzeImageBlob(lastCapturedBlobRef.current, {
-      skipBlurCheck: true,
-      forceOfflineOnly: true
-    });
+    const next = (((rotationDeg + 90) % 360) as 0 | 90 | 180 | 270);
+    setRotationDeg(next);
+    void analyzeImageBlob(lastCapturedBlobRef.current, next);
   };
 
   const handleFileSelected = (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
     if (!file) return;
     stopCameraStream();
-    void analyzeImageBlob(file);
+    setRotationDeg(0);
+    void analyzeImageBlob(file, 0);
     e.target.value = '';
   };
 
@@ -740,8 +723,6 @@ export const PurchaseInvoiceScanModal: React.FC = () => {
 
   const startLiveCamera = async () => {
     setScanError(null);
-    setIsBlurryError(false);
-    setHandwrittenMessage(null);
 
     if (!navigator.mediaDevices?.getUserMedia) {
       setCameraPermission('unsupported');
@@ -755,8 +736,8 @@ export const PurchaseInvoiceScanModal: React.FC = () => {
       const stream = await navigator.mediaDevices.getUserMedia({
         video: {
           facingMode: { ideal: 'environment' },
-          width: { ideal: 1280 },
-          height: { ideal: 720 }
+          width: { ideal: 1920 },
+          height: { ideal: 1080 }
         },
         audio: false
       });
@@ -817,8 +798,8 @@ export const PurchaseInvoiceScanModal: React.FC = () => {
     const video = videoRef.current;
     if (!video || !video.videoWidth || !video.videoHeight) return;
 
-    // Scale directly to max 800px before creating JPEG blob to avoid mobile memory errors
-    const maxDim = 800;
+    // Scale cleanly up to 1600px JPEG so small receipt numbers stay crystal clear for Gemini Vision
+    const maxDim = 1600;
     const scale = Math.min(1, maxDim / Math.max(video.videoWidth, video.videoHeight));
     const w = Math.max(1, Math.round(video.videoWidth * scale));
     const h = Math.max(1, Math.round(video.videoHeight * scale));
@@ -834,15 +815,30 @@ export const PurchaseInvoiceScanModal: React.FC = () => {
         canvas.width = 0;
         canvas.height = 0;
         stopCameraStream();
-        if (blob) void analyzeImageBlob(blob);
+        setRotationDeg(0);
+        if (blob) void analyzeImageBlob(blob, 0);
       },
       'image/jpeg',
-      0.8
+      0.86
     );
   };
 
   const updateLine = (id: string, patch: Partial<ScannedLineItem>) => {
-    setItems((prev) => prev.map((it) => (it.id === id ? { ...it, ...patch } : it)));
+    setItems((prev) =>
+      prev.map((it) => {
+        if (it.id !== id) return it;
+        const merged = { ...it, ...patch };
+        if (patch.lineTotal !== undefined && patch.unitCost === undefined) {
+          const q = Math.max(0.01, Number(merged.quantity) || 1);
+          merged.unitCost = Number((Math.max(0, Number(patch.lineTotal) || 0) / q).toFixed(2));
+        } else if (patch.quantity !== undefined || patch.unitCost !== undefined) {
+          merged.lineTotal = Number(
+            ((Number(merged.quantity) || 0) * (Number(merged.unitCost) || 0)).toFixed(2)
+          );
+        }
+        return merged;
+      })
+    );
   };
 
   const handleSelectCatalogMatch = (lineId: string, productId: string) => {
@@ -853,17 +849,32 @@ export const PurchaseInvoiceScanModal: React.FC = () => {
         if (!prod) {
           return { ...it, matchedProductId: '' };
         }
+        const cost = it.unitCost > 0 ? it.unitCost : prod.costPrice;
         return {
           ...it,
           matchedProductId: prod.id,
           rawName: prod.name,
-          unitCost: it.unitCost > 0 ? it.unitCost : prod.costPrice,
+          unitCost: cost,
+          lineTotal: Number((it.quantity * cost).toFixed(2)),
           sellPrice: prod.price,
           unitType: prod.unitType
         };
       })
     );
   };
+
+  const extractedJsonList: VisionInvoiceItem[] = useMemo(
+    () =>
+      items
+        .filter((it) => it.include && (it.rawName.trim() || it.matchedProductId))
+        .map((it) => ({
+          nom: it.rawName.trim(),
+          quantite: Number(it.quantity) || 0,
+          prix: Number(it.unitCost) || 0,
+          total: Number((it.lineTotal ?? it.quantity * it.unitCost).toFixed(2))
+        })),
+    [items]
+  );
 
   const handleConfirmRestock = (e: React.FormEvent) => {
     e.preventDefault();
@@ -1004,8 +1015,6 @@ export const PurchaseInvoiceScanModal: React.FC = () => {
 
   if (!isOpen) return null;
 
-  const isOnline = typeof navigator === 'undefined' ? true : navigator.onLine;
-
   return (
     <div
       className="fixed inset-0 z-50 bg-slate-950/75 backdrop-blur-xs flex items-center justify-center p-2 sm:p-4"
@@ -1022,20 +1031,18 @@ export const PurchaseInvoiceScanModal: React.FC = () => {
               <div className="flex flex-wrap items-center gap-2">
                 <h2 className="text-base sm:text-lg font-black text-slate-900 dark:text-white truncate">
                   {isAr
-                    ? 'تصوير وقراءة الفاتورة أو البون'
-                    : 'Scan Purchase Invoice to Inventory'}
+                    ? 'قراءة أي فاتورة بـ Gemini Vision (بحال Meta AI)'
+                    : 'Scan Any Invoice with Gemini Vision'}
                 </h2>
-                {!isOnline && (
-                  <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-md bg-amber-100 dark:bg-amber-950/70 text-amber-800 dark:text-amber-300 text-[10px] font-black">
-                    <WifiOff className="w-3 h-3" />
-                    <span>{isAr ? 'بلا أنترنت (قراءة محلية خدامة)' : 'Offline OCR Active'}</span>
-                  </span>
-                )}
+                <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-md bg-emerald-100 dark:bg-emerald-950/70 text-emerald-800 dark:text-emerald-300 text-[10px] font-black">
+                  <Sparkles className="w-3 h-3" />
+                  <span>Gemini Vision</span>
+                </span>
               </div>
               <p className="text-xs text-slate-500 dark:text-slate-400 truncate">
                 {isAr
-                  ? 'صور الورقة (مطبوعة ولا مكتوبة باليد) وصحّح الأرقام وزيد للمخزون حتى بلا أنترنت'
-                  : 'Snap printed or handwritten invoice — works online & offline'}
+                  ? 'أتقداو، مرجان، جملة، بون — كيقرا التصويرة كاملة وخا مايلة، مكمشة، ولا فوق زربية'
+                  : 'Atacadao, Marjane, wholesale, handwritten — even tilted, wrinkled, or on carpet'}
               </p>
             </div>
           </div>
@@ -1126,8 +1133,8 @@ export const PurchaseInvoiceScanModal: React.FC = () => {
                 <Sparkles className="w-4 h-4 text-amber-500" />
                 <span>
                   {isAr
-                    ? '2. صور الفاتورة ولا اختار تصويرة (مطبوعة أو مكتوبة باليد):'
-                    : '2. Snap or Upload Invoice Image:'}
+                    ? '2. صور أي فاتورة (أتقداو، مرجان، جملة، بون — واخا مايلة ولا فوق زربية):'
+                    : '2. Snap or Upload Any Invoice Image:'}
                 </span>
               </span>
 
@@ -1239,8 +1246,14 @@ export const PurchaseInvoiceScanModal: React.FC = () => {
                   <div className="absolute inset-0 bg-white/30 pointer-events-none mix-blend-screen" />
                 )}
 
-                {/* Document Alignment Guide Frame */}
-                <div className="absolute inset-4 border-2 border-dashed border-amber-400/70 rounded-xl pointer-events-none" />
+                {/* Subtle top hint: no white table or straight paper required */}
+                <div className="absolute bottom-14 inset-x-3 flex justify-center pointer-events-none">
+                  <span className="px-3 py-1 rounded-full bg-slate-950/75 text-amber-300 text-[11px] font-bold backdrop-blur-xs">
+                    {isAr
+                      ? 'صور أي فاتورة كيفما كانت — وخا مايلة، مكمشة، ولا فوق زربية'
+                      : 'Snap any invoice — no straight paper or white table needed'}
+                  </span>
+                </div>
 
                 {/* Tap-to-focus Reticle */}
                 {focusReticle && (
@@ -1301,7 +1314,7 @@ export const PurchaseInvoiceScanModal: React.FC = () => {
                     className="px-6 py-2.5 rounded-xl bg-amber-400 hover:bg-amber-500 text-slate-950 text-xs font-black flex items-center gap-2 shadow-lg"
                   >
                     <Camera className="w-4 h-4" />
-                    <span>{isAr ? 'صور وقرا الفاتورة دابا' : 'Capture & Read Invoice'}</span>
+                    <span>{isAr ? 'صور وقرا بـ Gemini Vision' : 'Capture & Read Invoice'}</span>
                   </button>
                   <button
                     type="button"
@@ -1315,23 +1328,12 @@ export const PurchaseInvoiceScanModal: React.FC = () => {
             )}
 
             {isScanning && (
-              <div className="py-5 flex flex-col items-center justify-center gap-2 text-xs font-bold text-amber-700 dark:text-amber-300">
+              <div className="py-5 flex flex-col items-center justify-center gap-2 text-xs font-bold text-emerald-700 dark:text-emerald-300">
                 <Loader2 className="w-6 h-6 animate-spin" />
                 <span>
                   {isAr
-                    ? 'جاري ضغط الصورة (<=800px) وقراءة الأرقام محلياً...'
-                    : 'Compressing photo & running fast offline OCR...'}
-                </span>
-              </div>
-            )}
-
-            {isBackgroundEnhancing && !isScanning && (
-              <div className="px-3 py-1.5 rounded-xl bg-slate-100 dark:bg-slate-800 text-[11px] font-bold text-slate-600 dark:text-slate-300 inline-flex items-center gap-1.5">
-                <RefreshCw className="w-3 h-3 animate-spin text-emerald-600" />
-                <span>
-                  {isAr
-                    ? 'كنطابقو الأسماء مع مخزونك (بلا ما نعطّلوك)...'
-                    : 'Matching catalog names in background...'}
+                    ? 'Gemini Vision كيقرا التصويرة كاملة (وخا مايلة ولا فوق زربية)...'
+                    : 'Gemini Vision is analyzing the full invoice image...'}
                 </span>
               </div>
             )}
@@ -1356,17 +1358,15 @@ export const PurchaseInvoiceScanModal: React.FC = () => {
                   </button>
                   <div className="text-xs text-slate-600 dark:text-slate-300">
                     <div className="font-bold text-slate-900 dark:text-white flex items-center gap-1.5">
-                      <span>{isAr ? 'التصويرة واجدة (مضغوطة <=800px)' : 'Photo Ready (<=800px)'}</span>
-                      {usedOfflineFallback && (
-                        <span className="px-1.5 py-0.5 rounded bg-sky-100 dark:bg-sky-950 text-sky-700 dark:text-sky-300 text-[10px] font-black">
-                          {isAr ? 'OCR محلي' : 'Offline OCR'}
-                        </span>
-                      )}
+                      <span>{isAr ? 'التصويرة واجدة' : 'Photo Ready'}</span>
+                      <span className="px-1.5 py-0.5 rounded bg-emerald-100 dark:bg-emerald-950 text-emerald-700 dark:text-emerald-300 text-[10px] font-black">
+                        Gemini Vision
+                      </span>
                     </div>
                     <div className="text-[11px] text-slate-500">
                       {isAr
-                        ? 'كليكي على التصويرة باش تكبّرها وتراجع الأرقام.'
-                        : 'Click thumbnail to zoom & verify numbers.'}
+                        ? 'كليكي على التصويرة باش تكبّرها أو دوّرها إلى بغيتي.'
+                        : 'Click thumbnail to zoom or rotate.'}
                     </div>
                   </div>
                 </div>
@@ -1391,11 +1391,11 @@ export const PurchaseInvoiceScanModal: React.FC = () => {
                     </button>
                     <button
                       type="button"
-                      onClick={handleRunOfflineOcrNow}
-                      className="px-2.5 py-1.5 rounded-xl bg-white dark:bg-slate-900 border border-slate-300 dark:border-slate-700 hover:bg-slate-100 text-[11px] font-bold text-sky-700 dark:text-sky-300 flex items-center gap-1"
+                      onClick={handleRotateAndRescan}
+                      className="px-2.5 py-1.5 rounded-xl bg-white dark:bg-slate-900 border border-slate-300 dark:border-slate-700 hover:bg-slate-100 text-[11px] font-bold text-slate-700 dark:text-slate-200 flex items-center gap-1"
                     >
-                      <WifiOff className="w-3 h-3" />
-                      <span>{isAr ? 'قرا محلياً (OCR)' : 'Offline OCR'}</span>
+                      <RotateCw className="w-3 h-3" />
+                      <span>{isAr ? 'تدوير 90°' : 'Rotate 90°'}</span>
                     </button>
                   </div>
                 )}
@@ -1421,127 +1421,75 @@ export const PurchaseInvoiceScanModal: React.FC = () => {
             )}
           </div>
 
-          {/* HANDWRITTEN FRIENDLY PROMPT (NO ERROR!) */}
-          {handwrittenMessage && (
-            <div className="p-4 rounded-2xl bg-amber-50 dark:bg-amber-950/45 border border-amber-300 dark:border-amber-700 text-amber-950 dark:text-amber-200 space-y-2.5">
-              <div className="flex items-start gap-2.5 text-xs font-black">
-                <Edit3 className="w-4 h-4 text-amber-600 shrink-0 mt-0.5" />
-                <span>{handwrittenMessage}</span>
-              </div>
-              <div className="flex flex-wrap items-center gap-2">
-                <button
-                  type="button"
-                  onClick={addManualLineAndFocus}
-                  className="px-4 py-2 rounded-xl bg-slate-900 dark:bg-amber-400 text-white dark:text-slate-950 text-xs font-black flex items-center gap-1.5"
-                >
-                  <Edit3 className="w-3.5 h-3.5" />
-                  <span>{isAr ? 'دخل يدوياً' : 'Enter Manually'}</span>
-                </button>
-                <button
-                  type="button"
-                  onClick={() => void startLiveCamera()}
-                  className="px-3.5 py-2 rounded-xl bg-white dark:bg-slate-800 border border-amber-300 dark:border-amber-700 text-xs font-bold text-amber-900 dark:text-amber-200 flex items-center gap-1.5"
-                >
-                  <Camera className="w-3.5 h-3.5" />
-                  <span>{isAr ? 'عاود صور في إضاءة مزيانة' : 'Retake Photo'}</span>
-                </button>
-              </div>
-            </div>
-          )}
-
-          {/* BLURRY PHOTO BANNER WITH ACTION BUTTONS */}
           {scanError && (
-            <div
-              className={`p-4 rounded-2xl border space-y-2.5 ${
-                isBlurryError
-                  ? 'bg-amber-50 dark:bg-amber-950/50 border-amber-400 dark:border-amber-700 text-amber-950 dark:text-amber-200'
-                  : 'bg-rose-50 dark:bg-rose-950/45 border-rose-300 dark:border-rose-800 text-rose-900 dark:text-rose-200'
-              }`}
-            >
+            <div className="p-4 rounded-2xl border bg-rose-50 dark:bg-rose-950/45 border-rose-300 dark:border-rose-800 text-rose-900 dark:text-rose-200 space-y-2.5">
               <div className="flex items-start gap-2.5 text-xs font-black">
                 <AlertTriangle className="w-4 h-4 shrink-0 mt-0.5" />
                 <span>{scanError}</span>
               </div>
 
               <div className="flex flex-wrap items-center gap-2 pt-0.5">
-                {isBlurryError ? (
-                  <>
-                    <button
-                      type="button"
-                      onClick={() => void startLiveCamera()}
-                      className="px-3.5 py-2 rounded-xl bg-amber-400 hover:bg-amber-500 text-slate-950 text-xs font-black flex items-center gap-1.5"
-                    >
-                      <Camera className="w-3.5 h-3.5" />
-                      <span>{isAr ? 'عاود صور' : 'Retake Photo'}</span>
-                    </button>
-                    {lastCapturedBlobRef.current && (
-                      <button
-                        type="button"
-                        onClick={handleRetryScan}
-                        className="px-3 py-2 rounded-xl bg-white dark:bg-slate-800 border border-amber-300 dark:border-amber-700 text-xs font-bold text-amber-900 dark:text-amber-200 flex items-center gap-1.5"
-                      >
-                        <RotateCw className="w-3.5 h-3.5" />
-                        <span>{isAr ? 'حاول تقراها وخا هكاك' : 'Scan Anyway'}</span>
-                      </button>
-                    )}
-                    <button
-                      type="button"
-                      onClick={addManualLineAndFocus}
-                      className="px-3.5 py-2 rounded-xl bg-slate-900 dark:bg-slate-700 text-white text-xs font-black flex items-center gap-1.5"
-                    >
-                      <Edit3 className="w-3.5 h-3.5" />
-                      <span>{isAr ? 'دخل يدوياً' : 'Enter Manually'}</span>
-                    </button>
-                  </>
-                ) : (
-                  <>
-                    {lastCapturedBlobRef.current && (
-                      <button
-                        type="button"
-                        onClick={handleRetryScan}
-                        className="px-3.5 py-2 rounded-xl bg-amber-400 hover:bg-amber-500 text-slate-950 text-xs font-black flex items-center gap-1.5"
-                      >
-                        <RotateCw className="w-3.5 h-3.5" />
-                        <span>{isAr ? 'حاول مرة أخرى' : 'Try Again'}</span>
-                      </button>
-                    )}
-                    <button
-                      type="button"
-                      onClick={addManualLineAndFocus}
-                      className="px-3.5 py-2 rounded-xl bg-slate-900 dark:bg-slate-700 hover:bg-slate-800 text-white text-xs font-black flex items-center gap-1.5"
-                    >
-                      <Edit3 className="w-3.5 h-3.5" />
-                      <span>{isAr ? 'دخل يدوياً' : 'Enter Manually'}</span>
-                    </button>
-                  </>
+                {lastCapturedBlobRef.current && (
+                  <button
+                    type="button"
+                    onClick={handleRetryScan}
+                    className="px-3.5 py-2 rounded-xl bg-amber-400 hover:bg-amber-500 text-slate-950 text-xs font-black flex items-center gap-1.5"
+                  >
+                    <RotateCw className="w-3.5 h-3.5" />
+                    <span>{isAr ? 'حاول مرة أخرى' : 'Try Again'}</span>
+                  </button>
                 )}
+                <button
+                  type="button"
+                  onClick={addManualLineAndFocus}
+                  className="px-3.5 py-2 rounded-xl bg-slate-900 dark:bg-slate-700 hover:bg-slate-800 text-white text-xs font-black flex items-center gap-1.5"
+                >
+                  <Edit3 className="w-3.5 h-3.5" />
+                  <span>{isAr ? 'دخل يدوياً' : 'Enter Manually'}</span>
+                </button>
               </div>
             </div>
           )}
 
           {scanNotice && (
-            <div className="px-4 py-2.5 rounded-2xl bg-emerald-50 dark:bg-emerald-950/35 border border-emerald-300 dark:border-emerald-800 text-emerald-900 dark:text-emerald-200 text-xs font-bold flex items-start gap-2">
-              <Sparkles className="w-4 h-4 text-emerald-600 shrink-0 mt-0.5" />
-              <span>{scanNotice}</span>
+            <div className="px-4 py-2.5 rounded-2xl bg-emerald-50 dark:bg-emerald-950/35 border border-emerald-300 dark:border-emerald-800 text-emerald-900 dark:text-emerald-200 text-xs font-bold flex flex-wrap items-center justify-between gap-2">
+              <div className="flex items-start gap-2">
+                <Sparkles className="w-4 h-4 text-emerald-600 shrink-0 mt-0.5" />
+                <span>{scanNotice}</span>
+              </div>
+              {extractedJsonList.length > 0 && (
+                <button
+                  type="button"
+                  onClick={() => setShowRawJson((v) => !v)}
+                  className="px-2.5 py-1 rounded-lg bg-white dark:bg-slate-900 border border-emerald-300 dark:border-emerald-700 text-[11px] font-black text-emerald-700 dark:text-emerald-300 flex items-center gap-1"
+                >
+                  <Code2 className="w-3.5 h-3.5" />
+                  <span>{showRawJson ? (isAr ? 'إخفاء JSON' : 'Hide JSON') : 'JSON'}</span>
+                </button>
+              )}
             </div>
           )}
 
-          {(isHandwrittenDoc || usedOfflineFallback) && items.length > 0 && (
-            <div className="px-4 py-2.5 rounded-2xl bg-sky-50 dark:bg-sky-950/40 border border-sky-200 dark:border-sky-800 text-sky-900 dark:text-sky-200 text-xs font-bold flex flex-wrap items-center justify-between gap-2">
-              <span>
-                {isAr
-                  ? '✍️ مراجعة الأرقام: تقدر تعدل الكمية (- / +) والأثمنة ديال كل سطر قبل ما تزيدهم للمخزون.'
-                  : '✍️ Number Check: Adjust quantities (- / +) & prices before confirming restock.'}
-              </span>
-              {lastCapturedBlobRef.current && (
+          {showRawJson && extractedJsonList.length > 0 && (
+            <div className="rounded-2xl bg-slate-950 text-emerald-300 border border-slate-800 p-3 space-y-2" dir="ltr">
+              <div className="flex items-center justify-between text-[11px] text-slate-400">
+                <span className="font-mono font-bold">
+                  [{`{"nom": "...", "quantite": 0, "prix": 0, "total": 0}`}]
+                </span>
                 <button
                   type="button"
-                  onClick={handleRetryScan}
-                  className="text-[11px] font-black underline text-sky-700 dark:text-sky-300"
+                  onClick={() => {
+                    void navigator.clipboard?.writeText(JSON.stringify(extractedJsonList, null, 2));
+                  }}
+                  className="px-2 py-1 rounded bg-slate-800 hover:bg-slate-700 text-white text-[10px] font-bold flex items-center gap-1"
                 >
-                  {isAr ? 'عاود القراءة' : 'Rescan'}
+                  <Copy className="w-3 h-3" />
+                  <span>Copy JSON</span>
                 </button>
-              )}
+              </div>
+              <pre className="text-[11px] font-mono overflow-x-auto max-h-44 leading-relaxed">
+                {JSON.stringify(extractedJsonList, null, 2)}
+              </pre>
             </div>
           )}
 
@@ -1725,11 +1673,14 @@ export const PurchaseInvoiceScanModal: React.FC = () => {
                     <th className="py-2 px-2.5 text-end">
                       {invoiceMode === 'informal_noir'
                         ? isAr
-                          ? 'ثمن الشراء (اختياري)'
-                          : 'Cost (Opt.)'
+                          ? 'ثمن الوحدة (اختياري)'
+                          : 'Unit Cost'
                         : isAr
-                        ? 'ثمن الشراء'
-                        : 'Cost'}
+                        ? 'ثمن الوحدة'
+                        : 'Unit Cost'}
+                    </th>
+                    <th className="py-2 px-2.5 text-end">
+                      {isAr ? 'المجموع' : 'Total'}
                     </th>
                     <th className="py-2 px-2.5 text-end">
                       {invoiceMode === 'informal_noir'
@@ -1747,13 +1698,13 @@ export const PurchaseInvoiceScanModal: React.FC = () => {
                   {items.length === 0 ? (
                     <tr>
                       <td
-                        colSpan={7}
+                        colSpan={8}
                         className="py-7 px-4 text-center text-xs text-slate-500 dark:text-slate-400 space-y-2"
                       >
                         <div>
                           {isAr
-                            ? 'صور الفاتورة الفوق، ولا كليكي على "دخل يدوياً" ولا اختار من سلع الحانوت باش تزيد الكميات.'
-                            : 'Snap an invoice above, click Add Row Manually, or tap quick catalog items.'}
+                            ? 'صور أي فاتورة الفوق (أتقداو، مرجان، جملة...)، ولا كليكي على "دخل يدوياً" ولا اختار من سلع الحانوت.'
+                            : 'Snap any invoice above, click Add Row Manually, or tap quick catalog items.'}
                         </div>
                         <button
                           type="button"
@@ -1766,143 +1717,143 @@ export const PurchaseInvoiceScanModal: React.FC = () => {
                       </td>
                     </tr>
                   ) : (
-                    items.map((it, idx) => {
-                      const needsCheck = it.confidence === 'low' || it.source === 'offline_ocr';
-                      return (
-                        <tr
-                          key={it.id}
-                          className={`${
-                            !it.include
-                              ? 'opacity-45 bg-slate-50 dark:bg-slate-800/30'
-                              : needsCheck
-                              ? 'bg-amber-50/40 dark:bg-amber-950/15'
-                              : ''
-                          }`}
-                        >
-                          <td className="py-2 px-2.5 text-center">
-                            <input
-                              type="checkbox"
-                              checked={it.include}
-                              onChange={(e) => updateLine(it.id, { include: e.target.checked })}
-                              className="w-4 h-4 accent-emerald-600"
-                            />
-                          </td>
-                          <td className="py-2 px-2.5 min-w-[165px] space-y-1">
-                            <input
-                              ref={idx === 0 ? firstRowInputRef : undefined}
-                              type="text"
-                              value={it.rawName}
-                              onChange={(e) => updateLine(it.id, { rawName: e.target.value })}
-                              placeholder={isAr ? 'كتب إسم السلعة...' : 'Product name'}
-                              className="w-full px-2.5 py-1.5 rounded-lg bg-slate-50 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 font-bold text-slate-900 dark:text-white"
-                            />
-                            {it.linePreviewDataUrl && (
-                              <img
-                                src={it.linePreviewDataUrl}
-                                alt="OCR line strip"
-                                className="h-6 max-w-[180px] object-contain rounded border border-slate-200 dark:border-slate-700 bg-white"
-                              />
-                            )}
-                          </td>
-                          <td className="py-2 px-2.5 min-w-[165px]">
-                            <select
-                              value={it.matchedProductId}
-                              onChange={(e) => handleSelectCatalogMatch(it.id, e.target.value)}
-                              className="w-full px-2 py-1.5 rounded-lg bg-slate-50 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 text-[11px] font-semibold text-slate-800 dark:text-slate-200"
-                            >
-                              <option value="">
-                                {isAr ? '+ زيدها كسلعة جديدة' : '+ Create new item'}
+                    items.map((it, idx) => (
+                      <tr
+                        key={it.id}
+                        className={
+                          !it.include ? 'opacity-45 bg-slate-50 dark:bg-slate-800/30' : ''
+                        }
+                      >
+                        <td className="py-2 px-2.5 text-center">
+                          <input
+                            type="checkbox"
+                            checked={it.include}
+                            onChange={(e) => updateLine(it.id, { include: e.target.checked })}
+                            className="w-4 h-4 accent-emerald-600"
+                          />
+                        </td>
+                        <td className="py-2 px-2.5 min-w-[165px]">
+                          <input
+                            ref={idx === 0 ? firstRowInputRef : undefined}
+                            type="text"
+                            value={it.rawName}
+                            onChange={(e) => updateLine(it.id, { rawName: e.target.value })}
+                            placeholder={isAr ? 'كتب إسم السلعة...' : 'Product name'}
+                            className="w-full px-2.5 py-1.5 rounded-lg bg-slate-50 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 font-bold text-slate-900 dark:text-white"
+                          />
+                        </td>
+                        <td className="py-2 px-2.5 min-w-[155px]">
+                          <select
+                            value={it.matchedProductId}
+                            onChange={(e) => handleSelectCatalogMatch(it.id, e.target.value)}
+                            className="w-full px-2 py-1.5 rounded-lg bg-slate-50 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 text-[11px] font-semibold text-slate-800 dark:text-slate-200"
+                          >
+                            <option value="">
+                              {isAr ? '+ زيدها كسلعة جديدة' : '+ Create new item'}
+                            </option>
+                            {products.slice(0, 250).map((p) => (
+                              <option key={p.id} value={p.id}>
+                                {p.name} ({isAr ? `كاين: ${p.stock}` : `cur: ${p.stock}`})
                               </option>
-                              {products.slice(0, 250).map((p) => (
-                                <option key={p.id} value={p.id}>
-                                  {p.name} ({isAr ? `كاين: ${p.stock}` : `cur: ${p.stock}`})
-                                </option>
-                              ))}
-                            </select>
-                          </td>
-                          <td className="py-2 px-2.5">
-                            <div className="flex items-center justify-center gap-1">
-                              <button
-                                type="button"
-                                onClick={() =>
-                                  updateLine(it.id, {
-                                    quantity: Math.max(0.5, Number((it.quantity - 1).toFixed(2)))
-                                  })
-                                }
-                                className="w-6 h-7 rounded-lg bg-slate-100 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 flex items-center justify-center text-slate-600 dark:text-slate-300 hover:bg-slate-200"
-                                title="-1"
-                              >
-                                <Minus className="w-3 h-3" />
-                              </button>
-                              <input
-                                type="number"
-                                step="any"
-                                min="0.1"
-                                value={it.quantity}
-                                onChange={(e) =>
-                                  updateLine(it.id, {
-                                    quantity: Math.max(0.1, Number(e.target.value) || 0)
-                                  })
-                                }
-                                className="w-16 px-1.5 py-1 rounded-lg bg-slate-50 dark:bg-slate-800 border border-emerald-300 dark:border-emerald-700 text-center font-mono tabular-nums font-black text-emerald-700 dark:text-emerald-400"
-                              />
-                              <button
-                                type="button"
-                                onClick={() =>
-                                  updateLine(it.id, {
-                                    quantity: Number((it.quantity + 1).toFixed(2))
-                                  })
-                                }
-                                className="w-6 h-7 rounded-lg bg-slate-100 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 flex items-center justify-center text-slate-600 dark:text-slate-300 hover:bg-slate-200"
-                                title="+1"
-                              >
-                                <Plus className="w-3 h-3" />
-                              </button>
-                            </div>
-                          </td>
-                          <td className="py-2 px-2.5 text-end">
-                            <input
-                              type="number"
-                              step="0.1"
-                              min="0"
-                              value={it.unitCost}
-                              onChange={(e) =>
-                                updateLine(it.id, {
-                                  unitCost: Math.max(0, Number(e.target.value) || 0)
-                                })
-                              }
-                              className="w-18 px-2 py-1 rounded-lg bg-slate-50 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 text-end font-mono tabular-nums font-bold"
-                            />
-                          </td>
-                          <td className="py-2 px-2.5 text-end">
-                            <input
-                              type="number"
-                              step="0.1"
-                              min="0"
-                              value={it.sellPrice}
-                              onChange={(e) =>
-                                updateLine(it.id, {
-                                  sellPrice: Math.max(0, Number(e.target.value) || 0)
-                                })
-                              }
-                              className="w-18 px-2 py-1 rounded-lg bg-slate-50 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 text-end font-mono tabular-nums"
-                            />
-                          </td>
-                          <td className="py-2 px-2.5 text-center">
+                            ))}
+                          </select>
+                        </td>
+                        <td className="py-2 px-2.5">
+                          <div className="flex items-center justify-center gap-1">
                             <button
                               type="button"
                               onClick={() =>
-                                setItems((prev) => prev.filter((row) => row.id !== it.id))
+                                updateLine(it.id, {
+                                  quantity: Math.max(0.5, Number((it.quantity - 1).toFixed(2)))
+                                })
                               }
-                              className="p-1 text-slate-400 hover:text-rose-600"
-                              title={isAr ? 'حذف' : 'Remove'}
+                              className="w-6 h-7 rounded-lg bg-slate-100 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 flex items-center justify-center text-slate-600 dark:text-slate-300 hover:bg-slate-200"
+                              title="-1"
                             >
-                              <Trash2 className="w-3.5 h-3.5" />
+                              <Minus className="w-3 h-3" />
                             </button>
-                          </td>
-                        </tr>
-                      );
-                    })
+                            <input
+                              type="number"
+                              step="any"
+                              min="0.1"
+                              value={it.quantity}
+                              onChange={(e) =>
+                                updateLine(it.id, {
+                                  quantity: Math.max(0.1, Number(e.target.value) || 0)
+                                })
+                              }
+                              className="w-16 px-1.5 py-1 rounded-lg bg-slate-50 dark:bg-slate-800 border border-emerald-300 dark:border-emerald-700 text-center font-mono tabular-nums font-black text-emerald-700 dark:text-emerald-400"
+                            />
+                            <button
+                              type="button"
+                              onClick={() =>
+                                updateLine(it.id, {
+                                  quantity: Number((it.quantity + 1).toFixed(2))
+                                })
+                              }
+                              className="w-6 h-7 rounded-lg bg-slate-100 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 flex items-center justify-center text-slate-600 dark:text-slate-300 hover:bg-slate-200"
+                              title="+1"
+                            >
+                              <Plus className="w-3 h-3" />
+                            </button>
+                          </div>
+                        </td>
+                        <td className="py-2 px-2.5 text-end">
+                          <input
+                            type="number"
+                            step="0.01"
+                            min="0"
+                            value={it.unitCost}
+                            onChange={(e) =>
+                              updateLine(it.id, {
+                                unitCost: Math.max(0, Number(e.target.value) || 0)
+                              })
+                            }
+                            className="w-18 px-2 py-1 rounded-lg bg-slate-50 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 text-end font-mono tabular-nums font-bold"
+                          />
+                        </td>
+                        <td className="py-2 px-2.5 text-end">
+                          <input
+                            type="number"
+                            step="0.01"
+                            min="0"
+                            value={it.lineTotal}
+                            onChange={(e) =>
+                              updateLine(it.id, {
+                                lineTotal: Math.max(0, Number(e.target.value) || 0)
+                              })
+                            }
+                            className="w-20 px-2 py-1 rounded-lg bg-emerald-50/70 dark:bg-emerald-950/30 border border-emerald-200 dark:border-emerald-800 text-end font-mono tabular-nums font-black text-emerald-800 dark:text-emerald-300"
+                          />
+                        </td>
+                        <td className="py-2 px-2.5 text-end">
+                          <input
+                            type="number"
+                            step="0.01"
+                            min="0"
+                            value={it.sellPrice}
+                            onChange={(e) =>
+                              updateLine(it.id, {
+                                sellPrice: Math.max(0, Number(e.target.value) || 0)
+                              })
+                            }
+                            className="w-18 px-2 py-1 rounded-lg bg-slate-50 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 text-end font-mono tabular-nums"
+                          />
+                        </td>
+                        <td className="py-2 px-2.5 text-center">
+                          <button
+                            type="button"
+                            onClick={() =>
+                              setItems((prev) => prev.filter((row) => row.id !== it.id))
+                            }
+                            className="p-1 text-slate-400 hover:text-rose-600"
+                            title={isAr ? 'حذف' : 'Remove'}
+                          >
+                            <Trash2 className="w-3.5 h-3.5" />
+                          </button>
+                        </td>
+                      </tr>
+                    ))
                   )}
                 </tbody>
               </table>

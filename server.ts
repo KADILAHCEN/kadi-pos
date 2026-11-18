@@ -37,8 +37,23 @@ function safeParseGeminiJson<T>(rawText: string, fallback: T): T {
   try {
     return JSON.parse(cleaned) as T;
   } catch {
+    const firstBracket = cleaned.indexOf('[');
+    const lastBracket = cleaned.lastIndexOf(']');
     const firstBrace = cleaned.indexOf('{');
     const lastBrace = cleaned.lastIndexOf('}');
+
+    if (
+      firstBracket !== -1 &&
+      lastBracket > firstBracket &&
+      (firstBrace === -1 || firstBracket < firstBrace)
+    ) {
+      try {
+        return JSON.parse(cleaned.slice(firstBracket, lastBracket + 1)) as T;
+      } catch {
+        // fall through to object extraction
+      }
+    }
+
     if (firstBrace !== -1 && lastBrace > firstBrace) {
       try {
         return JSON.parse(cleaned.slice(firstBrace, lastBrace + 1)) as T;
@@ -441,13 +456,11 @@ If audio is provided, transcribe what was said verbatim into "transcript" in Ara
       const {
         imageBase64,
         mimeType = 'image/jpeg',
-        existingProducts = [],
-        language = 'ar'
+        returnRawArray = false
       } = req.body as {
         imageBase64?: string;
         mimeType?: string;
-        existingProducts?: string[];
-        language?: 'ar' | 'fr' | 'en';
+        returnRawArray?: boolean;
       };
 
       if (!imageBase64) {
@@ -456,34 +469,25 @@ If audio is provided, transcribe what was said verbatim into "transcript" in Ara
 
       const cleanBase64 = imageBase64.replace(/^data:[^;]+;base64,/, '');
 
-      const systemInstruction = `You are an expert Moroccan grocery ("hanout" / الحانوت) invoice & handwritten delivery-slip OCR parser for Kadi POS.
-Carefully inspect printed wholesaler invoices, thermal receipts, AND messy handwritten paper slips ("بون" / carnet notes in Arabic, Darija, or French).
-HANDWRITING & MOROCCAN CONTEXT RULES:
-- Handwritten notes often write quantity on either side (e.g. "5 حليب", "2ك سكر", "10 x 6.50", "3 crt"), sometimes with scratched numbers — read the final clear number carefully.
-- Understand Moroccan grocery vocabulary in Darija/Arabic/French (e.g. أتاي/Thé, سنيدة/سكر, زيت, طحين/Farine, حليب/Lait, دانون/Yaourt, زبدة, فرماج, قهوة, صابون, تيد/Omo, جافيل, بيض, عدس, لوبيا, ماء/Sidi Ali, مشروبات).
-- Distinguish clearly between quantity, unit price, and line total: if both quantity and line total are shown without an explicit unit price, compute unitCost = lineTotal / quantity. If no prices are written (stock-only slip), set unitCost = 0.
-- For each line item include:
-  - rawName: Clean product name (Arabic/French as written).
-  - matchedCatalogName: Exact closest match from the store catalog list if confident, else "".
-  - quantity: Numeric quantity (> 0, default 1).
-  - unitCost: Cost per single unit in MAD (0 if omitted).
-  - lineTotal: Total for the line in MAD if visible (0 otherwise).
-  - unitType: One of "piece", "kg", "liter", "box".
-  - confidence: "high", "medium", or "low" (use "medium"/"low" for hard-to-read handwriting so the user reviews the numbers).
-- Document metadata:
-  - supplierName: Wholesaler/supplier name if visible, else "".
-  - supplierIce: 15-digit Moroccan ICE if printed, else "".
-  - supplierPhone: Phone number if visible, else "".
-  - invoiceNumber: Invoice/BL number if present, else "".
-  - invoiceDate: YYYY-MM-DD if present, else "".
-  - hasOfficialMarkers: true ONLY if printed ICE / IF / RC / Patente / TVA tax identifiers appear; false for handwritten bons or informal slips.
-  - isHandwritten: true if handwritten ink/pen writing appears on paper, false if purely printed.
-  - totalAmount: Invoice grand total in MAD if readable (or sum of subtotals).
+      const visionItemsInstruction = `You are a world-class multimodal document Vision AI specialized in reading ANY Moroccan invoice, wholesale receipt, thermal supermarket ticket, delivery slip (BL), or handwritten hanout carnet/bon.
+Understand the FULL image visually just like Meta AI:
+1. AUTO-CORRECT SCENE & GEOMETRY:
+   - The paper may be tilted, rotated sideways/upside-down, crumpled, wrinkled, creased, poorly lit, or photographed on a patterned Moroccan carpet (زربية), wooden table, tiled floor, or counter.
+   - Ignore the carpet/background completely, mentally straighten and un-wrinkle the invoice, and read the whole page with full visual layout comprehension — NOT naive flat-line OCR.
+2. SUPPORT ANY MOROCCAN INVOICE FORMAT:
+   - Atacadao, Marjane, Carrefour, Bim, Metro, Supeco, Asswak Assalam, wholesale A4/A5 invoices, thermal POS receipts, and handwritten paper slips in French, Arabic, or Darija.
+   - Thermal receipts (e.g. Atacadao/Marjane) often wrap product descriptions across two lines or place "2 x 14,50  29,00" beneath the item name, or have SKU/EAN barcodes on the left — NEVER mistake barcodes, line numbers, TVA %, or dates for quantity or price.
+   - Understand column alignments even when skewed/wrinkled: DESIGNATION/ARTICLE -> "nom", QTE/COLIS -> "quantite", PU/P.U./PRIX -> "prix", MONTANT/PT/TOTAL -> "total".
+   - Convert European commas ("14,50" -> 14.5).
+3. MATH & RECONCILIATION PER ITEM:
+   - If "quantite" is missing or unclear on a single line item, use 1.
+   - If "prix" (unit price) is missing but "total" and "quantite" are visible, compute prix = total / quantite.
+   - If "total" is missing but "quantite" and "prix" are visible, compute total = quantite * prix.
+   - Skip footer/summary/payment rows (TOTAL, TOTAL TTC, TOTAL HT, TVA, SOUS-TOTAL, NET A PAYER, ESPECE, RENDU, TIMBRE, ICE, IF, RC).
+4. OUTPUT FORMAT (STRICT):
+   - Return ONLY a JSON array of objects matching exactly: [{"nom": "...", "quantite": 0, "prix": 0, "total": 0}]`;
 
-Known store products: ${existingProducts.slice(0, 400).join(', ')}
-Prefer ${language === 'ar' ? 'Arabic/French' : 'Latin'} product labels consistent with Moroccan grocery stores.`;
-
-      const callModel = () =>
+      const callVisionItems = () =>
         ai.models.generateContent({
           model: GEMINI_MODEL,
           contents: {
@@ -495,13 +499,60 @@ Prefer ${language === 'ar' ? 'Arabic/French' : 'Latin'} product labels consisten
                 }
               },
               {
-                text: 'Read this printed or handwritten Moroccan purchase invoice carefully. Extract supplier metadata, official ICE if present, whether it is handwritten, and every product line with quantity, unitCost, and confidence level as strict JSON.'
+                text: 'Read the full invoice image visually (auto-correct any tilt, wrinkles, rotation, or carpet background). Extract every product with nom, quantite, prix (unit price), and total (line total). Return only JSON: [{"nom": "...", "quantite": 0, "prix": 0, "total": 0}].'
               }
             ]
           },
           config: {
-            systemInstruction,
+            systemInstruction: visionItemsInstruction,
             thinkingConfig: { thinkingLevel: ThinkingLevel.MEDIUM },
+            responseMimeType: 'application/json',
+            responseSchema: {
+              type: Type.ARRAY,
+              items: {
+                type: Type.OBJECT,
+                properties: {
+                  nom: {
+                    type: Type.STRING,
+                    description: 'Clean product name as written on the invoice'
+                  },
+                  quantite: {
+                    type: Type.NUMBER,
+                    description: 'Purchased quantity (> 0)'
+                  },
+                  prix: {
+                    type: Type.NUMBER,
+                    description: 'Unit price in MAD'
+                  },
+                  total: {
+                    type: Type.NUMBER,
+                    description: 'Total line price in MAD'
+                  }
+                },
+                required: ['nom', 'quantite', 'prix', 'total']
+              }
+            }
+          }
+        });
+
+      const callInvoiceMeta = () =>
+        ai.models.generateContent({
+          model: GEMINI_MODEL,
+          contents: {
+            parts: [
+              {
+                inlineData: {
+                  mimeType,
+                  data: cleanBase64
+                }
+              },
+              {
+                text: 'Extract only header/footer metadata from this Moroccan invoice (even if tilted or on a carpet): supplierName, supplierIce (15 digits if present), supplierPhone, invoiceNumber, invoiceDate (YYYY-MM-DD), hasOfficialMarkers, isHandwritten, totalAmount.'
+              }
+            ]
+          },
+          config: {
+            thinkingConfig: { thinkingLevel: ThinkingLevel.LOW },
             responseMimeType: 'application/json',
             responseSchema: {
               type: Type.OBJECT,
@@ -513,37 +564,67 @@ Prefer ${language === 'ar' ? 'Arabic/French' : 'Latin'} product labels consisten
                 invoiceDate: { type: Type.STRING },
                 hasOfficialMarkers: { type: Type.BOOLEAN },
                 isHandwritten: { type: Type.BOOLEAN },
-                totalAmount: { type: Type.NUMBER },
-                items: {
-                  type: Type.ARRAY,
-                  items: {
-                    type: Type.OBJECT,
-                    properties: {
-                      rawName: { type: Type.STRING },
-                      matchedCatalogName: { type: Type.STRING },
-                      quantity: { type: Type.NUMBER },
-                      unitCost: { type: Type.NUMBER },
-                      lineTotal: { type: Type.NUMBER },
-                      unitType: { type: Type.STRING },
-                      confidence: { type: Type.STRING }
-                    }
-                  }
-                }
+                totalAmount: { type: Type.NUMBER }
               }
             }
           }
         });
 
-      let response;
-      try {
-        response = await callModel();
-      } catch (firstErr) {
-        console.warn('Retrying Gemini purchase invoice scan after transient error:', firstErr);
-        await new Promise((r) => setTimeout(r, 450));
-        response = await callModel();
+      const runVisionWithRetry = async () => {
+        try {
+          return await callVisionItems();
+        } catch (firstErr) {
+          console.warn('Retrying Gemini Vision invoice scan after transient error:', firstErr);
+          await new Promise((r) => setTimeout(r, 450));
+          return await callVisionItems();
+        }
+      };
+
+      const [itemsResult, metaResult] = await Promise.allSettled([
+        runVisionWithRetry(),
+        callInvoiceMeta()
+      ]);
+
+      if (itemsResult.status === 'rejected') {
+        throw itemsResult.reason;
       }
 
-      const parsed = safeParseGeminiJson<Record<string, unknown>>(response.text || '{}', {
+      type RawVisionItem = {
+        nom?: unknown;
+        quantite?: unknown;
+        prix?: unknown;
+        total?: unknown;
+      };
+
+      const rawItems = safeParseGeminiJson<RawVisionItem[]>(itemsResult.value.text || '[]', []);
+      const normalizedItems = (Array.isArray(rawItems) ? rawItems : [])
+        .map((it) => {
+          const nom = String(it?.nom ?? '').trim();
+          const rawQty = Number(it?.quantite);
+          const quantite = Number.isFinite(rawQty) && rawQty > 0 ? Number(rawQty.toFixed(3)) : 1;
+          let prix = Number(it?.prix);
+          let total = Number(it?.total);
+          prix = Number.isFinite(prix) && prix >= 0 ? prix : 0;
+          total = Number.isFinite(total) && total >= 0 ? total : 0;
+
+          if (prix === 0 && total > 0 && quantite > 0) {
+            prix = Number((total / quantite).toFixed(2));
+          } else if (total === 0 && prix > 0) {
+            total = Number((quantite * prix).toFixed(2));
+          } else {
+            prix = Number(prix.toFixed(2));
+            total = Number(total.toFixed(2));
+          }
+
+          return { nom, quantite, prix, total };
+        })
+        .filter((it) => it.nom.length > 0);
+
+      if (returnRawArray || req.query.raw === '1') {
+        return res.json(normalizedItems);
+      }
+
+      const metaFallback = {
         supplierName: '',
         supplierIce: '',
         supplierPhone: '',
@@ -551,11 +632,31 @@ Prefer ${language === 'ar' ? 'Arabic/French' : 'Latin'} product labels consisten
         invoiceDate: '',
         hasOfficialMarkers: false,
         isHandwritten: false,
-        totalAmount: 0,
-        items: []
-      });
+        totalAmount: 0
+      };
+      const meta =
+        metaResult.status === 'fulfilled'
+          ? safeParseGeminiJson<typeof metaFallback>(metaResult.value.text || '{}', metaFallback)
+          : metaFallback;
 
-      return res.json({ invoice: parsed });
+      const itemsSum = Number(
+        normalizedItems.reduce((sum, it) => sum + (it.total || it.quantite * it.prix), 0).toFixed(2)
+      );
+
+      return res.json({
+        items: normalizedItems,
+        invoice: {
+          supplierName: String(meta.supplierName || '').trim(),
+          supplierIce: String(meta.supplierIce || '').replace(/\s+/g, '').trim(),
+          supplierPhone: String(meta.supplierPhone || '').trim(),
+          invoiceNumber: String(meta.invoiceNumber || '').trim(),
+          invoiceDate: String(meta.invoiceDate || '').trim(),
+          hasOfficialMarkers: Boolean(meta.hasOfficialMarkers),
+          isHandwritten: Boolean(meta.isHandwritten),
+          totalAmount: Number(meta.totalAmount) > 0 ? Number(meta.totalAmount) : itemsSum,
+          items: normalizedItems
+        }
+      });
     } catch (error) {
       const message =
         error instanceof Error ? error.message : 'Failed to analyze purchase invoice image';
