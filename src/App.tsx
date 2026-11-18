@@ -27,6 +27,7 @@ import { BourseHanoutView } from './components/bourse/BourseHanoutView';
 import { SmartDreamGoalBanner } from './components/analytics/SmartDreamGoalBanner';
 import { ShopEarView } from './components/shopEar/ShopEarView';
 import { MarketRadarView } from './components/marketRadar/MarketRadarView';
+import { FinMchaElMhalView } from './components/home/FinMchaElMhalView';
 import { ShopEarQuickModal } from './components/shopEar/ShopEarQuickModal';
 import { PurchaseInvoiceScanModal } from './components/inventory/PurchaseInvoiceScanModal';
 import { AiAssistantView } from './components/ai/AiAssistantView';
@@ -665,6 +666,7 @@ const PosMainContent: React.FC = () => {
           </div>
         )}
 
+        {currentTab === 'home_summary' && <FinMchaElMhalView onNavigate={handleProtectedTab} />}
         {currentTab === 'bourse' && <BourseHanoutView />}
         {currentTab === 'inventory' && <InventoryView />}
         {currentTab === 'orders' && <OrdersView />}

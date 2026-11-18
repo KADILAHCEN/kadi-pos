@@ -2034,5 +2034,292 @@ export function exportMarketRadarWeeklyPdf(params: {
   return filename;
 }
 
+export interface FinMchaElMhalPdfBillLine {
+  name: string;
+  amount: number;
+  dueDate: string;
+  paid: boolean;
+}
+
+export interface FinMchaElMhalPdfPayload {
+  settings: StoreSettings;
+  currencySymbol: string;
+  language: 'ar' | 'fr' | 'en';
+  todaySales: number;
+  todayExpenses: number;
+  todayNetSalesMinusExpenses: number;
+  todayTrueProfit: number;
+  cashInBoxNow: number;
+  totalCreditOwed: number;
+  creditCustomersCount: number;
+  top5BoursePrices: Array<{ name: string; price: number; changePct: number }>;
+  top5BestSellers: Array<{ name: string; soldQty: number; stock: number }>;
+  lowStockCount: number;
+  taxToPayThisMonth: number;
+  taxAlreadyPaid: number;
+  monthlyBillsTotal: number;
+  monthlyBills: FinMchaElMhalPdfBillLine[];
+  monthExpensesTotal: number;
+}
+
+export function exportFinMchaElMhalPdf(payload: FinMchaElMhalPdfPayload): string {
+  const {
+    settings,
+    currencySymbol,
+    language,
+    todaySales,
+    todayExpenses,
+    todayNetSalesMinusExpenses,
+    todayTrueProfit,
+    cashInBoxNow,
+    totalCreditOwed,
+    creditCustomersCount,
+    top5BoursePrices,
+    top5BestSellers,
+    lowStockCount,
+    taxToPayThisMonth,
+    taxAlreadyPaid,
+    monthlyBillsTotal,
+    monthlyBills,
+    monthExpensesTotal
+  } = payload;
+
+  const isAr = language === 'ar';
+  const width = 794;
+  const height = 1123;
+  const scale = 2;
+
+  const canvas = document.createElement('canvas');
+  canvas.width = width * scale;
+  canvas.height = height * scale;
+  const ctx = canvas.getContext('2d')!;
+  ctx.scale(scale, scale);
+
+  ctx.fillStyle = '#ffffff';
+  ctx.fillRect(0, 0, width, height);
+
+  const padX = 34;
+  const contentW = width - padX * 2;
+  const rightEdge = width - padX;
+  const leftEdge = padX;
+
+  const drawText = (
+    text: string,
+    x: number,
+    y: number,
+    opts?: { font?: string; color?: string; align?: CanvasTextAlign; maxWidth?: number }
+  ) => {
+    ctx.save();
+    ctx.font = opts?.font || '13px "Cairo", "Segoe UI", Tahoma, sans-serif';
+    ctx.fillStyle = opts?.color || '#0f172a';
+    ctx.textAlign = opts?.align || (isAr ? 'right' : 'left');
+    ctx.direction = isAr ? 'rtl' : 'ltr';
+    if (opts?.maxWidth) {
+      ctx.fillText(text, x, y, opts.maxWidth);
+    } else {
+      ctx.fillText(text, x, y);
+    }
+    ctx.restore();
+  };
+
+  let curY = 26;
+  const hasLogo = Boolean(settings.storeLogo);
+  if (hasLogo) {
+    drawStoreLogoBadge(ctx, settings.storeLogo, isAr ? rightEdge - 46 : leftEdge, curY, 44);
+  }
+  const titleX = isAr ? (hasLogo ? rightEdge - 58 : rightEdge) : hasLogo ? leftEdge + 56 : leftEdge;
+
+  drawText(`${settings.storeName || 'Kadi POS'} — فين مشى المحال`, titleX, curY + 20, {
+    font: 'bold 19px "Cairo", sans-serif',
+    color: '#0f172a'
+  });
+  drawText(
+    `الملخص الشامل للمحال · ${new Date().toLocaleDateString('ar-MA')} · ${new Date().toLocaleTimeString('ar-MA', { hour: '2-digit', minute: '2-digit' })}`,
+    titleX,
+    curY + 44,
+    { font: '11.5px "Cairo", sans-serif', color: '#475569' }
+  );
+
+  curY += 66;
+  ctx.strokeStyle = '#cbd5e1';
+  ctx.lineWidth = 1;
+  ctx.beginPath();
+  ctx.moveTo(padX, curY);
+  ctx.lineTo(rightEdge, curY);
+  ctx.stroke();
+  curY += 18;
+
+  // Row 1: Today + Cash Box + Credit + Profit + Month Expenses + Tax (2 cols x 3 rows)
+  const cards = [
+    {
+      title: '1. اليوم (المبيعات - المصاريف)',
+      main: `${todayNetSalesMinusExpenses.toFixed(2)} ${currencySymbol}`,
+      sub: `المبيعات: ${todaySales.toFixed(2)} | المصاريف: ${todayExpenses.toFixed(2)}`,
+      color: todayNetSalesMinusExpenses >= 0 ? '#059669' : '#dc2626'
+    },
+    {
+      title: '2. الصندوق (الكاش دابا)',
+      main: `${cashInBoxNow.toFixed(2)} ${currencySymbol}`,
+      sub: 'الفلوس المتوفرة في الصندوق حالياً',
+      color: '#0f172a'
+    },
+    {
+      title: '3. الكريدي عند الكليان',
+      main: `${totalCreditOwed.toFixed(2)} ${currencySymbol}`,
+      sub: `عدد الزبناء اللي عليهم الكريدي: ${creditCustomersCount}`,
+      color: totalCreditOwed > 0 ? '#d97706' : '#059669'
+    },
+    {
+      title: '6. الأرباح (ربح اليوم)',
+      main: `${todayTrueProfit.toFixed(2)} ${currencySymbol}`,
+      sub: 'صافي الربح بعد تكلفة السلعة والمصاريف',
+      color: todayTrueProfit >= 0 ? '#059669' : '#dc2626'
+    },
+    {
+      title: '7. الضريبة (هاد الشهر / المخلصة)',
+      main: `للدفع: ${taxToPayThisMonth.toFixed(2)} ${currencySymbol}`,
+      sub: `تخلصات لحد الآن: ${taxAlreadyPaid.toFixed(2)} ${currencySymbol}`,
+      color: '#b45309'
+    },
+    {
+      title: '9. مصاريف هاد الشهر',
+      main: `${monthExpensesTotal.toFixed(2)} ${currencySymbol}`,
+      sub: 'مجموع المصاريف المسجلة هاد الشهر',
+      color: '#be123c'
+    }
+  ];
+
+  const cardGap = 14;
+  const cardW = (contentW - cardGap) / 2;
+  const cardH = 74;
+
+  cards.forEach((c, i) => {
+    const col = i % 2;
+    const row = Math.floor(i / 2);
+    const x = isAr ? rightEdge - cardW - col * (cardW + cardGap) : leftEdge + col * (cardW + cardGap);
+    const y = curY + row * (cardH + 10);
+
+    ctx.fillStyle = '#f8fafc';
+    ctx.fillRect(x, y, cardW, cardH);
+    ctx.strokeStyle = '#e2e8f0';
+    ctx.strokeRect(x, y, cardW, cardH);
+
+    const tx = isAr ? x + cardW - 12 : x + 12;
+    drawText(c.title, tx, y + 21, { font: 'bold 11.5px "Cairo", sans-serif', color: '#475569' });
+    drawText(c.main, tx, y + 45, { font: 'bold 16px monospace', color: c.color });
+    drawText(c.sub, tx, y + 63, { font: '10px "Cairo", sans-serif', color: '#64748b', maxWidth: cardW - 24 });
+  });
+
+  curY += 3 * (cardH + 10) + 14;
+
+  // Row 2: 2 side-by-side panels -> Bourse Top 5 & Inventory Top 5 Best Sellers
+  const halfW = (contentW - cardGap) / 2;
+  const listH = 196;
+
+  // Bourse Top 5
+  const bourseX = isAr ? rightEdge - halfW : leftEdge;
+  ctx.fillStyle = '#ffffff';
+  ctx.fillRect(bourseX, curY, halfW, listH);
+  ctx.strokeStyle = '#cbd5e1';
+  ctx.strokeRect(bourseX, curY, halfW, listH);
+  drawText('4. البورصة — أثمنة أهم 5 سلع اليوم', isAr ? bourseX + halfW - 12 : bourseX + 12, curY + 22, {
+    font: 'bold 12px "Cairo", sans-serif',
+    color: '#0f172a'
+  });
+
+  top5BoursePrices.slice(0, 5).forEach((item, idx) => {
+    const ry = curY + 48 + idx * 28;
+    drawText(`${idx + 1}. ${item.name}`, isAr ? bourseX + halfW - 12 : bourseX + 12, ry, {
+      font: '11.5px "Cairo", sans-serif',
+      color: '#1e293b',
+      maxWidth: halfW * 0.58
+    });
+    const chg = item.changePct >= 0 ? `+${item.changePct.toFixed(0)}%` : `${item.changePct.toFixed(0)}%`;
+    drawText(`${item.price.toFixed(2)} ${currencySymbol} (${chg})`, isAr ? bourseX + 12 : bourseX + halfW - 12, ry, {
+      font: 'bold 11px monospace',
+      color: item.changePct >= 0 ? '#059669' : '#dc2626',
+      align: isAr ? 'left' : 'right'
+    });
+  });
+
+  // Inventory Top 5 + Low Stock
+  const invX = isAr ? leftEdge : leftEdge + halfW + cardGap;
+  ctx.fillStyle = '#ffffff';
+  ctx.fillRect(invX, curY, halfW, listH);
+  ctx.strokeStyle = '#cbd5e1';
+  ctx.strokeRect(invX, curY, halfW, listH);
+  drawText(
+    `5. المخزون — الأكثر مبيعاً (ناقص: ${lowStockCount})`,
+    isAr ? invX + halfW - 12 : invX + 12,
+    curY + 22,
+    { font: 'bold 12px "Cairo", sans-serif', color: '#0f172a' }
+  );
+
+  top5BestSellers.slice(0, 5).forEach((item, idx) => {
+    const ry = curY + 48 + idx * 28;
+    drawText(`${idx + 1}. ${item.name}`, isAr ? invX + halfW - 12 : invX + 12, ry, {
+      font: '11.5px "Cairo", sans-serif',
+      color: '#1e293b',
+      maxWidth: halfW * 0.58
+    });
+    drawText(`بيع: ${item.soldQty} | باقي: ${item.stock}`, isAr ? invX + 12 : invX + halfW - 12, ry, {
+      font: 'bold 11px monospace',
+      color: item.stock <= 5 ? '#dc2626' : '#0f172a',
+      align: isAr ? 'left' : 'right'
+    });
+  });
+
+  curY += listH + 18;
+
+  // Row 3: Section 8 - Monthly Subscriptions & Bills
+  const billsH = 48 + monthlyBills.length * 32;
+  ctx.fillStyle = '#f8fafc';
+  ctx.fillRect(padX, curY, contentW, billsH);
+  ctx.strokeStyle = '#cbd5e1';
+  ctx.strokeRect(padX, curY, contentW, billsH);
+
+  drawText(
+    `8. الاشتراكات والفواتير هاد الشهر (المجموع: ${monthlyBillsTotal.toFixed(2)} ${currencySymbol})`,
+    rightEdge - 12,
+    curY + 24,
+    { font: 'bold 12.5px "Cairo", sans-serif', color: '#0f172a' }
+  );
+
+  monthlyBills.forEach((b, i) => {
+    const ry = curY + 52 + i * 32;
+    drawText(`${b.name}`, rightEdge - 14, ry, {
+      font: 'bold 12px "Cairo", sans-serif',
+      color: '#0f172a'
+    });
+    drawText(`تاريخ الأداء: ${b.dueDate}`, width / 2, ry, {
+      font: '11px monospace',
+      color: '#475569',
+      align: 'center'
+    });
+    drawText(
+      `${b.amount.toFixed(2)} ${currencySymbol} (${b.paid ? 'مخلص' : 'للدفع'})`,
+      leftEdge + 14,
+      ry,
+      {
+        font: 'bold 11.5px "Cairo", monospace',
+        color: b.paid ? '#059669' : '#d97706',
+        align: 'left'
+      }
+    );
+  });
+
+  curY += billsH + 26;
+  drawText('تم إنشاء هذا التقرير بدون أنترنت من الصفحة الرئيسية "فين مشى المحال" — Kadi POS', width / 2, curY, {
+    font: '10.5px "Cairo", sans-serif',
+    color: '#94a3b8',
+    align: 'center'
+  });
+
+  const filename = `KadiPOS_Fin_Mcha_El_Mhal_${new Date().toISOString().slice(0, 10)}.pdf`;
+  saveCanvasAsPaginatedA4Pdf(canvas, width, height, filename);
+  return filename;
+}
+
+
 
 

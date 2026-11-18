@@ -65,7 +65,7 @@ export const MobileBottomNav: React.FC<MobileBottomNavProps> = ({ onSelectProtec
     cpuAlerts.length +
     unresolvedTheftAlerts.length;
 
-  const primaryTabs: AppTabId[] = ['pos', 'inventory', 'customers', 'orders'];
+  const primaryTabs: AppTabId[] = ['home_summary', 'pos', 'inventory', 'customers', 'orders'];
   const isMoreTabActive = !primaryTabs.includes(currentTab);
 
   const navigateTab = (tabId: AppTabId) => {
@@ -78,7 +78,7 @@ export const MobileBottomNav: React.FC<MobileBottomNavProps> = ({ onSelectProtec
       {/* Compact Centered Mobile Bottom Tab Bar (<1024px) */}
       <nav
         aria-label={isAr ? 'التنقل السريع للهاتف' : 'Mobile Navigation'}
-        className="lg:hidden fixed bottom-2 left-1/2 -translate-x-1/2 z-40 w-[min(90vw,310px)] h-[52px] bg-white/95 dark:bg-slate-900/95 backdrop-blur-md border border-slate-200 dark:border-slate-800 rounded-2xl px-1 flex items-center justify-around gap-0.5 shadow-xl"
+        className="lg:hidden fixed bottom-2 left-1/2 -translate-x-1/2 z-40 w-[min(94vw,356px)] h-[52px] bg-white/95 dark:bg-slate-900/95 backdrop-blur-md border border-slate-200 dark:border-slate-800 rounded-2xl px-1 flex items-center justify-around gap-0.5 shadow-xl"
       >
         {primaryTabs.map((tabId) => {
           const { definition, IconComponent, colorPreset } = resolveTabVisual(tabId, customizations);

@@ -33,7 +33,8 @@ import {
   Briefcase,
   Award,
   Ear,
-  Compass
+  Compass,
+  Home
 } from 'lucide-react';
 
 export type TabIconKey =
@@ -70,7 +71,8 @@ export type TabIconKey =
   | 'briefcase'
   | 'award'
   | 'ear'
-  | 'compass';
+  | 'compass'
+  | 'home';
 
 export type TabColorKey =
   | 'emerald'
@@ -92,6 +94,7 @@ export interface TabIconOption {
 }
 
 export const TAB_ICON_OPTIONS: TabIconOption[] = [
+  { key: 'home', labelAr: 'الرئيسية / المحال', labelEn: 'Home', icon: Home },
   { key: 'store', labelAr: 'متجر', labelEn: 'Store', icon: Store },
   { key: 'shopping_bag', labelAr: 'سلة تسوق', labelEn: 'Shopping Bag', icon: ShoppingBag },
   { key: 'layers', labelAr: 'طبقات / مخزون', labelEn: 'Inventory', icon: Layers },
@@ -301,6 +304,7 @@ export const TAB_COLOR_PRESETS: Record<TabColorKey, TabColorPreset> = {
 
 export interface PosTabDefinition {
   id:
+    | 'home_summary'
     | 'pos'
     | 'bourse'
     | 'inventory'
@@ -330,6 +334,18 @@ export interface PosTabDefinition {
 }
 
 export const POS_TAB_CATALOG: PosTabDefinition[] = [
+  {
+    id: 'home_summary',
+    labelAr: 'فين مشى المحال',
+    labelFr: 'Bilan Boutique',
+    labelEn: 'Shop Pulse',
+    shortLabelAr: 'فين مشى المحال',
+    shortLabelFr: 'Accueil',
+    shortLabelEn: 'Home',
+    defaultIcon: 'home',
+    defaultColor: 'emerald',
+    showInTopNav: true
+  },
   {
     id: 'pos',
     labelAr: 'نقطة البيع',

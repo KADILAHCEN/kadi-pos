@@ -91,6 +91,7 @@ import {
 import { BUILT_IN_PALETTES, applyPaletteToDocument } from '../utils/palettes';
 
 export type AppTabId =
+  | 'home_summary'
   | 'pos'
   | 'bourse'
   | 'inventory'
@@ -427,8 +428,8 @@ interface PosContextType {
 const PosContext = createContext<PosContextType | undefined>(undefined);
 
 export const PosProvider: React.FC<{ children: ReactNode }> = ({ children }) => {
-  // Navigation State
-  const [currentTab, setCurrentTab] = useState<AppTabId>('pos');
+  // Navigation State — Opens directly on 'فين مشى المحال' Home Summary Page
+  const [currentTab, setCurrentTab] = useState<AppTabId>('home_summary');
 
   // Activity Log State (سجل العمليات والنشاطات الرقابية)
   const [activityLogs, setActivityLogs] = useState<ActivityLogItem[]>(() => {
