@@ -3,6 +3,7 @@ import { usePos } from '../../context/PosContext';
 import { getT } from '../../utils/translations';
 import { AppPalette, CurrencyCode, ThemeMode, TheftAlertSettings, UserRole } from '../../types';
 import { DEFAULT_THEFT_ALERT_SETTINGS } from '../../data/initialData';
+import { playSound } from '../../utils/audio';
 import {
   Settings,
   Store,
@@ -86,7 +87,9 @@ export const SettingsView: React.FC = () => {
     requestNotificationPermission,
     triggerTestStockAlert,
     triggerTestTheftAlert,
-    unresolvedTheftAlerts
+    unresolvedTheftAlerts,
+    currentUser,
+    verifyManagerPin
   } = usePos();
 
   const t = getT(language);
@@ -161,6 +164,15 @@ export const SettingsView: React.FC = () => {
   const [protectSettingsWithPin, setProtectSettingsWithPin] = useState<boolean>(
     settings.protectSettingsWithPin ?? true
   );
+  const [requirePinForRestoreDefaults, setRequirePinForRestoreDefaults] = useState<boolean>(
+    settings.requirePinForRestoreDefaults ?? true
+  );
+  const [allowCashierRestoreDefaults, setAllowCashierRestoreDefaults] = useState<boolean>(
+    settings.allowCashierRestoreDefaults ?? false
+  );
+  const [showRestoreDefaultsModal, setShowRestoreDefaultsModal] = useState(false);
+  const [restorePinInput, setRestorePinInput] = useState('');
+  const [restorePermissionError, setRestorePermissionError] = useState<string | null>(null);
 
   // New User Form State
   const [showAddUserModal, setShowAddUserModal] = useState(false);
@@ -311,6 +323,8 @@ export const SettingsView: React.FC = () => {
       themeMode,
       protectInventoryWithPin,
       protectSettingsWithPin,
+      requirePinForRestoreDefaults,
+      allowCashierRestoreDefaults,
       receiptPaperWidth,
       printerName,
       printerConnectionType,
@@ -2201,6 +2215,54 @@ export const SettingsView: React.FC = () => {
                 className="w-4 h-4 text-emerald-600 rounded cursor-pointer"
               />
             </div>
+
+            <div className="flex items-center justify-between p-2 rounded-xl bg-white dark:bg-slate-800 border border-slate-200/80 dark:border-slate-700">
+              <div className="flex items-center gap-2">
+                <KeyRound className="w-4 h-4 text-rose-500" />
+                <div>
+                  <div className="text-xs font-bold text-slate-900 dark:text-white">
+                    {isAr ? 'إذن استعادة البيانات الافتراضية برمز PIN' : 'Require PIN to Restore Default Data'}
+                  </div>
+                  <div className="text-[10px] text-slate-400">
+                    {isAr ? 'طلب إذن المدير (PIN) قبل مسح المعطيات وإرجاع الافتراضي' : 'Require Manager PIN approval before reset'}
+                  </div>
+                </div>
+              </div>
+              <input
+                type="checkbox"
+                checked={requirePinForRestoreDefaults}
+                onChange={(e) => {
+                  const val = e.target.checked;
+                  setRequirePinForRestoreDefaults(val);
+                  updateSettings({ requirePinForRestoreDefaults: val });
+                }}
+                className="w-4 h-4 text-rose-600 rounded cursor-pointer"
+              />
+            </div>
+
+            <div className="flex items-center justify-between p-2 rounded-xl bg-white dark:bg-slate-800 border border-slate-200/80 dark:border-slate-700">
+              <div className="flex items-center gap-2">
+                <UserCheck className="w-4 h-4 text-indigo-500" />
+                <div>
+                  <div className="text-xs font-bold text-slate-900 dark:text-white">
+                    {isAr ? 'منح إذن الاستعادة للكاشير' : 'Allow Cashier Restore Permission'}
+                  </div>
+                  <div className="text-[10px] text-slate-400">
+                    {isAr ? 'السماح لغير المدير بطلب استعادة البيانات الافتراضية' : 'Permit non-manager staff to restore defaults'}
+                  </div>
+                </div>
+              </div>
+              <input
+                type="checkbox"
+                checked={allowCashierRestoreDefaults}
+                onChange={(e) => {
+                  const val = e.target.checked;
+                  setAllowCashierRestoreDefaults(val);
+                  updateSettings({ allowCashierRestoreDefaults: val });
+                }}
+                className="w-4 h-4 text-indigo-600 rounded cursor-pointer"
+              />
+            </div>
           </div>
 
           {/* Manager PIN Input */}
@@ -2649,32 +2711,64 @@ export const SettingsView: React.FC = () => {
 
         {/* Bluetooth Barcode Scanner Integration (HID Mode) */}
         <div className="p-6 rounded-3xl bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 shadow-xs space-y-4">
-          <div className="flex items-center justify-between">
-            <h3 className="font-extrabold text-sm text-slate-900 dark:text-white flex items-center gap-2">
+          <div className="flex flex-wrap items-center justify-between gap-2">
+            <h3 className="font-black text-sm text-slate-900 dark:text-white flex items-center gap-2">
               <Bluetooth className="w-4 h-4 text-blue-600" />
-              <span>{isAr ? 'ماسح الباركود الخارجي عبر البلوتوث (HID Mode)' : 'External Bluetooth Barcode Scanner (HID)'}</span>
+              <span>{isAr ? 'قارئ الباركود الخارجي بالبلوتوث (HID Mode)' : 'External Bluetooth Barcode Scanner (HID)'}</span>
             </h3>
-            <span className="flex items-center gap-1.5 px-2.5 py-0.5 rounded-full text-[11px] font-bold bg-blue-50 text-blue-700 dark:bg-blue-950/60 dark:text-blue-300">
+            <span className="flex items-center gap-1.5 px-2.5 py-0.5 rounded-full text-[11px] font-bold bg-emerald-50 text-emerald-700 dark:bg-emerald-950/60 dark:text-emerald-300">
               <span className="w-2 h-2 rounded-full bg-emerald-500 animate-pulse" />
-              <span>{isAr ? 'نشط وجاهز للمسح' : 'Active & Ready'}</span>
+              <span>
+                {(settings.bluetoothScannerEnabled ?? true)
+                  ? isAr
+                    ? 'شغال بلا أنترنت (HID)'
+                    : 'Active Offline (HID)'
+                  : isAr
+                  ? 'موقف مؤقتاً'
+                  : 'Paused'}
+              </span>
             </span>
           </div>
 
           <p className="text-xs text-slate-500 dark:text-slate-400 leading-relaxed">
             {isAr
-              ? 'يدعم النظام كافة أجهزة مسح الباركود اللاسلكية بالليزر أو كاميرات 2D (Eyoyo, Netum, Tera, Zebra, Inateck) العاملة بنمط HID Keyboard Emulation بدون الحاجة لأي برامج إضافية مع تمييز فوري لسرعة الإدخال.'
-              : 'Directly compatible with all wireless laser & 2D barcode scanners in HID mode. Keystroke bursts are automatically parsed and mapped to cart products with high speed.'}
+              ? 'اربط أي قارئ باركود بلوتوث (Eyoyo, Netum, Tera, Zebra, Inateck) فـ وضع HID. خدام 100% بلا أنترنت: كيعمر السلعة أوتوماتيك فـ شاشة البيع، المخزون، وفواتير الشراء مع صوت "بيب"، وإلا كانت سلعة جديدة كيسجّل الباركود ديالها للمرات الجاية.'
+              : 'Pair any Bluetooth barcode scanner in HID mode. Works 100% offline in Sale, Inventory, and Invoice Scan screens with beep feedback and auto-save for new barcodes.'}
           </p>
 
           <div className="flex flex-wrap items-center gap-3 pt-1">
             <button
               type="button"
               onClick={() => setShowBluetoothModal(true)}
-              className="px-4 py-2.5 text-xs font-bold rounded-xl bg-blue-600 hover:bg-blue-700 text-white transition-colors flex items-center gap-2 shadow-2xs"
+              className="px-4 py-2.5 text-xs font-black rounded-xl bg-blue-600 hover:bg-blue-700 text-white transition-colors flex items-center gap-2 shadow-2xs"
             >
               <Bluetooth className="w-4 h-4" />
-              <span>{isAr ? 'فتح مركز فحص واختبار سرعة الماسح' : 'Open Scanner Diagnostics & Test'}</span>
+              <span>{isAr ? 'ربط قارئ باركود بلوتوث' : 'Pair Bluetooth Barcode Scanner'}</span>
             </button>
+
+            <button
+              type="button"
+              onClick={() => {
+                playSound('beep');
+                setPrinterToast(
+                  isAr ? '🔊 بيب! صوت قارئ الباركود خدام مزيان بلا أنترنت.' : '🔊 Scanner beep tested offline!'
+                );
+                setTimeout(() => setPrinterToast(null), 2500);
+              }}
+              className="px-3.5 py-2.5 text-xs font-bold rounded-xl border border-slate-200 dark:border-slate-700 bg-slate-50 dark:bg-slate-800 hover:bg-slate-100 text-slate-700 dark:text-slate-200 transition-colors flex items-center gap-1.5"
+            >
+              <span>{isAr ? '🔊 تجربة صوت "بيب"' : 'Test Beep'}</span>
+            </button>
+
+            <label className="inline-flex items-center gap-2 text-xs font-bold text-slate-700 dark:text-slate-300 cursor-pointer ms-auto">
+              <input
+                type="checkbox"
+                checked={settings.bluetoothScannerEnabled ?? true}
+                onChange={(e) => updateSettings({ bluetoothScannerEnabled: e.target.checked })}
+                className="w-4 h-4 accent-blue-600 rounded"
+              />
+              <span>{isAr ? 'تفعيل المسح السريع بالبلوتوث' : 'Enable Bluetooth Scanning'}</span>
+            </label>
           </div>
         </div>
 
@@ -2909,12 +3003,13 @@ export const SettingsView: React.FC = () => {
               <button
                 type="button"
                 onClick={() => {
-                  if (confirm(isAr ? 'هل تريد استعادة البيانات الافتراضية؟ سيتم مسح التغييرات الحالية.' : 'Reset to demo data?')) {
-                    resetToDemoData();
-                  }
+                  setRestorePinInput('');
+                  setRestorePermissionError(null);
+                  setShowRestoreDefaultsModal(true);
                 }}
                 className="px-4 py-2.5 text-xs font-bold rounded-xl border border-rose-200 dark:border-rose-900/60 bg-rose-50 dark:bg-rose-950/40 text-rose-700 dark:text-rose-300 hover:bg-rose-100 transition-colors flex items-center gap-2 shadow-2xs"
               >
+                <Lock className="w-3.5 h-3.5" />
                 <RefreshCw className="w-4 h-4" />
                 <span>{t.reset_demo}</span>
               </button>
@@ -2930,6 +3025,142 @@ export const SettingsView: React.FC = () => {
                 {importError}
               </div>
             )}
+
+            {/* Permission-Gated Modal for Restoring Default Data (إذن استعادة البيانات الافتراضية) */}
+            {showRestoreDefaultsModal && (() => {
+              const hasRolePermission = currentUser.role === 'manager' || allowCashierRestoreDefaults;
+              const needsManagerPin = requirePinForRestoreDefaults || !hasRolePermission;
+
+              return (
+                <div
+                  className="fixed inset-0 z-50 bg-slate-950/75 backdrop-blur-xs flex items-center justify-center p-4"
+                  dir={isAr ? 'rtl' : 'ltr'}
+                >
+                  <div className="bg-white dark:bg-slate-900 border border-rose-200 dark:border-rose-900/60 rounded-3xl shadow-2xl w-full max-w-md p-6 space-y-4">
+                    <div className="flex items-start gap-3">
+                      <div className="w-11 h-11 rounded-2xl bg-rose-100 dark:bg-rose-950/70 text-rose-600 dark:text-rose-400 flex items-center justify-center shrink-0">
+                        <AlertTriangle className="w-6 h-6" />
+                      </div>
+                      <div className="min-w-0">
+                        <h4 className="text-base font-black text-slate-900 dark:text-white">
+                          {isAr ? 'إذن استعادة البيانات الافتراضية' : 'Default Data Restore Permission'}
+                        </h4>
+                        <p className="text-xs text-slate-500 dark:text-slate-400 mt-1 leading-relaxed">
+                          {isAr
+                            ? 'هاد العملية غادي تمسح المبيعات، الكريدي، والمصاريف الحالية وترجع البيانات الافتراضية من جديد.'
+                            : 'This action will erase current sales, credit ledger, and changes and restore initial default data.'}
+                        </p>
+                      </div>
+                    </div>
+
+                    {/* Active User Permission Status Badge */}
+                    <div
+                      className={`p-3 rounded-2xl border text-xs font-bold flex items-center justify-between gap-2 ${
+                        hasRolePermission
+                          ? 'bg-emerald-50 dark:bg-emerald-950/40 border-emerald-200 dark:border-emerald-800 text-emerald-800 dark:text-emerald-300'
+                          : 'bg-amber-50 dark:bg-amber-950/40 border-amber-300 dark:border-amber-800 text-amber-900 dark:text-amber-300'
+                      }`}
+                    >
+                      <div className="flex items-center gap-2">
+                        <ShieldCheck className="w-4 h-4 shrink-0" />
+                        <span>
+                          {hasRolePermission
+                            ? isAr
+                              ? `الحساب الحالي (${currentUser.name}): عندو صلاحية الطلب`
+                              : `Account (${currentUser.name}): Authorized`
+                            : isAr
+                            ? `تنبيه: حساب (${currentUser.name}) ما عندوش إذن الاستعادة بلا كود المدير`
+                            : `Restricted: ${currentUser.name} needs Manager PIN override`}
+                        </span>
+                      </div>
+                    </div>
+
+                    {needsManagerPin && (
+                      <div className="space-y-1.5">
+                        <label className="block text-xs font-extrabold text-slate-700 dark:text-slate-300">
+                          {isAr
+                            ? 'أدخل رمز المدير السري (Manager PIN) للموافقة ومنح الإذن:'
+                            : 'Enter Manager PIN to authorize restore:'}
+                        </label>
+                        <input
+                          type="password"
+                          maxLength={6}
+                          value={restorePinInput}
+                          onChange={(e) => {
+                            setRestorePinInput(e.target.value);
+                            setRestorePermissionError(null);
+                          }}
+                          placeholder="••••"
+                          autoFocus
+                          className="w-full px-4 py-2.5 rounded-xl bg-slate-50 dark:bg-slate-800 border border-slate-300 dark:border-slate-700 text-center font-mono text-base font-black tracking-widest text-slate-900 dark:text-white focus:border-rose-500 focus:outline-hidden"
+                        />
+                      </div>
+                    )}
+
+                    {restorePermissionError && (
+                      <div className="p-2.5 rounded-xl bg-rose-50 dark:bg-rose-950/60 border border-rose-300 dark:border-rose-800 text-xs font-black text-rose-700 dark:text-rose-300">
+                        {restorePermissionError}
+                      </div>
+                    )}
+
+                    <div className="flex flex-wrap items-center justify-between gap-2 pt-2 border-t border-slate-200 dark:border-slate-800">
+                      <button
+                        type="button"
+                        onClick={() => {
+                          const res = saveLocalSnapshot();
+                          setImportSuccess(
+                            res.success
+                              ? isAr
+                                ? '✅ تم حفظ نسخة احتياطية سريعة قبل الاستعادة'
+                                : '✅ Safety snapshot saved!'
+                              : null
+                          );
+                        }}
+                        className="px-3 py-2 rounded-xl bg-emerald-50 dark:bg-emerald-950/50 border border-emerald-200 dark:border-emerald-800 text-emerald-700 dark:text-emerald-300 text-[11px] font-black"
+                      >
+                        {isAr ? 'حفظ نسخة أمان أولاً' : 'Backup First'}
+                      </button>
+
+                      <div className="flex items-center gap-2">
+                        <button
+                          type="button"
+                          onClick={() => setShowRestoreDefaultsModal(false)}
+                          className="px-4 py-2 rounded-xl bg-slate-100 dark:bg-slate-800 text-slate-700 dark:text-slate-200 text-xs font-bold"
+                        >
+                          {isAr ? 'إلغاء' : 'Cancel'}
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => {
+                            if (needsManagerPin && !verifyManagerPin(restorePinInput)) {
+                              setRestorePermissionError(
+                                isAr
+                                  ? 'رمز المدير (PIN) غير صحيح — ما عندكش إذن استعادة البيانات.'
+                                  : 'Invalid Manager PIN — permission denied.'
+                              );
+                              return;
+                            }
+                            resetToDemoData();
+                            setShowRestoreDefaultsModal(false);
+                            setRestorePinInput('');
+                            setImportError(null);
+                            setImportSuccess(
+                              isAr
+                                ? '✅ تمت استعادة البيانات الافتراضية بإذن المدير بنجاح.'
+                                : '✅ Default data restored successfully.'
+                            );
+                          }}
+                          className="px-4 py-2 rounded-xl bg-rose-600 hover:bg-rose-700 text-white text-xs font-black flex items-center gap-1.5"
+                        >
+                          <RefreshCw className="w-3.5 h-3.5" />
+                          <span>{isAr ? 'منح الإذن والاستعادة الآن' : 'Authorize & Restore'}</span>
+                        </button>
+                      </div>
+                    </div>
+                  </div>
+                </div>
+              );
+            })()}
           </div>
         );
       })()}

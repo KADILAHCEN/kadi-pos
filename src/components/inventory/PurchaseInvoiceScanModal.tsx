@@ -4,6 +4,13 @@ import { Product, SupplierInvoiceItemSnapshot, UnitType } from '../../types';
 import { safeParseJsonResponse } from '../../utils/aiVoice';
 import { getLocalTodayYMD } from '../../utils/expenses';
 import {
+  assessImageSharpness,
+  loadBlobToImage,
+  runOfflineInvoiceNumberOcr
+} from '../../utils/offlineInvoiceOcr';
+import { bluetoothScanner } from '../../utils/bluetoothScanner';
+import { playSound } from '../../utils/audio';
+import {
   Camera,
   Upload,
   X,
@@ -11,13 +18,19 @@ import {
   EyeOff,
   Loader2,
   Plus,
+  Minus,
   Trash2,
   CheckCircle2,
   AlertTriangle,
   Sparkles,
   PackagePlus,
   Building2,
-  Hash
+  Hash,
+  RotateCw,
+  Edit3,
+  WifiOff,
+  ZoomIn,
+  Search
 } from 'lucide-react';
 
 export type PurchaseInvoiceMode = 'official_ice' | 'informal_noir';
@@ -31,6 +44,9 @@ interface ScannedLineItem {
   unitCost: number;
   sellPrice: number;
   unitType: UnitType;
+  confidence?: 'high' | 'medium' | 'low';
+  source?: 'ai' | 'offline_ocr' | 'manual';
+  linePreviewDataUrl?: string;
 }
 
 interface ScannedInvoiceResponse {
@@ -41,16 +57,20 @@ interface ScannedInvoiceResponse {
     invoiceNumber?: string;
     invoiceDate?: string;
     hasOfficialMarkers?: boolean;
+    isHandwritten?: boolean;
     totalAmount?: number;
     items?: Array<{
       rawName?: string;
       matchedCatalogName?: string;
       quantity?: number;
       unitCost?: number;
+      lineTotal?: number;
       unitType?: string;
+      confidence?: string;
     }>;
   };
   error?: string;
+  code?: string;
 }
 
 const normalizeUnitType = (raw?: string): UnitType => {
@@ -64,11 +84,11 @@ const normalizeUnitType = (raw?: string): UnitType => {
 const compressImageFileToJpeg = (fileOrBlob: Blob): Promise<{ base64: string; dataUrl: string }> =>
   new Promise((resolve, reject) => {
     const reader = new FileReader();
-    reader.onerror = () => reject(new Error('Failed to read image file'));
+    reader.onerror = () => reject(new Error('تعذر قراءة الصورة المختارة'));
     reader.onload = () => {
       const src = String(reader.result || '');
       const img = new Image();
-      img.onerror = () => reject(new Error('Invalid image format'));
+      img.onerror = () => reject(new Error('صيغة الصورة غير مدعومة'));
       img.onload = () => {
         const maxDim = 1600;
         const scale = Math.min(1, maxDim / Math.max(img.width || 1, img.height || 1));
@@ -83,7 +103,7 @@ const compressImageFileToJpeg = (fileOrBlob: Blob): Promise<{ base64: string; da
           return;
         }
         ctx.drawImage(img, 0, 0, w, h);
-        const dataUrl = canvas.toDataURL('image/jpeg', 0.84);
+        const dataUrl = canvas.toDataURL('image/jpeg', 0.85);
         const base64 = dataUrl.replace(/^data:image\/jpeg;base64,/, '');
         resolve({ base64, dataUrl });
       };
@@ -127,6 +147,7 @@ export const PurchaseInvoiceScanModal: React.FC = () => {
     addProduct,
     updateProductPurchaseCostAndRecalculateProfit,
     addSupplierInvoice,
+    settings,
     currencySymbol,
     language
   } = usePos();
@@ -139,11 +160,17 @@ export const PurchaseInvoiceScanModal: React.FC = () => {
 
   // Camera / upload states
   const [previewDataUrl, setPreviewDataUrl] = useState<string | null>(null);
+  const [showZoomPhoto, setShowZoomPhoto] = useState(false);
   const [isLiveCameraOpen, setIsLiveCameraOpen] = useState(false);
   const [isScanning, setIsScanning] = useState(false);
   const [scanError, setScanError] = useState<string | null>(null);
+  const [isBlurryError, setIsBlurryError] = useState(false);
+  const [isAiFailure, setIsAiFailure] = useState(false);
   const [scanNotice, setScanNotice] = useState<string | null>(null);
+  const [usedOfflineFallback, setUsedOfflineFallback] = useState(false);
+  const [isHandwrittenDoc, setIsHandwrittenDoc] = useState(false);
   const [completedMessage, setCompletedMessage] = useState<string | null>(null);
+  const [quickCatalogQuery, setQuickCatalogQuery] = useState('');
 
   // Invoice metadata fields
   const [supplierName, setSupplierName] = useState('');
@@ -156,6 +183,10 @@ export const PurchaseInvoiceScanModal: React.FC = () => {
 
   const videoRef = useRef<HTMLVideoElement | null>(null);
   const streamRef = useRef<MediaStream | null>(null);
+  const lastCapturedBlobRef = useRef<Blob | null>(null);
+  const phoneCameraInputRef = useRef<HTMLInputElement | null>(null);
+  const itemsTableRef = useRef<HTMLDivElement | null>(null);
+  const firstRowInputRef = useRef<HTMLInputElement | null>(null);
 
   const stopCameraStream = () => {
     if (streamRef.current) {
@@ -167,12 +198,19 @@ export const PurchaseInvoiceScanModal: React.FC = () => {
 
   const resetFormState = (mode: PurchaseInvoiceMode = 'official_ice') => {
     stopCameraStream();
+    lastCapturedBlobRef.current = null;
     setInvoiceMode(mode);
     setPreviewDataUrl(null);
+    setShowZoomPhoto(false);
     setIsScanning(false);
     setScanError(null);
+    setIsBlurryError(false);
+    setIsAiFailure(false);
     setScanNotice(null);
+    setUsedOfflineFallback(false);
+    setIsHandwrittenDoc(false);
     setCompletedMessage(null);
+    setQuickCatalogQuery('');
     setSupplierName('');
     setSupplierIce('');
     setSupplierPhone('');
@@ -198,14 +236,80 @@ export const PurchaseInvoiceScanModal: React.FC = () => {
 
   const closeModal = () => {
     stopCameraStream();
+    bluetoothScanner.popScope('purchase_invoice');
     setIsOpen(false);
   };
+
+  // Priority Bluetooth HID scanner integration while Invoice Scan Modal is open
+  useEffect(() => {
+    if (!isOpen) {
+      bluetoothScanner.popScope('purchase_invoice');
+      return;
+    }
+
+    bluetoothScanner.pushScope('purchase_invoice');
+
+    const unsubScan = bluetoothScanner.onScan((payload) => {
+      if (bluetoothScanner.getActiveScope() !== 'purchase_invoice') return;
+      const clean = payload.barcode.trim();
+      const matched = products.find(
+        (p) => p.barcode === clean || p.sku.toLowerCase() === clean.toLowerCase()
+      );
+
+      if (matched) {
+        if (settings.bluetoothSoundFeedback !== false) playSound('beep');
+        quickAddCatalogProduct(matched);
+        setScanError(null);
+        setScanNotice(
+          isAr
+            ? `🔊 بيب! تزادت للفاتورة بالقارئ: ${matched.name}`
+            : `🔊 Scanned into invoice: ${matched.name}`
+        );
+        window.setTimeout(() => {
+          itemsTableRef.current?.scrollIntoView({ behavior: 'smooth', block: 'center' });
+        }, 60);
+      } else {
+        playSound('error');
+        window.dispatchEvent(
+          new CustomEvent('kadi:open-quick-new-barcode', {
+            detail: { barcode: clean, sourceContext: 'invoice' }
+          })
+        );
+      }
+    });
+
+    const handleQuickCreated = (evt: Event) => {
+      const detail = (evt as CustomEvent<{
+        product?: Product;
+        sourceContext?: string;
+      }>).detail;
+      if (detail?.sourceContext !== 'invoice' || !detail.product) return;
+      quickAddCatalogProduct(detail.product);
+      setScanError(null);
+      setScanNotice(
+        isAr
+          ? `✅ تسجلات "${detail.product.name}" وتحفظ الباركود + تزادت للفاتورة!`
+          : `✅ Saved "${detail.product.name}" & added to invoice!`
+      );
+      window.setTimeout(() => {
+        itemsTableRef.current?.scrollIntoView({ behavior: 'smooth', block: 'center' });
+      }, 60);
+    };
+
+    window.addEventListener('kadi:quick-barcode-product-created', handleQuickCreated);
+    return () => {
+      unsubScan();
+      window.removeEventListener('kadi:quick-barcode-product-created', handleQuickCreated);
+      bluetoothScanner.popScope('purchase_invoice');
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [isOpen, products, settings.bluetoothSoundFeedback, isAr]);
 
   const computedItemsTotal = useMemo(
     () =>
       Number(
         items
-          .filter((it) => it.include && it.rawName.trim())
+          .filter((it) => it.include && (it.rawName.trim() || it.matchedProductId))
           .reduce((sum, it) => sum + (Number(it.quantity) || 0) * (Number(it.unitCost) || 0), 0)
           .toFixed(2)
       ),
@@ -213,39 +317,202 @@ export const PurchaseInvoiceScanModal: React.FC = () => {
   );
 
   const activeItemsCount = useMemo(
-    () => items.filter((it) => it.include && it.rawName.trim() && it.quantity > 0).length,
+    () =>
+      items.filter(
+        (it) => it.include && (it.rawName.trim() || it.matchedProductId) && Number(it.quantity) > 0
+      ).length,
     [items]
   );
 
-  const analyzeImageBlob = async (blob: Blob) => {
+  const filteredQuickProducts = useMemo(() => {
+    const q = quickCatalogQuery.trim().toLowerCase();
+    const list = q
+      ? products.filter(
+          (p) =>
+            p.name.toLowerCase().includes(q) ||
+            p.nameEn.toLowerCase().includes(q) ||
+            p.barcode.includes(q)
+        )
+      : products;
+    return list.slice(0, 12);
+  }, [products, quickCatalogQuery]);
+
+  const buildEmptyManualRow = (): ScannedLineItem => ({
+    id: `man-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`,
+    include: true,
+    rawName: '',
+    matchedProductId: '',
+    quantity: 1,
+    unitCost: 0,
+    sellPrice: 0,
+    unitType: 'piece',
+    confidence: 'medium',
+    source: 'manual'
+  });
+
+  const addManualLineAndFocus = () => {
+    setItems((prev) => [...prev, buildEmptyManualRow()]);
+    window.setTimeout(() => {
+      itemsTableRef.current?.scrollIntoView({ behavior: 'smooth', block: 'center' });
+      firstRowInputRef.current?.focus();
+    }, 80);
+  };
+
+  const quickAddCatalogProduct = (prod: Product) => {
+    setItems((prev) => {
+      const existingIdx = prev.findIndex((it) => it.matchedProductId === prod.id);
+      if (existingIdx !== -1) {
+        return prev.map((it, idx) =>
+          idx === existingIdx
+            ? { ...it, include: true, quantity: Number((it.quantity + 1).toFixed(2)) }
+            : it
+        );
+      }
+      // Replace blank unedited manual row if present
+      const cleanPrev = prev.filter(
+        (it) => it.rawName.trim() !== '' || it.matchedProductId !== '' || it.unitCost > 0
+      );
+      return [
+        ...cleanPrev,
+        {
+          id: `cat-${prod.id}-${Date.now()}`,
+          include: true,
+          rawName: prod.name,
+          matchedProductId: prod.id,
+          quantity: 1,
+          unitCost: invoiceMode === 'informal_noir' ? prod.costPrice : prod.costPrice,
+          sellPrice: prod.price,
+          unitType: prod.unitType,
+          confidence: 'high',
+          source: 'manual'
+        }
+      ];
+    });
+  };
+
+  /**
+   * Local Canvas OCR Fallback: Runs 100% offline with zero external CDN requests.
+   * Extracts quantities and prices from image rows and ensures list is NEVER left blank.
+   */
+  const executeOfflineOcrFallback = async (
+    img: HTMLImageElement,
+    reasonNotice?: string
+  ): Promise<number> => {
+    const ocr = runOfflineInvoiceNumberOcr(img);
+
+    if (ocr.rows.length > 0) {
+      const offlineItems: ScannedLineItem[] = ocr.rows.map((r, idx) => ({
+        id: `ocr-${Date.now()}-${idx}`,
+        include: true,
+        rawName: isAr ? `سلعة ${idx + 1} (اختار من اللائحة ولا اكتب الإسم)` : `Scanned Item #${idx + 1}`,
+        matchedProductId: '',
+        quantity: r.quantity,
+        unitCost: r.unitCost,
+        sellPrice: r.unitCost > 0 ? Number((r.unitCost * 1.2).toFixed(2)) : 0,
+        unitType: 'piece',
+        confidence: r.confidence,
+        source: 'offline_ocr',
+        linePreviewDataUrl: r.linePreviewDataUrl
+      }));
+      setItems(offlineItems);
+      setUsedOfflineFallback(true);
+      setScanNotice(
+        reasonNotice ||
+          (isAr
+            ? `خدمة القراءة المحلية (بلا أنترنت) لقات ${ocr.rows.length} سطور بالأرقام — اختار إسم السلعة وصحّح الكمية/الثمن إلى كان مكتوب باليد قبل ما تزيد للمخزون.`
+            : `Offline OCR detected ${ocr.rows.length} numeric rows — link item names and adjust quantities/prices below.`)
+      );
+      return offlineItems.length;
+    }
+
+    // Even if OCR sees no crisp digits (e.g. cursive handwriting or blank paper),
+    // never show a dead-end (0) list: open a ready manual entry row immediately.
+    setItems((prev) => (prev.length > 0 ? prev : [buildEmptyManualRow()]));
+    setUsedOfflineFallback(true);
+    setScanNotice(
+      reasonNotice ||
+        (isAr
+          ? 'ما بانوش أرقام واضحين فـ الصورة — فتحنا ليك سطر باش تدخل السلعة والكمية يدوياً ولا تختار من سلع الحانوت.'
+          : 'Could not read clear numbers from photo — use manual row or quick catalog picks below.')
+    );
+    return 0;
+  };
+
+  const analyzeImageBlob = async (
+    blob: Blob,
+    options: { skipBlurCheck?: boolean; forceOfflineOnly?: boolean } = {}
+  ) => {
+    lastCapturedBlobRef.current = blob;
     setScanError(null);
+    setIsBlurryError(false);
+    setIsAiFailure(false);
     setScanNotice(null);
+    setUsedOfflineFallback(false);
+    setIsHandwrittenDoc(false);
     setCompletedMessage(null);
     setIsScanning(true);
 
+    let localDataUrl = '';
     try {
       const { base64, dataUrl } = await compressImageFileToJpeg(blob);
+      localDataUrl = dataUrl;
       setPreviewDataUrl(dataUrl);
 
-      const res = await fetch('/api/ai/scan-purchase-invoice', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          imageBase64: base64,
-          mimeType: 'image/jpeg',
-          existingProducts: products.map((p) => p.name).slice(0, 400),
-          language
-        })
-      });
+      const decodedImg = await loadBlobToImage(dataUrl);
+
+      // Step 1: Local Blur Detection BEFORE hitting AI / OCR
+      if (!options.skipBlurCheck) {
+        const sharpness = assessImageSharpness(decodedImg);
+        if (sharpness.isBlurry) {
+          setIsBlurryError(true);
+          setScanError(
+            isAr
+              ? 'التصويرة مضببة، قرب التيليفون و عاود صور'
+              : 'Photo is blurry — move closer and retake photo'
+          );
+          setIsScanning(false);
+          return;
+        }
+      }
+
+      // Step 2: If explicitly offline or browser has no network, jump directly to Local OCR
+      if (options.forceOfflineOnly || (typeof navigator !== 'undefined' && !navigator.onLine)) {
+        await executeOfflineOcrFallback(
+          decodedImg,
+          isAr
+            ? 'ما كاينش أنترنت دابا — استعملنا القراءة المحلية من التصويرة باش نجبدو الأرقام. راجعهم وصحّح قبل الإضافة.'
+            : 'No internet connection — local offline OCR extracted numbers below.'
+        );
+        return;
+      }
+
+      // Step 3: Call AI Invoice OCR endpoint with timeout protection
+      const controller = new AbortController();
+      const timeoutId = window.setTimeout(() => controller.abort(), 22000);
+
+      let res: Response;
+      try {
+        res = await fetch('/api/ai/scan-purchase-invoice', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          signal: controller.signal,
+          body: JSON.stringify({
+            imageBase64: base64,
+            mimeType: 'image/jpeg',
+            existingProducts: products.map((p) => p.name).slice(0, 400),
+            language
+          })
+        });
+      } finally {
+        window.clearTimeout(timeoutId);
+      }
 
       const parsed = await safeParseJsonResponse<ScannedInvoiceResponse>(res);
-      if (parsed.isNonJson || !parsed.data) {
+      if (parsed.isNonJson || !parsed.data || !res.ok) {
         throw new Error(
-          isAr ? 'تعذر الاتصال بخدمة قراءة الفواتير.' : 'Invoice OCR service unavailable.'
+          parsed.data?.error ||
+            (isAr ? 'تعذر الاتصال بخدمة قراءة الفواتير الذكية' : 'AI invoice service unavailable')
         );
-      }
-      if (!res.ok) {
-        throw new Error(parsed.data.error || 'Failed to read purchase invoice');
       }
 
       const inv = parsed.data.invoice || {};
@@ -258,70 +525,121 @@ export const PurchaseInvoiceScanModal: React.FC = () => {
       if (inv.invoiceDate && /^\d{4}-\d{2}-\d{2}$/.test(inv.invoiceDate)) {
         setInvoiceDate(inv.invoiceDate);
       }
+      setIsHandwrittenDoc(Boolean(inv.isHandwritten));
 
-      // Suggest mode from extracted document markers
-      if (extractedIce || inv.hasOfficialMarkers) {
+      // Keep user's explicit Stock-Only ("بوار/نوار") mode untouched if they chose it, otherwise auto-suggest official if ICE detected
+      if (invoiceMode !== 'informal_noir' && (extractedIce || inv.hasOfficialMarkers)) {
         setInvoiceMode('official_ice');
-        setScanNotice(
-          isAr
-            ? extractedIce
-              ? `تم اكتشاف رقم ICE (${extractedIce}) — تم اختيار "فاتورة رسمية للأرشيف" تلقائياً.`
-              : 'الفاتورة تبدو رسمية — تأكد من إدخال رقم ICE لحفظها في الأرشيف.'
-            : 'Official invoice markers detected.'
-        );
-      } else {
-        setScanNotice(
-          isAr
-            ? 'تمت قراءة السلع بنجاح! اختر نوع الفاتورة (رسمية ICE للأرشيف أو نوار بدون أرقام للمخزون فقط).'
-            : 'Items extracted! Select Official (ICE) or Informal (Stock Only).'
-        );
       }
 
       const extractedRows: ScannedLineItem[] = (inv.items || []).map((raw, idx) => {
         const name = (raw.rawName || raw.matchedCatalogName || '').trim();
         const matched = findBestCatalogProduct(name, raw.matchedCatalogName, products);
         const qty = Math.max(0.1, Number(raw.quantity) || 1);
-        const unitCost = Math.max(
-          0,
-          Number(raw.unitCost) || (matched ? matched.costPrice : 0)
-        );
+        const rawUnitCost = Number(raw.unitCost);
+        const rawLineTotal = Number(raw.lineTotal);
+        const computedUnitCost =
+          Number.isFinite(rawUnitCost) && rawUnitCost > 0
+            ? rawUnitCost
+            : Number.isFinite(rawLineTotal) && rawLineTotal > 0
+            ? rawLineTotal / qty
+            : matched
+            ? matched.costPrice
+            : 0;
+
         const suggestedSell = matched
           ? matched.price
-          : unitCost > 0
-          ? Number((unitCost * 1.25).toFixed(2))
+          : computedUnitCost > 0
+          ? Number((computedUnitCost * 1.25).toFixed(2))
           : 10;
+
+        const conf =
+          raw.confidence === 'high' || raw.confidence === 'medium' || raw.confidence === 'low'
+            ? raw.confidence
+            : inv.isHandwritten
+            ? 'medium'
+            : 'high';
 
         return {
           id: `scan-${Date.now()}-${idx}`,
           include: true,
           rawName: name,
           matchedProductId: matched?.id || '',
-          quantity: qty,
-          unitCost: Number(unitCost.toFixed(2)),
+          quantity: Number(qty.toFixed(2)),
+          unitCost: Number(Math.max(0, computedUnitCost).toFixed(2)),
           sellPrice: suggestedSell,
-          unitType: matched ? matched.unitType : normalizeUnitType(raw.unitType)
+          unitType: matched ? matched.unitType : normalizeUnitType(raw.unitType),
+          confidence: conf,
+          source: 'ai'
         };
       });
 
       if (extractedRows.length === 0) {
-        setScanNotice(
+        // AI connected but parsed 0 items -> fall back automatically to local OCR + manual starter row
+        await executeOfflineOcrFallback(
+          decodedImg,
           isAr
-            ? 'لم نتمكن من استخراج أسطر واضحة من الصورة — يمكنك إعادة التصوير بوضوح أو إضافة السلع يدوياً أسفله.'
-            : 'No clear line items detected — retake photo or add rows manually below.'
+            ? 'الفاتورة ما بانتش واضحة بزاف — جبدنا الأرقام محلياً وزدنا ليك سطر لتعديل الكمية يدوياً.'
+            : 'AI returned no lines — extracted local numbers and opened manual row below.'
         );
+        return;
       }
+
       setItems(extractedRows);
-    } catch (err) {
-      setScanError(
-        err instanceof Error
-          ? err.message
+      setScanNotice(
+        inv.isHandwritten
+          ? isAr
+            ? `✅ تقرات الفاتورة المكتوبة باليد (${extractedRows.length} سلع) — تأكد من الأرقام والكميات وعدّلها يدوياً قبل التأكيد.`
+            : `✅ Handwritten note scanned (${extractedRows.length} items) — please verify numbers before saving.`
+          : extractedIce
+          ? isAr
+            ? `✅ تقرات الفاتورة الرسمية (ICE: ${extractedIce}) — راجع السلع وأكد الإضافة.`
+            : `✅ Official ICE (${extractedIce}) detected — review items below.`
           : isAr
-          ? 'حدث خطأ أثناء قراءة صورة الفاتورة.'
-          : 'Error analyzing invoice photo'
+          ? `✅ تقرات ${extractedRows.length} سلع بنجاح! تقدر تعدل الكمية أو الأثمنة قبل ما تزيد للمخزون.`
+          : `✅ Extracted ${extractedRows.length} items! Adjust numbers if needed before saving.`
       );
+    } catch {
+      // CRITICAL FIX: Never leave user stuck on "تعذر الاتصال..." with an empty (0) list!
+      setIsAiFailure(true);
+      setScanError(
+        invoiceMode === 'informal_noir'
+          ? isAr
+            ? 'تعذر الاتصال بالذكاء الاصطناعي — خدامين دابا بالقراءة المحلية (بلا أنترنت)، وتقدر تكمل وضع "نوار / بوار" وتزيد الكميات يدوياً نيشان للمخزون!'
+            : 'AI offline — local OCR & Stock-Only manual entry ready below.'
+          : isAr
+          ? 'ما قدرناش نتصلو بخدمة AI دابا — شغلنا القراءة المحلية من التصويرة (بلا أنترنت) وتقدر تعاود المحاولة أو تدخل السلع يدوياً.'
+          : 'AI service failed — switched to local offline OCR & manual entry.'
+      );
+
+      // Run offline OCR fallback directly on decoded blob/dataUrl
+      try {
+        const decodedImg = await loadBlobToImage(localDataUrl || blob);
+        await executeOfflineOcrFallback(
+          decodedImg,
+          isAr
+            ? 'القراءة المحلية (بلا أنترنت) جبدات الأرقام الممكنة من التصويرة — تأكد من الأسماء والأرقام أسفله.'
+            : 'Local offline OCR scanned numbers from your photo — review and adjust below.'
+        );
+      } catch {
+        setItems((prev) => (prev.length > 0 ? prev : [buildEmptyManualRow()]));
+      }
     } finally {
       setIsScanning(false);
     }
+  };
+
+  const handleRetryAiScan = () => {
+    if (!lastCapturedBlobRef.current) return;
+    void analyzeImageBlob(lastCapturedBlobRef.current, { skipBlurCheck: true });
+  };
+
+  const handleRunOfflineOcrNow = () => {
+    if (!lastCapturedBlobRef.current) return;
+    void analyzeImageBlob(lastCapturedBlobRef.current, {
+      skipBlurCheck: true,
+      forceOfflineOnly: true
+    });
   };
 
   const handleFileSelected = (e: React.ChangeEvent<HTMLInputElement>) => {
@@ -334,11 +652,12 @@ export const PurchaseInvoiceScanModal: React.FC = () => {
 
   const startLiveCamera = async () => {
     setScanError(null);
+    setIsBlurryError(false);
     if (!navigator.mediaDevices?.getUserMedia) {
       setScanError(
         isAr
-          ? 'المتصفح لا يدعم الكاميرا المباشرة. استخدم زر "تصوير بالهاتف / رفع صورة".'
-          : 'Live camera not supported; use Photo / Upload button.'
+          ? 'المتصفح ما كيدعمش الكاميرا المباشرة — استعمل زر "تصوير بالهاتف".'
+          : 'Live camera not supported; use Phone Camera button.'
       );
       return;
     }
@@ -359,8 +678,8 @@ export const PurchaseInvoiceScanModal: React.FC = () => {
     } catch {
       setScanError(
         isAr
-          ? 'تعذر فتح الكاميرا (تحقق من الإذن)، يمكنك التصوير بزر الهاتف مباشرة.'
-          : 'Could not access camera; use native camera capture button.'
+          ? 'ما قدرناش نحلو الكاميرا (تحقق من الإذن) — استعمل زر "تصوير بالهاتف".'
+          : 'Could not open camera; use Phone Camera button.'
       );
     }
   };
@@ -384,22 +703,6 @@ export const PurchaseInvoiceScanModal: React.FC = () => {
     );
   };
 
-  const addManualLine = () => {
-    setItems((prev) => [
-      ...prev,
-      {
-        id: `man-${Date.now()}-${Math.random().toString(36).slice(2, 5)}`,
-        include: true,
-        rawName: '',
-        matchedProductId: '',
-        quantity: 1,
-        unitCost: 0,
-        sellPrice: 0,
-        unitType: 'piece'
-      }
-    ]);
-  };
-
   const updateLine = (id: string, patch: Partial<ScannedLineItem>) => {
     setItems((prev) => prev.map((it) => (it.id === id ? { ...it, ...patch } : it)));
   };
@@ -415,7 +718,7 @@ export const PurchaseInvoiceScanModal: React.FC = () => {
         return {
           ...it,
           matchedProductId: prod.id,
-          rawName: it.rawName || prod.name,
+          rawName: prod.name,
           unitCost: it.unitCost > 0 ? it.unitCost : prod.costPrice,
           sellPrice: prod.price,
           unitType: prod.unitType
@@ -429,13 +732,13 @@ export const PurchaseInvoiceScanModal: React.FC = () => {
     setScanError(null);
 
     const activeRows = items.filter(
-      (it) => it.include && it.rawName.trim() && Number(it.quantity) > 0
+      (it) => it.include && (it.rawName.trim() || it.matchedProductId) && Number(it.quantity) > 0
     );
 
     if (activeRows.length === 0) {
       setScanError(
         isAr
-          ? 'أضف أو حدد سلعة واحدة على الأقل لإضافتها إلى المخزون.'
+          ? 'زيد أو اختار سلعة واحدة على الأقل (واكتب إسمها ولا اختارها من المخزون) باش نزيدوها.'
           : 'Select or add at least one item to add to inventory.'
       );
       return;
@@ -444,8 +747,8 @@ export const PurchaseInvoiceScanModal: React.FC = () => {
     if (invoiceMode === 'official_ice' && !supplierName.trim()) {
       setScanError(
         isAr
-          ? 'للفاتورة الرسمية، المرجو إدخال اسم المورد أو الشركة.'
-          : 'Please enter the supplier name for official invoice archiving.'
+          ? 'للفاتورة الرسمية، كتب إسم المورد أو الشركة الفوق.'
+          : 'Please enter supplier name for official invoice archiving.'
       );
       return;
     }
@@ -465,8 +768,8 @@ export const PurchaseInvoiceScanModal: React.FC = () => {
           ? `فاتورة شراء رسمية #${cleanInvNum}${supplierIce.trim() ? ` (ICE: ${supplierIce.trim()})` : ''}`
           : `Official purchase invoice #${cleanInvNum}`
         : isAr
-        ? 'توريد للمخزون (نوار - بدون أرقام)'
-        : 'Quick stock intake (no archive)';
+        ? 'توريد للمخزون (بوار / نوار - بدون أرقام)'
+        : 'Stock intake (no archive)';
 
     activeRows.forEach((row, index) => {
       const qty = Math.max(0.01, Number(row.quantity) || 1);
@@ -489,7 +792,7 @@ export const PurchaseInvoiceScanModal: React.FC = () => {
           unitType: existing.unitType
         });
       } else {
-        const cleanName = row.rawName.trim();
+        const cleanName = row.rawName.trim() || `${isAr ? 'سلعة جديدة' : 'New Item'} #${index + 1}`;
         const skuCode = `SC-${Date.now().toString().slice(-5)}-${index + 1}`;
         addProduct({
           name: cleanName,
@@ -543,10 +846,10 @@ export const PurchaseInvoiceScanModal: React.FC = () => {
     const doneText =
       invoiceMode === 'official_ice'
         ? isAr
-          ? `✅ تمت زيادة المخزون (${updatedExistingCount} محدثة، ${createdNewCount} جديدة) وحفظ الفاتورة الرسمية في أرشيف ICE!`
+          ? `✅ تزادو السلع للمخزون (${updatedExistingCount} محدثة، ${createdNewCount} جديدة) وتسجلات الفاتورة في أرشيف ICE!`
           : `✅ Stock updated (${updatedExistingCount + createdNewCount} items) & archived with ICE!`
         : isAr
-        ? `✅ تمت زيادة المخزون بنجاح (${updatedExistingCount} محدثة، ${createdNewCount} جديدة) في وضع النوار دون تسجيل أي أرقام بالأرشيف.`
+        ? `✅ تزادت الكميات فـ المخزون (${updatedExistingCount} محدثة، ${createdNewCount} جديدة) فـ وضع نوار/بوار بلا تسجيل أرقام.`
         : `✅ Stock updated (${updatedExistingCount + createdNewCount} items) in Stock-Only mode (no archive).`;
 
     setCompletedMessage(doneText);
@@ -558,10 +861,12 @@ export const PurchaseInvoiceScanModal: React.FC = () => {
 
     window.setTimeout(() => {
       closeModal();
-    }, 1600);
+    }, 1500);
   };
 
   if (!isOpen) return null;
+
+  const isOnline = typeof navigator === 'undefined' ? true : navigator.onLine;
 
   return (
     <div
@@ -576,15 +881,23 @@ export const PurchaseInvoiceScanModal: React.FC = () => {
               <Camera className="w-5 h-5" />
             </div>
             <div className="min-w-0">
-              <h2 className="text-base sm:text-lg font-black text-slate-900 dark:text-white truncate">
-                {isAr
-                  ? 'تصوير وقراءة فاتورة الشراء (AI)'
-                  : 'Scan Purchase Invoice to Inventory'}
-              </h2>
+              <div className="flex flex-wrap items-center gap-2">
+                <h2 className="text-base sm:text-lg font-black text-slate-900 dark:text-white truncate">
+                  {isAr
+                    ? 'تصوير وقراءة الفاتورة أو البون'
+                    : 'Scan Purchase Invoice to Inventory'}
+                </h2>
+                {!isOnline && (
+                  <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-md bg-amber-100 dark:bg-amber-950/70 text-amber-800 dark:text-amber-300 text-[10px] font-black">
+                    <WifiOff className="w-3 h-3" />
+                    <span>{isAr ? 'بلا أنترنت (قراءة محلية خدامة)' : 'Offline OCR Active'}</span>
+                  </span>
+                )}
+              </div>
               <p className="text-xs text-slate-500 dark:text-slate-400 truncate">
                 {isAr
-                  ? 'صور الفاتورة بالهاتف ليتم قراءة السلع وزيادتها تلقائياً في المخزون'
-                  : 'Snap invoice photo to extract items and add quantities directly to stock'}
+                  ? 'صور الورقة (مطبوعة ولا مكتوبة باليد) وصحّح الأرقام وزيد للمخزون حتى بلا أنترنت'
+                  : 'Snap printed or handwritten invoice — works online & offline'}
               </p>
             </div>
           </div>
@@ -592,18 +905,18 @@ export const PurchaseInvoiceScanModal: React.FC = () => {
             type="button"
             onClick={closeModal}
             className="p-2 rounded-xl text-slate-400 hover:text-slate-700 dark:hover:text-white hover:bg-slate-100 dark:hover:bg-slate-800"
-            title={isAr ? 'إغلاق' : 'Close'}
+            title={isAr ? 'سد' : 'Close'}
           >
             <X className="w-5 h-5" />
           </button>
         </div>
 
         {/* Scrollable Body */}
-        <form onSubmit={handleConfirmRestock} className="flex-1 overflow-y-auto p-4 sm:p-5 space-y-5">
-          {/* 1. INVOICE TYPE SELECTOR: Official (ICE -> Archive) vs Noir (No numbers -> Stock Only) */}
+        <form onSubmit={handleConfirmRestock} className="flex-1 overflow-y-auto p-4 sm:p-5 space-y-4">
+          {/* 1. INVOICE TYPE SELECTOR */}
           <div className="space-y-2">
             <label className="block text-xs font-black text-slate-700 dark:text-slate-300">
-              {isAr ? '1. اختر نوع الفاتورة:' : '1. Choose Invoice Handling Mode:'}
+              {isAr ? '1. اختار كيفاش بغيتي تدخل السلعة:' : '1. Choose Invoice Handling Mode:'}
             </label>
             <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
               <button
@@ -630,7 +943,7 @@ export const PurchaseInvoiceScanModal: React.FC = () => {
                   </div>
                   <div className="text-[11px] text-slate-600 dark:text-slate-300 mt-0.5">
                     {isAr
-                      ? 'تمشي للأرشيف الرسمي للموردين + كتزيد السلع للمخزون'
+                      ? 'كتسجل في أرشيف الموردين + كتزيد السلع للمخزون'
                       : 'Archived in official supplier ledger + adds items to stock'}
                   </div>
                 </div>
@@ -656,12 +969,12 @@ export const PurchaseInvoiceScanModal: React.FC = () => {
                 </div>
                 <div>
                   <div className="text-sm font-black text-slate-900 dark:text-white">
-                    {isAr ? 'نوار (بدون أرقام)' : 'Informal / Noir (No Numbers)'}
+                    {isAr ? 'نوار / بوار (بدون أرقام)' : 'Stock-Only / Noir (No Numbers)'}
                   </div>
                   <div className="text-[11px] text-slate-600 dark:text-slate-300 mt-0.5">
                     {isAr
-                      ? 'تدخل غير للمخزون فقط بلا ICE وبلا تسجيل في الأرشيف'
-                      : 'Enters inventory stock only with zero tax or archive entry'}
+                      ? 'غير الكميات نيشان للمخزون بلا ICE وبلا أرشيف (خدامة حتى بلا AI)'
+                      : 'Inventory quantities only — works cleanly even without AI or prices'}
                   </div>
                 </div>
               </button>
@@ -675,16 +988,17 @@ export const PurchaseInvoiceScanModal: React.FC = () => {
                 <Sparkles className="w-4 h-4 text-amber-500" />
                 <span>
                   {isAr
-                    ? '2. صور الفاتورة بالهاتف أو ارفع الصورة لقراءتها تلقائياً:'
-                    : '2. Snap or Upload Invoice Image for AI Extraction:'}
+                    ? '2. صور الفاتورة ولا اختار تصويرة (مطبوعة أو مكتوبة باليد):'
+                    : '2. Snap or Upload Invoice Image:'}
                 </span>
               </span>
 
               <div className="flex flex-wrap items-center gap-2">
                 <label className="cursor-pointer px-4 py-2 rounded-xl bg-amber-400 hover:bg-amber-500 text-slate-950 text-xs font-black flex items-center gap-2 transition-colors whitespace-nowrap">
                   <Camera className="w-4 h-4" />
-                  <span>{isAr ? 'تصوير بالهاتف' : 'Phone Camera'}</span>
+                  <span>{isAr ? 'تصوير بالتيليفون' : 'Phone Camera'}</span>
                   <input
+                    ref={phoneCameraInputRef}
                     type="file"
                     accept="image/*"
                     capture="environment"
@@ -695,7 +1009,7 @@ export const PurchaseInvoiceScanModal: React.FC = () => {
 
                 <label className="cursor-pointer px-3.5 py-2 rounded-xl bg-white dark:bg-slate-900 border border-slate-300 dark:border-slate-700 hover:bg-slate-100 dark:hover:bg-slate-800 text-slate-800 dark:text-slate-200 text-xs font-bold flex items-center gap-1.5 transition-colors whitespace-nowrap">
                   <Upload className="w-3.5 h-3.5" />
-                  <span>{isAr ? 'اختيار صورة' : 'Upload File'}</span>
+                  <span>{isAr ? 'اختار تصويرة' : 'Upload Photo'}</span>
                   <input
                     type="file"
                     accept="image/*"
@@ -713,7 +1027,7 @@ export const PurchaseInvoiceScanModal: React.FC = () => {
                   <span>
                     {isLiveCameraOpen
                       ? isAr
-                        ? 'إيقاف الكاميرا'
+                        ? 'حبّس الكاميرا'
                         : 'Stop Cam'
                       : isAr
                       ? 'كاميرا مباشرة'
@@ -733,54 +1047,193 @@ export const PurchaseInvoiceScanModal: React.FC = () => {
                     className="px-5 py-2 rounded-xl bg-amber-400 hover:bg-amber-500 text-slate-950 text-xs font-black flex items-center gap-2"
                   >
                     <Camera className="w-4 h-4" />
-                    <span>{isAr ? 'التقاط وقراءة الفاتورة الآن' : 'Capture & Read Invoice'}</span>
+                    <span>{isAr ? 'صور وقرا الفاتورة دابا' : 'Capture & Read Invoice'}</span>
                   </button>
                 </div>
               </div>
             )}
 
             {isScanning && (
-              <div className="py-6 flex flex-col items-center justify-center gap-2 text-xs font-bold text-amber-700 dark:text-amber-300">
+              <div className="py-5 flex flex-col items-center justify-center gap-2 text-xs font-bold text-amber-700 dark:text-amber-300">
                 <Loader2 className="w-6 h-6 animate-spin" />
                 <span>
                   {isAr
-                    ? 'جاري قراءة الفاتورة بالذكاء الاصطناعي واستخراج السلع والكميات...'
-                    : 'Reading invoice photo and extracting products & quantities...'}
+                    ? 'جاري قراءة الفاتورة والأرقام (أونلاين + محلي)...'
+                    : 'Reading invoice photo and extracting items & numbers...'}
                 </span>
               </div>
             )}
 
             {previewDataUrl && !isLiveCameraOpen && (
-              <div className="flex items-center gap-3 pt-1">
-                <img
-                  src={previewDataUrl}
-                  alt={isAr ? 'صورة الفاتورة' : 'Invoice preview'}
-                  className="w-16 h-16 rounded-xl object-cover border border-slate-300 dark:border-slate-700 shrink-0"
-                />
-                <div className="text-xs text-slate-600 dark:text-slate-300">
-                  <div className="font-bold text-slate-900 dark:text-white">
-                    {isAr ? 'تم التقاط صورة الفاتورة' : 'Invoice photo loaded'}
-                  </div>
-                  <div className="text-[11px] text-slate-500">
-                    {isAr
-                      ? 'راجع تفاصيل السلع والكميات أسفله قبل تأكيد إضافتها للمخزون.'
-                      : 'Review extracted rows below before confirming restock.'}
+              <div className="flex flex-wrap items-center justify-between gap-3 pt-1">
+                <div className="flex items-center gap-3">
+                  <button
+                    type="button"
+                    onClick={() => setShowZoomPhoto((v) => !v)}
+                    className="relative group shrink-0"
+                    title={isAr ? 'تكبير التصويرة لمراجعة الأرقام' : 'Zoom photo'}
+                  >
+                    <img
+                      src={previewDataUrl}
+                      alt={isAr ? 'تصويرة الفاتورة' : 'Invoice preview'}
+                      className="w-16 h-16 rounded-xl object-cover border border-slate-300 dark:border-slate-700"
+                    />
+                    <span className="absolute bottom-1 end-1 w-5 h-5 rounded-md bg-slate-900/80 text-white flex items-center justify-center">
+                      <ZoomIn className="w-3 h-3" />
+                    </span>
+                  </button>
+                  <div className="text-xs text-slate-600 dark:text-slate-300">
+                    <div className="font-bold text-slate-900 dark:text-white flex items-center gap-1.5">
+                      <span>{isAr ? 'التصويرة واجدة' : 'Invoice photo loaded'}</span>
+                      {usedOfflineFallback && (
+                        <span className="px-1.5 py-0.5 rounded bg-sky-100 dark:bg-sky-950 text-sky-700 dark:text-sky-300 text-[10px] font-black">
+                          {isAr ? 'OCR محلي' : 'Local OCR'}
+                        </span>
+                      )}
+                    </div>
+                    <div className="text-[11px] text-slate-500">
+                      {isAr
+                        ? 'كليكي على التصويرة باش تكبّرها وتراجع الأرقام المكتوبة باليد.'
+                        : 'Click thumbnail to zoom & verify handwritten numbers.'}
+                    </div>
                   </div>
                 </div>
+
+                {lastCapturedBlobRef.current && !isScanning && (
+                  <div className="flex flex-wrap items-center gap-1.5">
+                    <button
+                      type="button"
+                      onClick={handleRetryAiScan}
+                      className="px-2.5 py-1.5 rounded-xl bg-white dark:bg-slate-900 border border-slate-300 dark:border-slate-700 hover:bg-slate-100 text-[11px] font-bold text-slate-800 dark:text-slate-200 flex items-center gap-1"
+                    >
+                      <RotateCw className="w-3 h-3 text-amber-600" />
+                      <span>{isAr ? 'حاول مرة أخرى' : 'Retry'}</span>
+                    </button>
+                    <button
+                      type="button"
+                      onClick={handleRunOfflineOcrNow}
+                      className="px-2.5 py-1.5 rounded-xl bg-white dark:bg-slate-900 border border-slate-300 dark:border-slate-700 hover:bg-slate-100 text-[11px] font-bold text-sky-700 dark:text-sky-300 flex items-center gap-1"
+                    >
+                      <WifiOff className="w-3 h-3" />
+                      <span>{isAr ? 'قرا محلياً (OCR)' : 'Local OCR'}</span>
+                    </button>
+                  </div>
+                )}
+              </div>
+            )}
+
+            {showZoomPhoto && previewDataUrl && (
+              <div className="rounded-2xl border border-slate-300 dark:border-slate-700 bg-slate-950 p-2 relative">
+                <button
+                  type="button"
+                  onClick={() => setShowZoomPhoto(false)}
+                  className="absolute top-3 end-3 px-2.5 py-1 rounded-lg bg-slate-900/90 text-white text-[11px] font-bold flex items-center gap-1"
+                >
+                  <X className="w-3.5 h-3.5" />
+                  <span>{isAr ? 'إغلاق التكبير' : 'Close Zoom'}</span>
+                </button>
+                <img
+                  src={previewDataUrl}
+                  alt="Zoomed invoice"
+                  className="w-full max-h-80 object-contain rounded-xl mx-auto"
+                />
               </div>
             )}
           </div>
 
-          {scanNotice && (
-            <div className="px-4 py-2.5 rounded-2xl bg-amber-50 dark:bg-amber-950/40 border border-amber-300 dark:border-amber-800 text-amber-900 dark:text-amber-200 text-xs font-bold">
-              {scanNotice}
+          {/* BLURRY PHOTO OR AI FAILURE BANNER WITH ACTION BUTTONS */}
+          {scanError && (
+            <div
+              className={`p-4 rounded-2xl border space-y-2.5 ${
+                isBlurryError
+                  ? 'bg-amber-50 dark:bg-amber-950/50 border-amber-400 dark:border-amber-700 text-amber-950 dark:text-amber-200'
+                  : 'bg-rose-50 dark:bg-rose-950/45 border-rose-300 dark:border-rose-800 text-rose-900 dark:text-rose-200'
+              }`}
+            >
+              <div className="flex items-start gap-2.5 text-xs font-black">
+                <AlertTriangle className="w-4 h-4 shrink-0 mt-0.5" />
+                <span>{scanError}</span>
+              </div>
+
+              <div className="flex flex-wrap items-center gap-2 pt-0.5">
+                {isBlurryError ? (
+                  <>
+                    <button
+                      type="button"
+                      onClick={() => phoneCameraInputRef.current?.click()}
+                      className="px-3.5 py-2 rounded-xl bg-amber-400 hover:bg-amber-500 text-slate-950 text-xs font-black flex items-center gap-1.5"
+                    >
+                      <Camera className="w-3.5 h-3.5" />
+                      <span>{isAr ? 'عاود صور' : 'Retake Photo'}</span>
+                    </button>
+                    {lastCapturedBlobRef.current && (
+                      <button
+                        type="button"
+                        onClick={handleRetryAiScan}
+                        className="px-3 py-2 rounded-xl bg-white dark:bg-slate-800 border border-amber-300 dark:border-amber-700 text-xs font-bold text-amber-900 dark:text-amber-200 flex items-center gap-1.5"
+                      >
+                        <RotateCw className="w-3.5 h-3.5" />
+                        <span>{isAr ? 'حاول تقراها وخا هكاك' : 'Scan Anyway'}</span>
+                      </button>
+                    )}
+                    <button
+                      type="button"
+                      onClick={addManualLineAndFocus}
+                      className="px-3.5 py-2 rounded-xl bg-slate-900 dark:bg-slate-700 text-white text-xs font-black flex items-center gap-1.5"
+                    >
+                      <Edit3 className="w-3.5 h-3.5" />
+                      <span>{isAr ? 'دخل يدوياً' : 'Enter Manually'}</span>
+                    </button>
+                  </>
+                ) : (
+                  <>
+                    {lastCapturedBlobRef.current && (
+                      <button
+                        type="button"
+                        onClick={handleRetryAiScan}
+                        className="px-3.5 py-2 rounded-xl bg-amber-400 hover:bg-amber-500 text-slate-950 text-xs font-black flex items-center gap-1.5"
+                      >
+                        <RotateCw className="w-3.5 h-3.5" />
+                        <span>{isAr ? 'حاول مرة أخرى' : 'Try Again'}</span>
+                      </button>
+                    )}
+                    <button
+                      type="button"
+                      onClick={addManualLineAndFocus}
+                      className="px-3.5 py-2 rounded-xl bg-slate-900 dark:bg-slate-700 hover:bg-slate-800 text-white text-xs font-black flex items-center gap-1.5"
+                    >
+                      <Edit3 className="w-3.5 h-3.5" />
+                      <span>{isAr ? 'دخل يدوياً' : 'Enter Manually'}</span>
+                    </button>
+                  </>
+                )}
+              </div>
             </div>
           )}
 
-          {scanError && (
-            <div className="px-4 py-2.5 rounded-2xl bg-rose-50 dark:bg-rose-950/50 border border-rose-300 dark:border-rose-800 text-rose-800 dark:text-rose-200 text-xs font-bold flex items-center gap-2">
-              <AlertTriangle className="w-4 h-4 shrink-0" />
-              <span>{scanError}</span>
+          {scanNotice && (
+            <div className="px-4 py-2.5 rounded-2xl bg-amber-50 dark:bg-amber-950/40 border border-amber-300 dark:border-amber-800 text-amber-900 dark:text-amber-200 text-xs font-bold flex items-start gap-2">
+              <Sparkles className="w-4 h-4 text-amber-600 shrink-0 mt-0.5" />
+              <span>{scanNotice}</span>
+            </div>
+          )}
+
+          {(isHandwrittenDoc || usedOfflineFallback) && items.length > 0 && (
+            <div className="px-4 py-2.5 rounded-2xl bg-sky-50 dark:bg-sky-950/40 border border-sky-200 dark:border-sky-800 text-sky-900 dark:text-sky-200 text-xs font-bold flex flex-wrap items-center justify-between gap-2">
+              <span>
+                {isAr
+                  ? '✍️ مراجعة الأرقام: تقدر تعدل الكمية (- / +) والأثمنة ديال كل سطر قبل ما تزيدهم للمخزون.'
+                  : '✍️ Number Check: Adjust quantities (- / +) & prices before confirming restock.'}
+              </span>
+              {isAiFailure && lastCapturedBlobRef.current && (
+                <button
+                  type="button"
+                  onClick={handleRetryAiScan}
+                  className="text-[11px] font-black underline text-sky-700 dark:text-sky-300"
+                >
+                  {isAr ? 'حاول مرة أخرى بالذكاء الاصطناعي' : 'Retry AI'}
+                </button>
+              )}
             </div>
           )}
 
@@ -791,7 +1244,7 @@ export const PurchaseInvoiceScanModal: React.FC = () => {
             </div>
           )}
 
-          {/* 3. OFFICIAL ICE METADATA (ONLY SHOWN WHEN official_ice MODE SELECTED) */}
+          {/* 3. OFFICIAL ICE METADATA VS NOIR STOCK-ONLY BANNER */}
           {invoiceMode === 'official_ice' ? (
             <div className="p-4 rounded-2xl bg-emerald-50/50 dark:bg-emerald-950/20 border border-emerald-200 dark:border-emerald-800/70 space-y-3">
               <div className="text-xs font-black text-emerald-900 dark:text-emerald-200 flex items-center gap-1.5">
@@ -806,7 +1259,7 @@ export const PurchaseInvoiceScanModal: React.FC = () => {
               <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-5 gap-3 text-xs">
                 <div className="lg:col-span-2">
                   <label className="block font-bold text-slate-700 dark:text-slate-300 mb-1">
-                    {isAr ? 'اسم المورد / الشركة *' : 'Supplier Name *'}
+                    {isAr ? 'إسم المورد / الشركة *' : 'Supplier Name *'}
                   </label>
                   <input
                     type="text"
@@ -862,7 +1315,7 @@ export const PurchaseInvoiceScanModal: React.FC = () => {
               <div className="flex flex-wrap items-center justify-between gap-3 pt-1 text-xs">
                 <div className="flex items-center gap-2">
                   <label className="font-bold text-slate-700 dark:text-slate-300">
-                    {isAr ? `المبلغ المؤدى (${currencySymbol}):` : `Paid (${currencySymbol}):`}
+                    {isAr ? `الخلاص المؤدى (${currencySymbol}):` : `Paid (${currencySymbol}):`}
                   </label>
                   <input
                     type="number"
@@ -874,7 +1327,7 @@ export const PurchaseInvoiceScanModal: React.FC = () => {
                     className="w-28 px-3 py-1.5 rounded-xl bg-white dark:bg-slate-900 border border-slate-300 dark:border-slate-700 font-mono font-bold text-slate-900 dark:text-white"
                   />
                   <span className="text-[11px] text-slate-500">
-                    {isAr ? '(اتركه فارغاً إذا تم الأداء كلياً)' : '(Blank = fully paid)'}
+                    {isAr ? '(خليه خاوي إلا خلصتي كلشي)' : '(Blank = fully paid)'}
                   </span>
                 </div>
 
@@ -889,30 +1342,65 @@ export const PurchaseInvoiceScanModal: React.FC = () => {
               <EyeOff className="w-4 h-4 shrink-0" />
               <span>
                 {isAr
-                  ? 'وضع النوار (بدون أرقام): لن يتم تسجيل أي رقم فاتورة أو ICE أو أرشيف ضريبي — ستتم فقط زيادة كميات السلع في المخزون.'
-                  : 'Stock-Only Mode: Zero ICE, zero invoice numbers, and no official archive record will be created.'}
+                  ? 'وضع نوار / بوار (بدون أرقام): دخّل غير الكميات نيشان للمخزون بلا ICE وبلا أرشيف، وحتى بلا أنترنت!'
+                  : 'Stock-Only Mode: Enter quantities straight to stock without ICE or archive.'}
               </span>
             </div>
           )}
 
+          {/* QUICK CATALOG TAP BAR — Super useful in بوار/نوار mode & offline fallback */}
+          <div className="p-3.5 rounded-2xl bg-slate-50 dark:bg-slate-800/40 border border-slate-200 dark:border-slate-800 space-y-2.5">
+            <div className="flex flex-wrap items-center justify-between gap-2">
+              <span className="text-[11px] font-black text-slate-700 dark:text-slate-200">
+                {isAr
+                  ? '⚡ إضافة سريعة من سلع الحانوت (كليكي على السلعة باش تزيد الكمية):'
+                  : '⚡ Quick Catalog Tap (Click product to add/increment):'}
+              </span>
+              <div className="relative w-full sm:w-56">
+                <Search className="w-3.5 h-3.5 text-slate-400 absolute top-1/2 -translate-y-1/2 start-2.5 pointer-events-none" />
+                <input
+                  type="text"
+                  value={quickCatalogQuery}
+                  onChange={(e) => setQuickCatalogQuery(e.target.value)}
+                  placeholder={isAr ? 'قلّب على سلعة...' : 'Filter products...'}
+                  className="w-full ps-8 pe-2.5 py-1.5 rounded-xl bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-700 text-[11px] font-bold text-slate-800 dark:text-slate-100"
+                />
+              </div>
+            </div>
+            <div className="flex flex-wrap gap-1.5 max-h-24 overflow-y-auto">
+              {filteredQuickProducts.map((p) => (
+                <button
+                  key={p.id}
+                  type="button"
+                  onClick={() => quickAddCatalogProduct(p)}
+                  className="px-2.5 py-1 rounded-xl bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-700 hover:border-amber-400 text-[11px] font-bold text-slate-800 dark:text-slate-200 flex items-center gap-1.5 transition-colors"
+                >
+                  <Plus className="w-3 h-3 text-emerald-600" />
+                  <span>{p.name}</span>
+                  <span className="text-[10px] font-mono text-slate-400">({p.stock})</span>
+                </button>
+              ))}
+            </div>
+          </div>
+
           {/* 4. EXTRACTED / EDITABLE LINE ITEMS TABLE */}
-          <div className="space-y-2.5">
-            <div className="flex items-center justify-between gap-2">
+          <div ref={itemsTableRef} className="space-y-2.5">
+            <div className="flex flex-wrap items-center justify-between gap-2">
               <h3 className="text-xs sm:text-sm font-black text-slate-900 dark:text-white flex items-center gap-1.5">
                 <PackagePlus className="w-4 h-4 text-emerald-600" />
                 <span>
                   {isAr
-                    ? `السلع المراد زيادتها للمخزون (${activeItemsCount})`
+                    ? `السلع اللي غادي تزاد للمخزون (${activeItemsCount})`
                     : `Items to Add to Inventory (${activeItemsCount})`}
                 </span>
               </h3>
               <button
                 type="button"
-                onClick={addManualLine}
-                className="px-3 py-1.5 rounded-xl bg-slate-100 dark:bg-slate-800 hover:bg-slate-200 dark:hover:bg-slate-700 text-xs font-bold text-slate-800 dark:text-slate-200 flex items-center gap-1"
+                onClick={addManualLineAndFocus}
+                className="px-3.5 py-1.5 rounded-xl bg-slate-900 dark:bg-slate-700 hover:bg-slate-800 text-xs font-black text-white flex items-center gap-1.5"
               >
                 <Plus className="w-3.5 h-3.5" />
-                <span>{isAr ? 'إضافة سطر يدوياً' : 'Add Row'}</span>
+                <span>{isAr ? 'دخل يدوياً (+ سطر جديد)' : '+ Add Row Manually'}</span>
               </button>
             </div>
 
@@ -921,14 +1409,30 @@ export const PurchaseInvoiceScanModal: React.FC = () => {
                 <thead className="bg-slate-50 dark:bg-slate-800/70 text-slate-500 dark:text-slate-400 border-b border-slate-200 dark:border-slate-800">
                   <tr>
                     <th className="py-2 px-2.5 text-center">#</th>
-                    <th className="py-2 px-2.5 text-start">{isAr ? 'اسم السلعة' : 'Item Name'}</th>
+                    <th className="py-2 px-2.5 text-start">{isAr ? 'إسم السلعة' : 'Item Name'}</th>
                     <th className="py-2 px-2.5 text-start">
-                      {isAr ? 'الربط مع المخزون' : 'Catalog Link'}
+                      {isAr ? 'الربط مع الحانوت' : 'Catalog Link'}
                     </th>
-                    <th className="py-2 px-2.5 text-end">{isAr ? 'الكمية (+)' : 'Qty (+)'}</th>
-                    <th className="py-2 px-2.5 text-end">{isAr ? 'الشراء' : 'Cost'}</th>
-                    <th className="py-2 px-2.5 text-end">{isAr ? 'البيع' : 'Sell'}</th>
-                    <th className="py-2 px-2.5 text-center">{isAr ? 'حذف' : 'Del'}</th>
+                    <th className="py-2 px-2.5 text-center">{isAr ? 'الكمية (+)' : 'Qty (+)'}</th>
+                    <th className="py-2 px-2.5 text-end">
+                      {invoiceMode === 'informal_noir'
+                        ? isAr
+                          ? 'ثمن الشراء (اختياري)'
+                          : 'Cost (Opt.)'
+                        : isAr
+                        ? 'ثمن الشراء'
+                        : 'Cost'}
+                    </th>
+                    <th className="py-2 px-2.5 text-end">
+                      {invoiceMode === 'informal_noir'
+                        ? isAr
+                          ? 'ثمن البيع (اختياري)'
+                          : 'Sell (Opt.)'
+                        : isAr
+                        ? 'ثمن البيع'
+                        : 'Sell'}
+                    </th>
+                    <th className="py-2 px-2.5 text-center">{isAr ? 'حيد' : 'Del'}</th>
                   </tr>
                 </thead>
                 <tbody className="divide-y divide-slate-100 dark:divide-slate-800">
@@ -936,108 +1440,161 @@ export const PurchaseInvoiceScanModal: React.FC = () => {
                     <tr>
                       <td
                         colSpan={7}
-                        className="py-8 text-center text-xs text-slate-500 dark:text-slate-400"
+                        className="py-7 px-4 text-center text-xs text-slate-500 dark:text-slate-400 space-y-2"
                       >
-                        {isAr
-                          ? 'صور الفاتورة أعلاه لتقرأها الكاميرا تلقائياً، أو أضف السلع يدوياً بالزر أعلاه.'
-                          : 'Snap or upload an invoice above, or click Add Row to enter manually.'}
+                        <div>
+                          {isAr
+                            ? 'صور الفاتورة الفوق، ولا كليكي على "دخل يدوياً" ولا اختار من سلع الحانوت باش تزيد الكميات.'
+                            : 'Snap an invoice above, click Add Row Manually, or tap quick catalog items.'}
+                        </div>
+                        <button
+                          type="button"
+                          onClick={addManualLineAndFocus}
+                          className="inline-flex items-center gap-1.5 px-4 py-2 rounded-xl bg-amber-400 hover:bg-amber-500 text-slate-950 font-black text-xs"
+                        >
+                          <Edit3 className="w-3.5 h-3.5" />
+                          <span>{isAr ? 'دخل يدوياً دابا' : 'Enter Manually Now'}</span>
+                        </button>
                       </td>
                     </tr>
                   ) : (
-                    items.map((it) => (
-                      <tr
-                        key={it.id}
-                        className={it.include ? '' : 'opacity-45 bg-slate-50 dark:bg-slate-800/30'}
-                      >
-                        <td className="py-2 px-2.5 text-center">
-                          <input
-                            type="checkbox"
-                            checked={it.include}
-                            onChange={(e) => updateLine(it.id, { include: e.target.checked })}
-                            className="w-4 h-4 accent-emerald-600"
-                          />
-                        </td>
-                        <td className="py-2 px-2.5 min-w-[140px]">
-                          <input
-                            type="text"
-                            value={it.rawName}
-                            onChange={(e) => updateLine(it.id, { rawName: e.target.value })}
-                            placeholder={isAr ? 'اسم السلعة...' : 'Product name'}
-                            className="w-full px-2.5 py-1 rounded-lg bg-slate-50 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 font-bold text-slate-900 dark:text-white"
-                          />
-                        </td>
-                        <td className="py-2 px-2.5 min-w-[160px]">
-                          <select
-                            value={it.matchedProductId}
-                            onChange={(e) => handleSelectCatalogMatch(it.id, e.target.value)}
-                            className="w-full px-2 py-1 rounded-lg bg-slate-50 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 text-[11px] font-semibold text-slate-800 dark:text-slate-200"
-                          >
-                            <option value="">
-                              {isAr ? '+ إنشاء كسلعة جديدة بالمخزون' : '+ Create new item'}
-                            </option>
-                            {products.slice(0, 250).map((p) => (
-                              <option key={p.id} value={p.id}>
-                                {p.name} ({isAr ? `الحالي: ${p.stock}` : `cur: ${p.stock}`})
+                    items.map((it, idx) => {
+                      const needsCheck = it.confidence === 'low' || it.source === 'offline_ocr';
+                      return (
+                        <tr
+                          key={it.id}
+                          className={`${
+                            !it.include
+                              ? 'opacity-45 bg-slate-50 dark:bg-slate-800/30'
+                              : needsCheck
+                              ? 'bg-amber-50/40 dark:bg-amber-950/15'
+                              : ''
+                          }`}
+                        >
+                          <td className="py-2 px-2.5 text-center">
+                            <input
+                              type="checkbox"
+                              checked={it.include}
+                              onChange={(e) => updateLine(it.id, { include: e.target.checked })}
+                              className="w-4 h-4 accent-emerald-600"
+                            />
+                          </td>
+                          <td className="py-2 px-2.5 min-w-[165px] space-y-1">
+                            <input
+                              ref={idx === 0 ? firstRowInputRef : undefined}
+                              type="text"
+                              value={it.rawName}
+                              onChange={(e) => updateLine(it.id, { rawName: e.target.value })}
+                              placeholder={isAr ? 'كتب إسم السلعة...' : 'Product name'}
+                              className="w-full px-2.5 py-1.5 rounded-lg bg-slate-50 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 font-bold text-slate-900 dark:text-white"
+                            />
+                            {it.linePreviewDataUrl && (
+                              <img
+                                src={it.linePreviewDataUrl}
+                                alt="OCR line strip"
+                                className="h-6 max-w-[180px] object-contain rounded border border-slate-200 dark:border-slate-700 bg-white"
+                              />
+                            )}
+                          </td>
+                          <td className="py-2 px-2.5 min-w-[165px]">
+                            <select
+                              value={it.matchedProductId}
+                              onChange={(e) => handleSelectCatalogMatch(it.id, e.target.value)}
+                              className="w-full px-2 py-1.5 rounded-lg bg-slate-50 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 text-[11px] font-semibold text-slate-800 dark:text-slate-200"
+                            >
+                              <option value="">
+                                {isAr ? '+ زيدها كسلعة جديدة' : '+ Create new item'}
                               </option>
-                            ))}
-                          </select>
-                        </td>
-                        <td className="py-2 px-2.5 text-end">
-                          <input
-                            type="number"
-                            step="any"
-                            min="0.1"
-                            value={it.quantity}
-                            onChange={(e) =>
-                              updateLine(it.id, {
-                                quantity: Math.max(0.1, Number(e.target.value) || 0)
-                              })
-                            }
-                            className="w-16 px-2 py-1 rounded-lg bg-slate-50 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 text-end font-mono tabular-nums font-bold text-emerald-700 dark:text-emerald-400"
-                          />
-                        </td>
-                        <td className="py-2 px-2.5 text-end">
-                          <input
-                            type="number"
-                            step="0.1"
-                            min="0"
-                            value={it.unitCost}
-                            onChange={(e) =>
-                              updateLine(it.id, {
-                                unitCost: Math.max(0, Number(e.target.value) || 0)
-                              })
-                            }
-                            className="w-16 px-2 py-1 rounded-lg bg-slate-50 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 text-end font-mono tabular-nums"
-                          />
-                        </td>
-                        <td className="py-2 px-2.5 text-end">
-                          <input
-                            type="number"
-                            step="0.1"
-                            min="0"
-                            value={it.sellPrice}
-                            onChange={(e) =>
-                              updateLine(it.id, {
-                                sellPrice: Math.max(0, Number(e.target.value) || 0)
-                              })
-                            }
-                            className="w-16 px-2 py-1 rounded-lg bg-slate-50 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 text-end font-mono tabular-nums"
-                          />
-                        </td>
-                        <td className="py-2 px-2.5 text-center">
-                          <button
-                            type="button"
-                            onClick={() =>
-                              setItems((prev) => prev.filter((row) => row.id !== it.id))
-                            }
-                            className="p-1 text-slate-400 hover:text-rose-600"
-                            title={isAr ? 'حذف' : 'Remove'}
-                          >
-                            <Trash2 className="w-3.5 h-3.5" />
-                          </button>
-                        </td>
-                      </tr>
-                    ))
+                              {products.slice(0, 250).map((p) => (
+                                <option key={p.id} value={p.id}>
+                                  {p.name} ({isAr ? `كاين: ${p.stock}` : `cur: ${p.stock}`})
+                                </option>
+                              ))}
+                            </select>
+                          </td>
+                          <td className="py-2 px-2.5">
+                            <div className="flex items-center justify-center gap-1">
+                              <button
+                                type="button"
+                                onClick={() =>
+                                  updateLine(it.id, {
+                                    quantity: Math.max(0.5, Number((it.quantity - 1).toFixed(2)))
+                                  })
+                                }
+                                className="w-6 h-7 rounded-lg bg-slate-100 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 flex items-center justify-center text-slate-600 dark:text-slate-300 hover:bg-slate-200"
+                                title="-1"
+                              >
+                                <Minus className="w-3 h-3" />
+                              </button>
+                              <input
+                                type="number"
+                                step="any"
+                                min="0.1"
+                                value={it.quantity}
+                                onChange={(e) =>
+                                  updateLine(it.id, {
+                                    quantity: Math.max(0.1, Number(e.target.value) || 0)
+                                  })
+                                }
+                                className="w-16 px-1.5 py-1 rounded-lg bg-slate-50 dark:bg-slate-800 border border-emerald-300 dark:border-emerald-700 text-center font-mono tabular-nums font-black text-emerald-700 dark:text-emerald-400"
+                              />
+                              <button
+                                type="button"
+                                onClick={() =>
+                                  updateLine(it.id, {
+                                    quantity: Number((it.quantity + 1).toFixed(2))
+                                  })
+                                }
+                                className="w-6 h-7 rounded-lg bg-slate-100 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 flex items-center justify-center text-slate-600 dark:text-slate-300 hover:bg-slate-200"
+                                title="+1"
+                              >
+                                <Plus className="w-3 h-3" />
+                              </button>
+                            </div>
+                          </td>
+                          <td className="py-2 px-2.5 text-end">
+                            <input
+                              type="number"
+                              step="0.1"
+                              min="0"
+                              value={it.unitCost}
+                              onChange={(e) =>
+                                updateLine(it.id, {
+                                  unitCost: Math.max(0, Number(e.target.value) || 0)
+                                })
+                              }
+                              className="w-18 px-2 py-1 rounded-lg bg-slate-50 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 text-end font-mono tabular-nums font-bold"
+                            />
+                          </td>
+                          <td className="py-2 px-2.5 text-end">
+                            <input
+                              type="number"
+                              step="0.1"
+                              min="0"
+                              value={it.sellPrice}
+                              onChange={(e) =>
+                                updateLine(it.id, {
+                                  sellPrice: Math.max(0, Number(e.target.value) || 0)
+                                })
+                              }
+                              className="w-18 px-2 py-1 rounded-lg bg-slate-50 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 text-end font-mono tabular-nums"
+                            />
+                          </td>
+                          <td className="py-2 px-2.5 text-center">
+                            <button
+                              type="button"
+                              onClick={() =>
+                                setItems((prev) => prev.filter((row) => row.id !== it.id))
+                              }
+                              className="p-1 text-slate-400 hover:text-rose-600"
+                              title={isAr ? 'حذف' : 'Remove'}
+                            >
+                              <Trash2 className="w-3.5 h-3.5" />
+                            </button>
+                          </td>
+                        </tr>
+                      );
+                    })
                   )}
                 </tbody>
               </table>
@@ -1067,10 +1624,10 @@ export const PurchaseInvoiceScanModal: React.FC = () => {
               <span>
                 {invoiceMode === 'official_ice'
                   ? isAr
-                    ? `تأكيد: زيادة المخزون + أرشيف ICE (${activeItemsCount})`
+                    ? `تأكيد: زيد للمخزون + أرشيف ICE (${activeItemsCount})`
                     : `Save Official ICE Archive & Stock (${activeItemsCount})`
                   : isAr
-                  ? `تأكيد: زيادة المخزون فقط - نوار (${activeItemsCount})`
+                  ? `تأكيد: زيد للمخزون فقط - نوار/بوار (${activeItemsCount})`
                   : `Add to Inventory Only - Noir (${activeItemsCount})`}
               </span>
             </button>

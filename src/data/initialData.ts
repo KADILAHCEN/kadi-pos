@@ -503,6 +503,8 @@ export const initialSettings: StoreSettings = {
   customPalettes: [],
   protectInventoryWithPin: true,
   protectSettingsWithPin: true,
+  requirePinForRestoreDefaults: true,
+  allowCashierRestoreDefaults: false,
   language: 'ar',
   receiptPaperWidth: '80mm',
   printerName: 'Xprinter XP-80C / Epson TM-T20 (80mm)',

@@ -38,6 +38,8 @@ import { EditProductModal } from '../pos/EditProductModal';
 import { BarcodeScannerModal } from '../pos/BarcodeScannerModal';
 import { ExportCatalogGmailModal } from './ExportCatalogGmailModal';
 import { StocktakePanel } from './StocktakePanel';
+import { bluetoothScanner } from '../../utils/bluetoothScanner';
+import { playSound } from '../../utils/audio';
 import {
   exportInventoryToExcel,
   exportInventoryToPdf,
@@ -200,6 +202,77 @@ export const InventoryView: React.FC = () => {
   const [showCatalogGmailModal, setShowCatalogGmailModal] = useState(false);
   const [selectedProductForAdjust, setSelectedProductForAdjust] = useState<Product | null>(null);
   const [productToast, setProductToast] = useState<string | null>(null);
+  const [highlightedProductId, setHighlightedProductId] = useState<string | null>(null);
+
+  // Listen for Bluetooth HID barcode scanner while on Stock screen
+  React.useEffect(() => {
+    bluetoothScanner.init({
+      enabled: settings.bluetoothScannerEnabled ?? true
+    });
+
+    const unsubScan = bluetoothScanner.onScan((payload) => {
+      if (bluetoothScanner.getActiveScope() !== null) return;
+      const clean = payload.barcode.trim();
+      const matched = products.find(
+        (p) => p.barcode === clean || p.sku.toLowerCase() === clean.toLowerCase()
+      );
+
+      if (matched) {
+        if (settings.bluetoothSoundFeedback !== false) playSound('beep');
+        setActiveTab('catalog');
+        setSelectedCat('all');
+        setSelectedUnit('all');
+        setOnlyLowStock(false);
+        setOnlyExpiring(false);
+        setOnlyStagnant(false);
+        setSearchQuery(matched.barcode || matched.name);
+        setHighlightedProductId(matched.id);
+        setProductToast(
+          isAr
+            ? `🔊 بيب! تلقات فـ المخزون: ${matched.name} (${matched.stock} ${matched.unitType})`
+            : `🔊 Found in stock: ${matched.name} (${matched.stock})`
+        );
+        setTimeout(() => setProductToast(null), 3200);
+        setTimeout(() => setHighlightedProductId((prev) => (prev === matched.id ? null : prev)), 4000);
+      } else {
+        playSound('error');
+        window.dispatchEvent(
+          new CustomEvent('kadi:open-quick-new-barcode', {
+            detail: { barcode: clean, sourceContext: 'inventory' }
+          })
+        );
+      }
+    });
+
+    const handleQuickCreated = (evt: Event) => {
+      const detail = (evt as CustomEvent<{
+        product?: Product;
+        sourceContext?: string;
+      }>).detail;
+      if (detail?.sourceContext !== 'inventory' || !detail.product) return;
+      const created = detail.product;
+      setActiveTab('catalog');
+      setSelectedCat('all');
+      setSelectedUnit('all');
+      setOnlyLowStock(false);
+      setOnlyExpiring(false);
+      setOnlyStagnant(false);
+      setSearchQuery(created.barcode || created.name);
+      setHighlightedProductId(created.id);
+      setProductToast(
+        isAr
+          ? `✅ تسجلات "${created.name}" وتحفظ الباركود فـ المخزون!`
+          : `✅ Saved "${created.name}" to inventory!`
+      );
+      setTimeout(() => setProductToast(null), 3500);
+    };
+
+    window.addEventListener('kadi:quick-barcode-product-created', handleQuickCreated);
+    return () => {
+      unsubScan();
+      window.removeEventListener('kadi:quick-barcode-product-created', handleQuickCreated);
+    };
+  }, [products, settings.bluetoothScannerEnabled, settings.bluetoothSoundFeedback, isAr]);
 
   // Multi-Product Selection
   const [selectedProductIds, setSelectedProductIds] = useState<Set<string>>(new Set());
@@ -1156,11 +1229,14 @@ export const InventoryView: React.FC = () => {
                       }
                     }
 
+                    const isHighlighted = highlightedProductId === p.id;
                     return (
                       <tr
                         key={p.id}
                         className={`transition-colors ${
-                          isSelected
+                          isHighlighted
+                            ? 'bg-emerald-100/90 dark:bg-emerald-950/70 ring-2 ring-inset ring-emerald-500'
+                            : isSelected
                             ? 'bg-emerald-50/70 dark:bg-emerald-950/40'
                             : 'hover:bg-slate-50 dark:hover:bg-slate-800/50'
                         }`}
@@ -2259,17 +2335,33 @@ export const InventoryView: React.FC = () => {
           title={isAr ? 'البحث عن منتج في المخزون بالكاميرا' : 'Scan Barcode to Search Inventory'}
           onClose={() => setShowBarcodeScanner(false)}
           onScanned={(code) => {
+            const clean = code.trim();
+            const matched = products.find(
+              (p) => p.barcode === clean || p.sku.toLowerCase() === clean.toLowerCase()
+            );
             setSelectedCat('all');
             setSelectedUnit('all');
             setOnlyLowStock(false);
             setOnlyExpiring(false);
-            setSearchQuery(code);
-            setProductToast(
-              isAr
-                ? `📷 تم مسح الباركود: ${code}`
-                : `📷 Scanned barcode: ${code}`
-            );
-            setTimeout(() => setProductToast(null), 3000);
+            if (matched) {
+              if (settings.bluetoothSoundFeedback !== false) playSound('beep');
+              setSearchQuery(matched.barcode || clean);
+              setHighlightedProductId(matched.id);
+              setProductToast(
+                isAr
+                  ? `🔊 بيب! تلقات فـ المخزون: ${matched.name}`
+                  : `📷 Found: ${matched.name}`
+              );
+              setTimeout(() => setProductToast(null), 3000);
+            } else {
+              playSound('error');
+              setShowBarcodeScanner(false);
+              window.dispatchEvent(
+                new CustomEvent('kadi:open-quick-new-barcode', {
+                  detail: { barcode: clean, sourceContext: 'inventory' }
+                })
+              );
+            }
           }}
         />
       )}

@@ -46,6 +46,7 @@ export const ProductGrid: React.FC<ProductGridProps> = ({ onOpenBarcodeScanner }
     deleteProduct,
     currencySymbol,
     language,
+    settings,
     setCurrentTab,
     customers,
     shopEarRequests
@@ -145,33 +146,52 @@ export const ProductGrid: React.FC<ProductGridProps> = ({ onOpenBarcodeScanner }
     return filteredProducts.slice(0, visibleCount);
   }, [filteredProducts, visibleCount]);
 
-  // Initialize Bluetooth Barcode Scanner (HID Mode)
+  // Listen for Bluetooth Barcode Scanner (HID Mode) while on Sale Screen
   useEffect(() => {
-    bluetoothScanner.init();
+    bluetoothScanner.init({
+      enabled: settings.bluetoothScannerEnabled ?? true
+    });
 
     const unsubscribe = bluetoothScanner.onScan((payload: ScannedBarcodePayload) => {
+      // Yield if a priority modal (Invoice Scan, Bluetooth Settings, or Quick New Barcode) is open
+      if (bluetoothScanner.getActiveScope() !== null) return;
       handleScannedBarcode(payload.barcode, payload.speedMsPerChar);
     });
 
     return () => {
       unsubscribe();
     };
-  }, [products]);
+  }, [products, settings.bluetoothScannerEnabled, settings.bluetoothSoundFeedback, settings.bluetoothAutoAddToCart]);
 
-  const handleScannedBarcode = (code: string, speedMs?: number) => {
+  const handleScannedBarcode = (code: string, _speedMs?: number) => {
+    const clean = code.trim();
     const matched = products.find(
-      (p) => p.barcode === code || p.sku.toLowerCase() === code.toLowerCase()
+      (p) => p.barcode === clean || p.sku.toLowerCase() === clean.toLowerCase()
     );
     if (matched) {
-      playSound('beep');
-      handleProductClick(matched);
-      const speedTag = speedMs ? ` (${speedMs}ms)` : '';
-      setBarcodeToast(`${isAr ? 'تم مسح:' : isFr ? 'Scanné:' : 'Scanned:'} ${matched.name}${speedTag}`);
+      if (settings.bluetoothSoundFeedback !== false) {
+        playSound('beep');
+      }
+      if (settings.bluetoothAutoAddToCart !== false) {
+        handleProductClick(matched);
+      } else {
+        setSearchQuery(clean);
+      }
+      setBarcodeToast(
+        isAr ? `🔊 بيب! تزادت للسلة: ${matched.name}` : isFr ? `🔊 Scanné: ${matched.name}` : `🔊 Scanned: ${matched.name}`
+      );
       setTimeout(() => setBarcodeToast(null), 2500);
     } else {
       playSound('error');
-      setBarcodeToast(`${isAr ? 'باركود غير معروف:' : 'Code inconnu:'} ${code}`);
+      setBarcodeToast(
+        isAr ? `🆕 سلعة جديدة — دخل اسمها و ثمنها (${clean})` : `🆕 New barcode: ${clean}`
+      );
       setTimeout(() => setBarcodeToast(null), 2500);
+      window.dispatchEvent(
+        new CustomEvent('kadi:open-quick-new-barcode', {
+          detail: { barcode: clean, sourceContext: 'pos' }
+        })
+      );
     }
   };
 

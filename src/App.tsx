@@ -44,9 +44,14 @@ import {
   broadcastCustomerDisplaySnapshot,
   buildCustomerDisplaySnapshot
 } from './utils/customerDisplaySync';
-import { Order } from './types';
+import { Order, Product } from './types';
 import { playSound } from './utils/audio';
 import { bluetoothPrinter } from './utils/bluetoothPrinter';
+import { bluetoothScanner } from './utils/bluetoothScanner';
+import {
+  QuickBarcodeSourceContext,
+  QuickNewBarcodeProductModal
+} from './components/pos/QuickNewBarcodeProductModal';
 import { preloadStoreLogo } from './utils/pdfReport';
 import {
   ensureKadiDriveFolder,
@@ -147,6 +152,70 @@ const PosMainContent: React.FC = () => {
   const [postSaleAlert, setPostSaleAlert] = useState<string | null>(null);
   const [scanFeedbackToast, setScanFeedbackToast] = useState<{ text: string; isError?: boolean } | null>(null);
   const [pdfReadyToast, setPdfReadyToast] = useState<{ blobUrl: string; filename: string } | null>(null);
+  const [quickNewBarcodeReq, setQuickNewBarcodeReq] = useState<{
+    barcode: string;
+    sourceContext: QuickBarcodeSourceContext;
+  } | null>(null);
+
+  // Initialize global Bluetooth HID Scanner & keep config synced with settings (100% offline)
+  useEffect(() => {
+    bluetoothScanner.init({
+      enabled: settings.bluetoothScannerEnabled ?? true
+    });
+  }, []);
+
+  useEffect(() => {
+    bluetoothScanner.updateConfig({
+      enabled: settings.bluetoothScannerEnabled ?? true
+    });
+  }, [settings.bluetoothScannerEnabled]);
+
+  // Listen for unknown barcode prompts from any screen (Sale, Stock, Invoice Scan)
+  useEffect(() => {
+    const handleOpenNewBarcode = (evt: Event) => {
+      const detail = (evt as CustomEvent<{
+        barcode?: string;
+        sourceContext?: QuickBarcodeSourceContext;
+      }>).detail;
+      const code = (detail?.barcode || '').trim();
+      if (!code) return;
+      setQuickNewBarcodeReq({
+        barcode: code,
+        sourceContext: detail?.sourceContext || 'global'
+      });
+    };
+    window.addEventListener('kadi:open-quick-new-barcode', handleOpenNewBarcode);
+    return () => window.removeEventListener('kadi:open-quick-new-barcode', handleOpenNewBarcode);
+  }, []);
+
+  // Global Bluetooth scan fallback when user is outside POS / Inventory / Settings & no priority modal is open
+  useEffect(() => {
+    const unsub = bluetoothScanner.onScan((payload) => {
+      if (bluetoothScanner.getActiveScope() !== null) return;
+      if (currentTab === 'pos' || currentTab === 'inventory' || currentTab === 'settings') return;
+
+      const clean = payload.barcode.trim();
+      const matched = products.find(
+        (p) => p.barcode === clean || p.sku.toLowerCase() === clean.toLowerCase()
+      );
+      if (matched) {
+        if (settings.bluetoothSoundFeedback !== false) playSound('beep');
+        if (settings.bluetoothAutoAddToCart !== false) {
+          addToCart(matched);
+        }
+        setScanFeedbackToast({
+          text: isAr
+            ? `🔊 بيب! تزادت للسلة: ${matched.name}`
+            : `🔊 Scanned & added: ${matched.name}`
+        });
+        setTimeout(() => setScanFeedbackToast(null), 2600);
+      } else {
+        playSound('error');
+        setQuickNewBarcodeReq({ barcode: clean, sourceContext: 'global' });
+      }
+    });
+    return () => unsub();
+  }, [currentTab, products, addToCart, settings.bluetoothSoundFeedback, settings.bluetoothAutoAddToCart, isAr]);
 
   // Preload custom Store Logo for canvas PDFs & Thermal receipts
   useEffect(() => {
@@ -306,23 +375,22 @@ const PosMainContent: React.FC = () => {
       (p) => p.barcode === clean || p.sku.toLowerCase() === clean.toLowerCase()
     );
     if (matched) {
-      playSound('beep');
+      if (settings.bluetoothSoundFeedback !== false) playSound('beep');
       addToCart(matched);
       setScanFeedbackToast({
         text: isAr
-          ? `📷 تم مسح وإضافة: ${matched.name}`
+          ? `🔊 بيب! تزادت للسلة: ${matched.name}`
           : `📷 Scanned & added: ${matched.name}`
       });
+      setTimeout(() => setScanFeedbackToast(null), 3000);
     } else {
       playSound('error');
-      setScanFeedbackToast({
-        text: isAr
-          ? `⚠️ هذا الباركود غير مسجل في المخزون: ${clean}`
-          : `⚠️ Barcode not found in catalog: ${clean}`,
-        isError: true
+      setShowBarcodeScanner(false);
+      setQuickNewBarcodeReq({
+        barcode: clean,
+        sourceContext: currentTab === 'inventory' ? 'inventory' : 'pos'
       });
     }
-    setTimeout(() => setScanFeedbackToast(null), 3200);
   };
 
   const handleCheckoutSuccess = (order: Order) => {
@@ -646,6 +714,33 @@ const PosMainContent: React.FC = () => {
 
       <ShopEarQuickModal />
       <PurchaseInvoiceScanModal />
+      <QuickNewBarcodeProductModal
+        isOpen={!!quickNewBarcodeReq}
+        scannedBarcode={quickNewBarcodeReq?.barcode || ''}
+        sourceContext={quickNewBarcodeReq?.sourceContext || 'pos'}
+        onClose={() => setQuickNewBarcodeReq(null)}
+        onProductSaved={(created: Product) => {
+          const ctx = quickNewBarcodeReq?.sourceContext || 'pos';
+          if (ctx === 'pos' || ctx === 'global') {
+            addToCart(created);
+            setScanFeedbackToast({
+              text: isAr
+                ? `🔊 بيب! تسجلات "${created.name}" + تحفظ الباركود وتزادت للسلة`
+                : `🔊 Saved "${created.name}" & added to cart`
+            });
+            setTimeout(() => setScanFeedbackToast(null), 3200);
+          }
+          window.dispatchEvent(
+            new CustomEvent('kadi:quick-barcode-product-created', {
+              detail: {
+                barcode: created.barcode,
+                product: created,
+                sourceContext: ctx
+              }
+            })
+          );
+        }}
+      />
 
       {/* PIN Gate Modal for protected routes */}
       <PinGateModal

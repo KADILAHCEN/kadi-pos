@@ -6,6 +6,7 @@ import { ZakatCalculatorSection } from './ZakatCalculatorSection';
 import { PeriodProfitTargetPanel } from './PeriodProfitTargetPanel';
 import { SmartDreamGoalBanner } from './SmartDreamGoalBanner';
 import { WeeklyTrendAnalysisSection } from './WeeklyTrendAnalysisSection';
+import { SalesComparisonChartSection } from './SalesComparisonChartSection';
 import { generateAndDownloadDailySalesPdf } from '../../utils/pdfReport';
 import { exportShopEarWholesalePdf, ShopEarWholesalePdfItem } from '../../utils/exportReports';
 import {
@@ -1038,6 +1039,9 @@ export const AnalyticsView: React.FC = () => {
 
       {/* Weekly Trend Analysis (Multi-Week WoW, 7-Day vs Prior, Weekday Pattern, Movers) */}
       <WeeklyTrendAnalysisSection />
+
+      {/* Sales Comparison Chart (Today vs Yesterday, Week vs Last Week, By Category) */}
+      <SalesComparisonChartSection />
 
       {/* 30-Day Daily Sales Revenue Trend Line Chart (Recharts) */}
       <div className="p-6 rounded-3xl bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 shadow-xs space-y-4">

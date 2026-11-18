@@ -376,6 +376,8 @@ export interface StoreSettings {
   managerPin?: string;
   protectInventoryWithPin?: boolean;
   protectSettingsWithPin?: boolean;
+  requirePinForRestoreDefaults?: boolean;
+  allowCashierRestoreDefaults?: boolean;
   // Bluetooth Barcode Scanner (HID Mode) Settings
   bluetoothScannerEnabled?: boolean;
   bluetoothScannerMode?: 'hid_auto' | 'hid_strict' | 'web_bluetooth';

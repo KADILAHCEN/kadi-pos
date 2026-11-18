@@ -2,7 +2,7 @@ import 'dotenv/config';
 import express from 'express';
 import path from 'path';
 import { fileURLToPath } from 'url';
-import { GoogleGenAI, Type } from '@google/genai';
+import { GoogleGenAI, ThinkingLevel, Type } from '@google/genai';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -432,7 +432,7 @@ If audio is provided, transcribe what was said verbatim into "transcript" in Ara
     const ai = createGeminiClient();
     if (!ai) {
       return res.status(503).json({
-        error: 'Gemini API key is not configured on the server.',
+        error: 'خدمة الذكاء الاصطناعي غير مفعلة على السيرفر حالياً.',
         code: 'MISSING_API_KEY'
       });
     }
@@ -456,71 +456,92 @@ If audio is provided, transcribe what was said verbatim into "transcript" in Ara
 
       const cleanBase64 = imageBase64.replace(/^data:[^;]+;base64,/, '');
 
-      const systemInstruction = `You are a Moroccan retail purchase invoice OCR & inventory intake parser for Kadi POS (الحانوت).
-Examine the photographed supplier invoice, receipt, or handwritten delivery note (bon de livraison / بون) carefully.
-Extract:
-1) supplierName: Supplier or distributor company name (in Arabic or French as shown).
-2) supplierIce: Moroccan ICE number (Identifiant Commun de l'Entreprise, usually 15 digits) if clearly visible on the document, otherwise "".
-3) supplierPhone: Supplier phone number if visible, otherwise "".
-4) invoiceNumber: Invoice or BL number if printed, otherwise "".
-5) invoiceDate: Date formatted strictly as YYYY-MM-DD if visible, otherwise "".
-6) hasOfficialMarkers: true if the document is an official printed tax invoice containing ICE, IF, RC, Patente, or TVA breakdown; false if it is an informal handwritten note/bon without official tax identifiers.
-7) totalAmount: Total purchase amount in MAD (number). If only item subtotals exist, sum them accurately.
-8) items: Every purchased line item with:
-   - rawName: Clean product name (in Arabic/French as printed, concise).
-   - matchedCatalogName: Exact closest match from the store catalog list if confidently matching, else "".
-   - quantity: Numeric quantity purchased (default 1 if unclear).
-   - unitCost: Cost per unit in MAD (if only line total is visible, divide by quantity; 0 if no prices are shown).
-   - unitType: One of "piece", "kg", "liter", "box".
+      const systemInstruction = `You are an expert Moroccan grocery ("hanout" / الحانوت) invoice & handwritten delivery-slip OCR parser for Kadi POS.
+Carefully inspect printed wholesaler invoices, thermal receipts, AND messy handwritten paper slips ("بون" / carnet notes in Arabic, Darija, or French).
+HANDWRITING & MOROCCAN CONTEXT RULES:
+- Handwritten notes often write quantity on either side (e.g. "5 حليب", "2ك سكر", "10 x 6.50", "3 crt"), sometimes with scratched numbers — read the final clear number carefully.
+- Understand Moroccan grocery vocabulary in Darija/Arabic/French (e.g. أتاي/Thé, سنيدة/سكر, زيت, طحين/Farine, حليب/Lait, دانون/Yaourt, زبدة, فرماج, قهوة, صابون, تيد/Omo, جافيل, بيض, عدس, لوبيا, ماء/Sidi Ali, مشروبات).
+- Distinguish clearly between quantity, unit price, and line total: if both quantity and line total are shown without an explicit unit price, compute unitCost = lineTotal / quantity. If no prices are written (stock-only slip), set unitCost = 0.
+- For each line item include:
+  - rawName: Clean product name (Arabic/French as written).
+  - matchedCatalogName: Exact closest match from the store catalog list if confident, else "".
+  - quantity: Numeric quantity (> 0, default 1).
+  - unitCost: Cost per single unit in MAD (0 if omitted).
+  - lineTotal: Total for the line in MAD if visible (0 otherwise).
+  - unitType: One of "piece", "kg", "liter", "box".
+  - confidence: "high", "medium", or "low" (use "medium"/"low" for hard-to-read handwriting so the user reviews the numbers).
+- Document metadata:
+  - supplierName: Wholesaler/supplier name if visible, else "".
+  - supplierIce: 15-digit Moroccan ICE if printed, else "".
+  - supplierPhone: Phone number if visible, else "".
+  - invoiceNumber: Invoice/BL number if present, else "".
+  - invoiceDate: YYYY-MM-DD if present, else "".
+  - hasOfficialMarkers: true ONLY if printed ICE / IF / RC / Patente / TVA tax identifiers appear; false for handwritten bons or informal slips.
+  - isHandwritten: true if handwritten ink/pen writing appears on paper, false if purely printed.
+  - totalAmount: Invoice grand total in MAD if readable (or sum of subtotals).
 
-Known catalog products (hint for matching): ${existingProducts.slice(0, 400).join(', ')}
-Prefer clear ${language === 'ar' ? 'Arabic/French' : 'Latin'} product naming matching how grocery owners write items.`;
+Known store products: ${existingProducts.slice(0, 400).join(', ')}
+Prefer ${language === 'ar' ? 'Arabic/French' : 'Latin'} product labels consistent with Moroccan grocery stores.`;
 
-      const response = await ai.models.generateContent({
-        model: GEMINI_MODEL,
-        contents: {
-          parts: [
-            {
-              inlineData: {
-                mimeType,
-                data: cleanBase64
+      const callModel = () =>
+        ai.models.generateContent({
+          model: GEMINI_MODEL,
+          contents: {
+            parts: [
+              {
+                inlineData: {
+                  mimeType,
+                  data: cleanBase64
+                }
+              },
+              {
+                text: 'Read this printed or handwritten Moroccan purchase invoice carefully. Extract supplier metadata, official ICE if present, whether it is handwritten, and every product line with quantity, unitCost, and confidence level as strict JSON.'
               }
-            },
-            {
-              text: 'Read this purchase invoice image and extract supplier info, Moroccan ICE (if present), and every purchased product with quantity and unit cost into JSON.'
-            }
-          ]
-        },
-        config: {
-          systemInstruction,
-          responseMimeType: 'application/json',
-          responseSchema: {
-            type: Type.OBJECT,
-            properties: {
-              supplierName: { type: Type.STRING },
-              supplierIce: { type: Type.STRING },
-              supplierPhone: { type: Type.STRING },
-              invoiceNumber: { type: Type.STRING },
-              invoiceDate: { type: Type.STRING },
-              hasOfficialMarkers: { type: Type.BOOLEAN },
-              totalAmount: { type: Type.NUMBER },
-              items: {
-                type: Type.ARRAY,
+            ]
+          },
+          config: {
+            systemInstruction,
+            thinkingConfig: { thinkingLevel: ThinkingLevel.MEDIUM },
+            responseMimeType: 'application/json',
+            responseSchema: {
+              type: Type.OBJECT,
+              properties: {
+                supplierName: { type: Type.STRING },
+                supplierIce: { type: Type.STRING },
+                supplierPhone: { type: Type.STRING },
+                invoiceNumber: { type: Type.STRING },
+                invoiceDate: { type: Type.STRING },
+                hasOfficialMarkers: { type: Type.BOOLEAN },
+                isHandwritten: { type: Type.BOOLEAN },
+                totalAmount: { type: Type.NUMBER },
                 items: {
-                  type: Type.OBJECT,
-                  properties: {
-                    rawName: { type: Type.STRING },
-                    matchedCatalogName: { type: Type.STRING },
-                    quantity: { type: Type.NUMBER },
-                    unitCost: { type: Type.NUMBER },
-                    unitType: { type: Type.STRING }
+                  type: Type.ARRAY,
+                  items: {
+                    type: Type.OBJECT,
+                    properties: {
+                      rawName: { type: Type.STRING },
+                      matchedCatalogName: { type: Type.STRING },
+                      quantity: { type: Type.NUMBER },
+                      unitCost: { type: Type.NUMBER },
+                      lineTotal: { type: Type.NUMBER },
+                      unitType: { type: Type.STRING },
+                      confidence: { type: Type.STRING }
+                    }
                   }
                 }
               }
             }
           }
-        }
-      });
+        });
+
+      let response;
+      try {
+        response = await callModel();
+      } catch (firstErr) {
+        console.warn('Retrying Gemini purchase invoice scan after transient error:', firstErr);
+        await new Promise((r) => setTimeout(r, 450));
+        response = await callModel();
+      }
 
       const parsed = safeParseGeminiJson<Record<string, unknown>>(response.text || '{}', {
         supplierName: '',
@@ -529,6 +550,7 @@ Prefer clear ${language === 'ar' ? 'Arabic/French' : 'Latin'} product naming mat
         invoiceNumber: '',
         invoiceDate: '',
         hasOfficialMarkers: false,
+        isHandwritten: false,
         totalAmount: 0,
         items: []
       });
