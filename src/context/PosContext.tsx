@@ -85,6 +85,7 @@ import {
   createInitialCpuRecords,
   getUpcomingCpuAlerts,
   computeRetirementProgress,
+  isLegacyDefaultCnssBrackets,
   CpuPaymentAlert,
   RetirementProgressSummary
 } from '../utils/cpuTax';
@@ -495,7 +496,13 @@ function normalizeStoreSettings(raw: unknown): StoreSettings {
     cpuSettings: isPlainRecord(base.cpuSettings)
       ? {
           ...DEFAULT_CPU_SETTINGS,
-          ...(base.cpuSettings as Partial<CpuTaxSettings>)
+          ...(base.cpuSettings as Partial<CpuTaxSettings>),
+          cnssBrackets: !isLegacyDefaultCnssBrackets(
+            (base.cpuSettings as Partial<CpuTaxSettings>).cnssBrackets
+          )
+            ? ((base.cpuSettings as Partial<CpuTaxSettings>)
+                .cnssBrackets as CpuTaxSettings['cnssBrackets'])
+            : DEFAULT_CPU_SETTINGS.cnssBrackets
         }
       : initialSettings.cpuSettings,
     theftAlertSettings: isPlainRecord(base.theftAlertSettings)
@@ -4099,31 +4106,79 @@ export const PosProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
       ? {
           ...DEFAULT_CPU_SETTINGS,
           ...settings.cpuSettings,
-          cnssBrackets:
-            settings.cpuSettings.cnssBrackets && settings.cpuSettings.cnssBrackets.length > 0
-              ? settings.cpuSettings.cnssBrackets
-              : DEFAULT_CPU_SETTINGS.cnssBrackets
+          cnssBrackets: !isLegacyDefaultCnssBrackets(settings.cpuSettings.cnssBrackets)
+            ? settings.cpuSettings.cnssBrackets
+            : DEFAULT_CPU_SETTINGS.cnssBrackets
         }
       : DEFAULT_CPU_SETTINGS;
   }, [settings.cpuSettings]);
 
-  const [cpuRecords, setCpuRecords] = useState<CpuQuarterRecord[]>(() =>
-    safeReadStorageArray<CpuQuarterRecord>(
+  const cpuSettingsRef = useRef<CpuTaxSettings>(cpuSettings);
+  useEffect(() => {
+    cpuSettingsRef.current = cpuSettings;
+  }, [cpuSettings]);
+
+  const reconcileCpuRecordsList = (
+    records: CpuQuarterRecord[],
+    targetCpuSettings: CpuTaxSettings
+  ): CpuQuarterRecord[] => {
+    return records.map((rec) =>
+      buildCpuQuarterRecord(rec.year, rec.quarter, rec.turnover, targetCpuSettings, {
+        retirementEnabled: rec.retirementEnabled,
+        status: rec.status,
+        paidAt: rec.paidAt,
+        notes: rec.notes
+      })
+    );
+  };
+
+  const [cpuRecords, setCpuRecords] = useState<CpuQuarterRecord[]>(() => {
+    const initial = safeReadStorageArray<CpuQuarterRecord>(
       'kadi_pos_cpu_records_v1',
       createInitialCpuRecords(DEFAULT_CPU_SETTINGS),
       { allowEmpty: false }
-    )
-  );
+    );
+    try {
+      if (localStorage.getItem('kadi_pos_cpu_official_v2_migrated') !== '1') {
+        return reconcileCpuRecordsList(initial, cpuSettings);
+      }
+    } catch {
+      // Ignore storage read failures
+    }
+    return initial;
+  });
   const cpuHydratedRef = useRef(false);
 
   useEffect(() => {
     let cancelled = false;
     loadCpuRecordsFromIndexedDB().then((idbRecs) => {
       if (cancelled) return;
+      let needsOfficialMigration = false;
+      try {
+        needsOfficialMigration =
+          localStorage.getItem('kadi_pos_cpu_official_v2_migrated') !== '1';
+      } catch {
+        needsOfficialMigration = false;
+      }
+
       if (idbRecs && idbRecs.length > 0) {
-        setCpuRecords(idbRecs);
+        const finalRecs = needsOfficialMigration
+          ? reconcileCpuRecordsList(idbRecs, cpuSettingsRef.current)
+          : idbRecs;
+        setCpuRecords(finalRecs);
+        if (needsOfficialMigration) {
+          void saveCpuRecordsToIndexedDB(finalRecs);
+          safeLocalStorageSet('kadi_pos_cpu_official_v2_migrated', '1');
+        }
       } else {
-        void saveCpuRecordsToIndexedDB(cpuRecords);
+        const finalRecs = needsOfficialMigration
+          ? reconcileCpuRecordsList(cpuRecords, cpuSettingsRef.current)
+          : cpuRecords;
+        if (needsOfficialMigration) {
+          setCpuRecords(finalRecs);
+          safeLocalStorageSet('kadi_pos_cpu_official_v2_migrated', '1');
+        }
+        void saveCpuRecordsToIndexedDB(finalRecs);
       }
       cpuHydratedRef.current = true;
     });
@@ -5264,8 +5319,12 @@ export const PosProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
       if (data.creditTransactions && Array.isArray(data.creditTransactions)) {
         setCreditTransactions(data.creditTransactions);
       }
-      if (data.settings && isPlainRecord(data.settings)) {
-        setSettings(normalizeStoreSettings(data.settings));
+      const importedNormalizedSettings =
+        data.settings && isPlainRecord(data.settings)
+          ? normalizeStoreSettings(data.settings)
+          : null;
+      if (importedNormalizedSettings) {
+        setSettings(importedNormalizedSettings);
       }
       if (data.orders && Array.isArray(data.orders)) {
         setOrders(data.orders);
@@ -5287,8 +5346,19 @@ export const PosProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
         void saveRemoteOrdersToIndexedDB(data.remoteOrders);
       }
       if (data.cpuRecords && Array.isArray(data.cpuRecords)) {
-        setCpuRecords(data.cpuRecords);
-        void saveCpuRecordsToIndexedDB(data.cpuRecords);
+        const hadLegacyBrackets =
+          data.settings &&
+          isPlainRecord(data.settings) &&
+          isPlainRecord(data.settings.cpuSettings) &&
+          isLegacyDefaultCnssBrackets(
+            (data.settings.cpuSettings as Partial<CpuTaxSettings>).cnssBrackets
+          );
+        const importedCpuRecs =
+          hadLegacyBrackets && importedNormalizedSettings?.cpuSettings
+            ? reconcileCpuRecordsList(data.cpuRecords, importedNormalizedSettings.cpuSettings)
+            : data.cpuRecords;
+        setCpuRecords(importedCpuRecs);
+        void saveCpuRecordsToIndexedDB(importedCpuRecs);
       }
       if (data.branches && Array.isArray(data.branches)) {
         setBranches(data.branches);

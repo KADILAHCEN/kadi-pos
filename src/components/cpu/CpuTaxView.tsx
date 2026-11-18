@@ -1,4 +1,4 @@
-import React, { useMemo, useState } from 'react';
+import React, { useEffect, useMemo, useState } from 'react';
 import { usePos } from '../../context/PosContext';
 import {
   CpuCnssBracket,
@@ -7,6 +7,7 @@ import {
 import {
   DEFAULT_CNSS_BRACKETS,
   calculateCpuBreakdown,
+  calculateCpuBreakdownByAnnualTax,
   getQuarterDateRange,
   getQuarterLabel
 } from '../../utils/cpuTax';
@@ -99,7 +100,7 @@ export const CpuTaxView: React.FC = () => {
   const [selectedRecordIds, setSelectedRecordIds] = useState<string[]>([]);
 
   // Interactive Simulator state
-  const [simInputPeriod, setSimInputPeriod] = useState<'quarterly' | 'monthly' | 'annual'>('quarterly');
+  const [simInputPeriod, setSimInputPeriod] = useState<'quarterly' | 'monthly' | 'annual' | 'annual_cpu'>('quarterly');
   const [simTurnover, setSimTurnover] = useState<number>(50000);
   const [simRetirementOn, setSimRetirementOn] = useState<boolean>(cpuSettings.retirementEnabled);
 
@@ -122,6 +123,17 @@ export const CpuTaxView: React.FC = () => {
   const [draftBrackets, setDraftBrackets] = useState<CpuCnssBracket[]>(() =>
     cpuSettings.cnssBrackets.map((b) => ({ ...b }))
   );
+
+  useEffect(() => {
+    setDraftTaxRate(String(cpuSettings.taxRatePct));
+    setDraftProfCoeff(String(cpuSettings.professionCoeffPct));
+    setDraftRetCoeff(String(cpuSettings.retirementCoeff));
+    setDraftAlertDays(String(cpuSettings.alertDaysBeforeDue));
+    setDraftPriorDays(String(cpuSettings.priorAccumulatedDays));
+    setDraftAnnualPatente(String(cpuSettings.annualPatenteTax || 0));
+    setDraftRetDefault(cpuSettings.retirementEnabled);
+    setDraftBrackets(cpuSettings.cnssBrackets.map((b) => ({ ...b })));
+  }, [cpuSettings]);
 
   const showToast = (text: string, ok: boolean = true) => {
     setToast({ ok, text });
@@ -303,23 +315,38 @@ export const CpuTaxView: React.FC = () => {
     const raw = Math.max(0, Number(simTurnover) || 0);
     if (simInputPeriod === 'monthly') return Number((raw * 3).toFixed(2));
     if (simInputPeriod === 'annual') return Number((raw / 4).toFixed(2));
+    if (simInputPeriod === 'annual_cpu') {
+      const factor =
+        (Math.max(0, cpuSettings.professionCoeffPct) / 100) *
+        (Math.max(0, cpuSettings.taxRatePct) / 100);
+      return factor > 0 ? Number((raw / (4 * factor)).toFixed(2)) : 0;
+    }
     return raw;
-  }, [simTurnover, simInputPeriod]);
+  }, [simTurnover, simInputPeriod, cpuSettings.professionCoeffPct, cpuSettings.taxRatePct]);
 
   // Simulator calculations & comparisons
   const simCalc = useMemo(
-    () => calculateCpuBreakdown(effectiveSimQuarterlyTurnover, cpuSettings, simRetirementOn),
-    [effectiveSimQuarterlyTurnover, cpuSettings, simRetirementOn]
+    () =>
+      simInputPeriod === 'annual_cpu'
+        ? calculateCpuBreakdownByAnnualTax(simTurnover, cpuSettings, simRetirementOn)
+        : calculateCpuBreakdown(effectiveSimQuarterlyTurnover, cpuSettings, simRetirementOn),
+    [simInputPeriod, simTurnover, effectiveSimQuarterlyTurnover, cpuSettings, simRetirementOn]
   );
 
   const simCalcNoRet = useMemo(
-    () => calculateCpuBreakdown(effectiveSimQuarterlyTurnover, cpuSettings, false),
-    [effectiveSimQuarterlyTurnover, cpuSettings]
+    () =>
+      simInputPeriod === 'annual_cpu'
+        ? calculateCpuBreakdownByAnnualTax(simTurnover, cpuSettings, false)
+        : calculateCpuBreakdown(effectiveSimQuarterlyTurnover, cpuSettings, false),
+    [simInputPeriod, simTurnover, effectiveSimQuarterlyTurnover, cpuSettings]
   );
 
   const simCalcWithRet = useMemo(
-    () => calculateCpuBreakdown(effectiveSimQuarterlyTurnover, cpuSettings, true),
-    [effectiveSimQuarterlyTurnover, cpuSettings]
+    () =>
+      simInputPeriod === 'annual_cpu'
+        ? calculateCpuBreakdownByAnnualTax(simTurnover, cpuSettings, true)
+        : calculateCpuBreakdown(effectiveSimQuarterlyTurnover, cpuSettings, true),
+    [simInputPeriod, simTurnover, effectiveSimQuarterlyTurnover, cpuSettings]
   );
 
   // Next CNSS bracket threshold intelligence
@@ -558,8 +585,8 @@ export const CpuTaxView: React.FC = () => {
           </h2>
           <p className="text-xs text-slate-500 dark:text-slate-400 mt-0.5">
             {isAr
-              ? `أدخل رقم المعاملات للتريمستر فقط — يحسب الضريبة (${cpuSettings.professionCoeffPct}% × ${cpuSettings.taxRatePct}%) + الصحة AMO + التقاعد (×${cpuSettings.retirementCoeff})`
-              : `Enter quarterly turnover only — auto calculates CPU Tax, CNSS AMO & Retirement`}
+              ? `AMO كيتحسب على مبلغ الضريبة CPU السنوية (ماشي رقم المعاملات) · التقاعد = AMO × ${cpuSettings.retirementCoeff} · التريمستر = CPU + (AMO × 3) + (التقاعد × 3)`
+              : `AMO is calculated from Annual CPU Tax (not turnover) · Retirement = AMO × ${cpuSettings.retirementCoeff} · Total = CPU + AMO×3 + Ret×3`}
           </p>
         </div>
 
@@ -678,14 +705,16 @@ export const CpuTaxView: React.FC = () => {
             <span className="text-xs font-bold text-blue-600">{currencySymbol}</span>
           </div>
           <div className="text-[11px] text-slate-500 mt-1 font-mono tabular-nums">
-            {activePreviewCalc.turnover.toLocaleString('en-US')} × {cpuSettings.professionCoeffPct}% × {cpuSettings.taxRatePct}%
+            {isAr
+              ? `CPU السنوية (أساس AMO): ${activePreviewCalc.annualizedTax.toFixed(2)} ${currencySymbol}`
+              : `Annual CPU (AMO base): ${activePreviewCalc.annualizedTax.toFixed(2)} ${currencySymbol}`}
           </div>
         </div>
 
         {/* Card 2: Auto Health AMO */}
         <div className="p-4 rounded-2xl bg-white dark:bg-slate-900 border border-amber-200 dark:border-amber-900/60 shadow-2xs">
           <div className="flex items-center justify-between text-xs font-bold text-amber-700 dark:text-amber-300">
-            <span>{isAr ? 'بريم الصحة AMO (تلقائي)' : 'AMO Health (Auto)'}</span>
+            <span>{isAr ? 'الصحة AMO (×3 أشهر)' : 'AMO Health (Quarterly)'}</span>
             <HeartPulse className="w-4 h-4" />
           </div>
           <div className="text-2xl font-black text-slate-900 dark:text-white mt-1.5 font-mono tabular-nums">
@@ -694,9 +723,9 @@ export const CpuTaxView: React.FC = () => {
           </div>
           <div className="text-[11px] text-slate-500 mt-1">
             <span className="font-mono font-bold text-amber-700 dark:text-amber-300">
-              {activePreviewCalc.monthlyAmo.toFixed(2)} {currencySymbol}/{isAr ? 'شهر' : 'mo'}
+              {activePreviewCalc.monthlyAmo.toFixed(0)} {currencySymbol}/{isAr ? 'شهر' : 'mo'} × 3
             </span>{' '}
-            · {activePreviewCalc.matchedBracket.label.split('(')[0].trim()}
+            · {isAr ? 'حسب CPU السنوية' : 'By Annual CPU'}
           </div>
         </div>
 
@@ -709,7 +738,7 @@ export const CpuTaxView: React.FC = () => {
           }`}
         >
           <div className="flex items-center justify-between text-xs font-bold text-violet-700 dark:text-violet-300">
-            <span>{isAr ? `بريم التقاعد (AMO × ${cpuSettings.retirementCoeff})` : 'CNSS Retirement'}</span>
+            <span>{isAr ? `التقاعد (AMO × ${cpuSettings.retirementCoeff})` : 'CNSS Retirement'}</span>
             <button
               type="button"
               onClick={handleGlobalRetirementToggle}
@@ -728,7 +757,7 @@ export const CpuTaxView: React.FC = () => {
           </div>
           <div className="text-[11px] text-slate-500 mt-1 font-mono tabular-nums">
             {formRetirementEnabled
-              ? `${activePreviewCalc.monthlyRetirement.toFixed(2)} ${currencySymbol}/${isAr ? 'شهر' : 'mo'} (3 أشهر)`
+              ? `${activePreviewCalc.monthlyRetirement.toFixed(2)} ${currencySymbol}/${isAr ? 'شهر' : 'mo'} × 3`
               : isAr
               ? 'متوقف — غير محسوب في المجموع الكلي'
               : 'Excluded from total'}
@@ -738,7 +767,7 @@ export const CpuTaxView: React.FC = () => {
         {/* Card 4: Grand Total Due (+ Optional Patente Share) */}
         <div className="p-4 rounded-2xl bg-emerald-600 text-white shadow-sm">
           <div className="flex items-center justify-between text-xs font-bold text-emerald-100">
-            <span>{isAr ? 'المجموع الكلي للدفع (للتريمستر)' : 'Grand Total Due'}</span>
+            <span>{isAr ? 'المجموع (CPU + AMO + التقاعد)' : 'Total (CPU + AMO + Ret)'}</span>
             <ShieldCheck className="w-4 h-4" />
           </div>
           <div className="text-2xl font-black mt-1.5 font-mono tabular-nums">
@@ -914,20 +943,34 @@ export const CpuTaxView: React.FC = () => {
 
               {/* Live Calculated Summary Strip */}
               <div className="p-3 rounded-2xl bg-slate-900 text-white space-y-1 text-xs">
+                <div className="flex justify-between text-[11px] text-slate-400 pb-1 border-b border-slate-800">
+                  <span>{isAr ? 'الضريبة CPU السنوية (أساس AMO):' : 'Annual CPU (AMO Base):'}</span>
+                  <span className="font-mono font-bold text-slate-200">
+                    {activePreviewCalc.annualizedTax.toFixed(2)} {currencySymbol}
+                  </span>
+                </div>
                 <div className="flex justify-between">
-                  <span className="text-slate-300">{isAr ? 'الضريبة CPU:' : 'CPU Tax:'}</span>
+                  <span className="text-slate-300">{isAr ? 'الضريبة CPU (للتريمستر):' : 'CPU Tax:'}</span>
                   <span className="font-mono font-bold text-sky-400">
                     {activePreviewCalc.quarterlyTax.toFixed(2)} {currencySymbol}
                   </span>
                 </div>
                 <div className="flex justify-between">
-                  <span className="text-slate-300">{isAr ? 'الصحة AMO (3 أشهر):' : 'AMO (3 mo):'}</span>
+                  <span className="text-slate-300">
+                    {isAr
+                      ? `الصحة AMO (${activePreviewCalc.monthlyAmo.toFixed(0)} × 3 أشهر):`
+                      : `AMO (${activePreviewCalc.monthlyAmo.toFixed(0)} × 3):`}
+                  </span>
                   <span className="font-mono font-bold text-amber-400">
                     {activePreviewCalc.quarterlyAmo.toFixed(2)} {currencySymbol}
                   </span>
                 </div>
                 <div className="flex justify-between">
-                  <span className="text-slate-300">{isAr ? 'التقاعد (3 أشهر):' : 'Retire (3 mo):'}</span>
+                  <span className="text-slate-300">
+                    {isAr
+                      ? `التقاعد (${activePreviewCalc.monthlyRetirement.toFixed(2)} × 3 أشهر):`
+                      : 'Retire (3 mo):'}
+                  </span>
                   <span className="font-mono font-bold text-violet-300">
                     {formRetirementEnabled
                       ? `${activePreviewCalc.quarterlyRetirement.toFixed(2)} ${currencySymbol}`
@@ -945,7 +988,7 @@ export const CpuTaxView: React.FC = () => {
                   </div>
                 )}
                 <div className="pt-1.5 border-t border-slate-700 flex justify-between font-black text-sm">
-                  <span>{isAr ? 'المجموع الكلي (CPU):' : 'Total Due (CPU):'}</span>
+                  <span>{isAr ? 'المجموع (CPU + AMO + التقاعد):' : 'Total (CPU + AMO + Ret):'}</span>
                   <span className="font-mono text-emerald-400">
                     {activePreviewCalc.totalQuarterlyDue.toFixed(2)} {currencySymbol}
                   </span>
@@ -1785,13 +1828,14 @@ export const CpuTaxView: React.FC = () => {
                 </p>
               </div>
 
-              {/* Input Horizon Toggle (Quarterly / Monthly / Annual) */}
-              <div className="grid grid-cols-3 gap-1.5 p-1 rounded-2xl bg-slate-100 dark:bg-slate-800 text-xs font-bold">
+              {/* Input Horizon Toggle (Quarterly / Monthly / Annual Turnover / Direct Annual CPU Tax) */}
+              <div className="grid grid-cols-2 sm:grid-cols-4 gap-1.5 p-1 rounded-2xl bg-slate-100 dark:bg-slate-800 text-xs font-bold">
                 {(
                   [
                     { id: 'quarterly', label: isAr ? 'ربع سنوي (تريمستر)' : 'Quarterly' },
                     { id: 'monthly', label: isAr ? 'شهري (×3)' : 'Monthly (×3)' },
-                    { id: 'annual', label: isAr ? 'سنوي (÷4)' : 'Annual (÷4)' }
+                    { id: 'annual', label: isAr ? 'سنوي (÷4)' : 'Annual (÷4)' },
+                    { id: 'annual_cpu', label: isAr ? 'ضريبة CPU السنوية' : 'Annual CPU Tax' }
                   ] as const
                 ).map((mode) => (
                   <button
@@ -1799,11 +1843,13 @@ export const CpuTaxView: React.FC = () => {
                     type="button"
                     onClick={() => {
                       if (mode.id === simInputPeriod) return;
-                      // Convert displayed input seamlessly to preserve simulated quarterly equivalent
+                      // Convert displayed input seamlessly to preserve simulated scenario
                       if (mode.id === 'monthly') {
                         setSimTurnover(Math.round(effectiveSimQuarterlyTurnover / 3));
                       } else if (mode.id === 'annual') {
                         setSimTurnover(Math.round(effectiveSimQuarterlyTurnover * 4));
+                      } else if (mode.id === 'annual_cpu') {
+                        setSimTurnover(Math.round(simCalc.annualizedTax));
                       } else {
                         setSimTurnover(Math.round(effectiveSimQuarterlyTurnover));
                       }
@@ -1820,7 +1866,7 @@ export const CpuTaxView: React.FC = () => {
                 ))}
               </div>
 
-              {/* Expected Turnover Input + Interactive Range Slider */}
+              {/* Expected Turnover / Direct Annual CPU Input + Interactive Range Slider */}
               <div className="space-y-3">
                 <div className="flex items-center justify-between">
                   <label className="text-xs font-extrabold text-slate-700 dark:text-slate-300">
@@ -1828,6 +1874,8 @@ export const CpuTaxView: React.FC = () => {
                       ? isAr ? `رقم المعاملات الشهري المتوقع (${currencySymbol}):` : `Monthly Turnover (${currencySymbol}):`
                       : simInputPeriod === 'annual'
                       ? isAr ? `رقم المعاملات السنوي المتوقع (${currencySymbol}):` : `Annual Turnover (${currencySymbol}):`
+                      : simInputPeriod === 'annual_cpu'
+                      ? isAr ? `مبلغ الضريبة CPU السنوية (${currencySymbol}):` : `Annual CPU Tax (${currencySymbol}):`
                       : isAr ? `رقم المعاملات المتوقع في التريمستر (${currencySymbol}):` : `Quarterly Turnover (${currencySymbol}):`}
                   </label>
                   {simInputPeriod !== 'quarterly' && (
@@ -1840,15 +1888,29 @@ export const CpuTaxView: React.FC = () => {
                 <input
                   type="number"
                   min="0"
-                  step="500"
+                  step={simInputPeriod === 'annual_cpu' ? '50' : '500'}
                   value={simTurnover}
                   onChange={(e) => setSimTurnover(Math.max(0, Number(e.target.value) || 0))}
                   className="w-full px-4 py-3 text-xl font-mono font-black bg-emerald-50/50 dark:bg-emerald-950/20 border border-emerald-300 dark:border-emerald-800 rounded-2xl tabular-nums"
                 />
 
                 {(() => {
-                  const sliderMax = simInputPeriod === 'annual' ? 2000000 : simInputPeriod === 'monthly' ? 200000 : 600000;
-                  const sliderStep = simInputPeriod === 'annual' ? 5000 : simInputPeriod === 'monthly' ? 500 : 1000;
+                  const sliderMax =
+                    simInputPeriod === 'annual'
+                      ? 2000000
+                      : simInputPeriod === 'monthly'
+                      ? 200000
+                      : simInputPeriod === 'annual_cpu'
+                      ? 20000
+                      : 600000;
+                  const sliderStep =
+                    simInputPeriod === 'annual'
+                      ? 5000
+                      : simInputPeriod === 'monthly'
+                      ? 500
+                      : simInputPeriod === 'annual_cpu'
+                      ? 50
+                      : 1000;
                   return (
                     <input
                       type="range"
@@ -1868,6 +1930,8 @@ export const CpuTaxView: React.FC = () => {
                     ? [5000, 10000, 20000, 35000, 50000, 80000]
                     : simInputPeriod === 'annual'
                     ? [60000, 120000, 240000, 400000, 600000, 1000000]
+                    : simInputPeriod === 'annual_cpu'
+                    ? [400, 750, 1500, 3500, 7500, 15000]
                     : [15000, 30000, 50000, 80000, 150000, 300000]
                   ).map((preset) => (
                     <button
@@ -2484,7 +2548,9 @@ export const CpuTaxView: React.FC = () => {
                               </td>
                               <td className="py-3 px-3 font-mono font-bold text-slate-600 dark:text-slate-300 tabular-nums">
                                 {b.maxAnnualTax === null
-                                  ? `> ${Math.floor(b.minAnnualTax).toLocaleString('en-US')} ${currencySymbol}`
+                                  ? `> ${(b.minAnnualTax === 10001 ? 10000 : Math.floor(b.minAnnualTax)).toLocaleString('en-US')} ${currencySymbol}`
+                                  : b.minAnnualTax === 0 && b.maxAnnualTax < 500 && b.maxAnnualTax >= 499
+                                  ? `< 500 ${currencySymbol}`
                                   : `${Math.floor(b.minAnnualTax).toLocaleString('en-US')} – ${b.maxAnnualTax.toLocaleString('en-US')} ${currencySymbol}`}
                               </td>
                               <td className="py-3 px-3 font-mono text-slate-600 dark:text-slate-300 tabular-nums">
@@ -2494,10 +2560,10 @@ export const CpuTaxView: React.FC = () => {
                               </td>
                               <td className="py-3 px-3 font-mono tabular-nums">
                                 <div className="font-black text-amber-700 dark:text-amber-400">
-                                  {monthlyAmo.toFixed(0)} {currencySymbol}/{isAr ? 'ش' : 'mo'}
+                                  {Number.isInteger(monthlyAmo) ? monthlyAmo.toFixed(0) : monthlyAmo.toFixed(2)} {currencySymbol}/{isAr ? 'ش' : 'mo'}
                                 </div>
                                 <div className="text-[11px] text-slate-400">
-                                  {quarterlyAmo.toFixed(0)} {currencySymbol}/{isAr ? 'تريمستر' : 'Q'}
+                                  {Number.isInteger(quarterlyAmo) ? quarterlyAmo.toFixed(0) : quarterlyAmo.toFixed(2)} {currencySymbol}/{isAr ? 'تريمستر' : 'Q'}
                                 </div>
                               </td>
                               <td className="py-3 px-3 font-mono tabular-nums">

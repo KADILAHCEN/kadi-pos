@@ -8,61 +8,64 @@ import {
 export const DEFAULT_CNSS_BRACKETS: CpuCnssBracket[] = [
   {
     id: 'cnss-1',
-    label: 'الشريحة 1 (ضريبة سنوية ≤ 500 د.م)',
+    label: 'الشريحة 1 (CPU سنوية < 500 د.م)',
     minAnnualTax: 0,
-    maxAnnualTax: 500,
+    maxAnnualTax: 499.99,
     monthlyAmo: 100
   },
   {
     id: 'cnss-2',
-    label: 'الشريحة 2 (501 – 1,000 د.م)',
-    minAnnualTax: 500.01,
+    label: 'الشريحة 2 (500 – 1,000 د.م)',
+    minAnnualTax: 500,
     maxAnnualTax: 1000,
-    monthlyAmo: 130
+    monthlyAmo: 120
   },
   {
     id: 'cnss-3',
     label: 'الشريحة 3 (1,001 – 2,500 د.م)',
-    minAnnualTax: 1000.01,
+    minAnnualTax: 1001,
     maxAnnualTax: 2500,
-    monthlyAmo: 190
+    monthlyAmo: 150
   },
   {
     id: 'cnss-4',
     label: 'الشريحة 4 (2,501 – 5,000 د.م)',
-    minAnnualTax: 2500.01,
+    minAnnualTax: 2501,
     maxAnnualTax: 5000,
     monthlyAmo: 250
   },
   {
     id: 'cnss-5',
     label: 'الشريحة 5 (5,001 – 10,000 د.م)',
-    minAnnualTax: 5000.01,
+    minAnnualTax: 5001,
     maxAnnualTax: 10000,
-    monthlyAmo: 425
+    monthlyAmo: 400
   },
   {
     id: 'cnss-6',
-    label: 'الشريحة 6 (10,001 – 25,000 د.م)',
-    minAnnualTax: 10000.01,
-    maxAnnualTax: 25000,
-    monthlyAmo: 750
-  },
-  {
-    id: 'cnss-7',
-    label: 'الشريحة 7 (25,001 – 50,000 د.م)',
-    minAnnualTax: 25000.01,
-    maxAnnualTax: 50000,
-    monthlyAmo: 1200
-  },
-  {
-    id: 'cnss-8',
-    label: 'الشريحة 8 (> 50,000 د.م)',
-    minAnnualTax: 50000.01,
+    label: 'الشريحة 6 (CPU > 10,000 د.م)',
+    minAnnualTax: 10001,
     maxAnnualTax: null,
-    monthlyAmo: 1800
+    monthlyAmo: 650
   }
 ];
+
+export function isLegacyDefaultCnssBrackets(brackets?: CpuCnssBracket[] | null): boolean {
+  if (!Array.isArray(brackets) || brackets.length === 0) return true;
+  const legacyRates = [100, 130, 190, 250, 425, 750, 1200, 1800];
+  if (
+    brackets.length === 8 &&
+    brackets.every((b, idx) => b.id === `cnss-${idx + 1}` || b.monthlyAmo === legacyRates[idx])
+  ) {
+    return true;
+  }
+  const hasLegacyIds = brackets.some((b) => b.id === 'cnss-7' || b.id === 'cnss-8');
+  const hasLegacyAmounts =
+    brackets.some((b) => b.id === 'cnss-2' && b.monthlyAmo === 130) &&
+    brackets.some((b) => b.id === 'cnss-3' && b.monthlyAmo === 190) &&
+    brackets.some((b) => b.id === 'cnss-5' && b.monthlyAmo === 425);
+  return hasLegacyIds && hasLegacyAmounts;
+}
 
 export const DEFAULT_CPU_SETTINGS: CpuTaxSettings = {
   taxRatePct: 10,
@@ -98,45 +101,57 @@ export function matchCnssBracket(
   annualizedTax: number,
   brackets: CpuCnssBracket[]
 ): CpuCnssBracket {
+  const cleanTax = Math.max(0, Number(annualizedTax) || 0);
   const list =
     brackets && brackets.length > 0
       ? [...brackets].sort((a, b) => a.minAnnualTax - b.minAnnualTax)
       : DEFAULT_CNSS_BRACKETS;
 
-  const found = list.find((b) => {
-    const aboveMin = annualizedTax >= b.minAnnualTax;
-    const belowMax = b.maxAnnualTax === null || annualizedTax <= b.maxAnnualTax;
-    return aboveMin && belowMax;
-  });
+  if (cleanTax <= list[0].minAnnualTax) {
+    return list[0];
+  }
 
-  if (found) return found;
-  if (annualizedTax <= list[0].minAnnualTax) return list[0];
+  for (let i = 0; i < list.length; i++) {
+    const b = list[i];
+    const nextB = list[i + 1];
+
+    if (b.maxAnnualTax === null) {
+      return b;
+    }
+
+    if (nextB && b.maxAnnualTax < nextB.minAnnualTax && nextB.minAnnualTax - b.maxAnnualTax <= 1) {
+      if (nextB.minAnnualTax - b.maxAnnualTax < 0.5) {
+        if (cleanTax < nextB.minAnnualTax) return b;
+      } else if (cleanTax <= b.maxAnnualTax) {
+        return b;
+      }
+    } else if (cleanTax <= b.maxAnnualTax) {
+      return b;
+    }
+  }
+
   return list[list.length - 1];
 }
 
-export function calculateCpuBreakdown(
-  quarterlyTurnover: number,
+function buildBreakdownFromTax(
+  turnover: number,
+  quarterlyTax: number,
+  annualizedTax: number,
   cpuSettings: CpuTaxSettings,
   overrideRetirementEnabled?: boolean
 ): CpuCalculationResult {
-  const turnover = Math.max(0, Number(quarterlyTurnover) || 0);
-  const coeff = Math.max(0, Number(cpuSettings.professionCoeffPct) || 0) / 100;
-  const taxRate = Math.max(0, Number(cpuSettings.taxRatePct) || 0) / 100;
   const retCoeff = Math.max(0, Number(cpuSettings.retirementCoeff) || 0);
   const retirementEnabled =
     overrideRetirementEnabled !== undefined
       ? overrideRetirementEnabled
       : cpuSettings.retirementEnabled;
 
-  // الضريبة = رقم المعاملات × معامل المهنة (6%) × نسبة الضريبة (10%)
-  const quarterlyTax = Number((turnover * coeff * taxRate).toFixed(2));
-  const annualizedTax = Number((quarterlyTax * 4).toFixed(2));
-
+  // القاعدة الرسمية: AMO يُحسب على مبلغ الضريبة CPU السنوية (وليس رقم المعاملات)
   const matchedBracket = matchCnssBracket(annualizedTax, cpuSettings.cnssBrackets);
   const monthlyAmo = Number((matchedBracket.monthlyAmo || 0).toFixed(2));
   const quarterlyAmo = Number((monthlyAmo * 3).toFixed(2));
 
-  // التقاعد = AMO × 1.57 (إذا كان التقاعد مفعلاً)
+  // التقاعد = AMO الشهري × 1.57 (وفي التريمستر × 3)
   const monthlyRetirement = retirementEnabled
     ? Number((monthlyAmo * retCoeff).toFixed(2))
     : 0;
@@ -149,7 +164,7 @@ export function calculateCpuBreakdown(
   const quarterlyPatenteTax = Number((annualPatenteTax / 4).toFixed(2));
   const monthlyPatenteTax = Number((annualPatenteTax / 12).toFixed(2));
 
-  // المجموع الكلي للتريمستر = الضريبة + بريم الصحة (3 أشهر) + بريم التقاعد (3 أشهر إن وجد)
+  // المجموع الكلي للتريمستر = الضريبة CPU + بريم الصحة AMO (×3) + بريم التقاعد (×3)
   const totalQuarterlyDue = Number(
     (quarterlyTax + quarterlyAmo + quarterlyRetirement).toFixed(2)
   );
@@ -181,6 +196,49 @@ export function calculateCpuBreakdown(
     combinedQuarterlyWithPatente,
     combinedMonthlyWithPatente
   };
+}
+
+export function calculateCpuBreakdown(
+  quarterlyTurnover: number,
+  cpuSettings: CpuTaxSettings,
+  overrideRetirementEnabled?: boolean
+): CpuCalculationResult {
+  const turnover = Math.max(0, Number(quarterlyTurnover) || 0);
+  const coeff = Math.max(0, Number(cpuSettings.professionCoeffPct) || 0) / 100;
+  const taxRate = Math.max(0, Number(cpuSettings.taxRatePct) || 0) / 100;
+
+  // الضريبة CPU = رقم المعاملات × معامل المهنة (6%) × نسبة الضريبة (10%)
+  const quarterlyTax = Number((turnover * coeff * taxRate).toFixed(2));
+  const annualizedTax = Number((quarterlyTax * 4).toFixed(2));
+
+  return buildBreakdownFromTax(
+    turnover,
+    quarterlyTax,
+    annualizedTax,
+    cpuSettings,
+    overrideRetirementEnabled
+  );
+}
+
+export function calculateCpuBreakdownByAnnualTax(
+  annualCpuTax: number,
+  cpuSettings: CpuTaxSettings,
+  overrideRetirementEnabled?: boolean
+): CpuCalculationResult {
+  const cleanAnnualTax = Math.max(0, Number(annualCpuTax) || 0);
+  const quarterlyTax = Number((cleanAnnualTax / 4).toFixed(2));
+  const coeff = Math.max(0, Number(cpuSettings.professionCoeffPct) || 0) / 100;
+  const taxRate = Math.max(0, Number(cpuSettings.taxRatePct) || 0) / 100;
+  const factor = coeff * taxRate;
+  const estimatedQuarterlyTurnover = factor > 0 ? Number((quarterlyTax / factor).toFixed(2)) : 0;
+
+  return buildBreakdownFromTax(
+    estimatedQuarterlyTurnover,
+    quarterlyTax,
+    Number(cleanAnnualTax.toFixed(2)),
+    cpuSettings,
+    overrideRetirementEnabled
+  );
 }
 
 export function getQuarterDueDate(year: number, quarter: CpuQuarterId): string {
