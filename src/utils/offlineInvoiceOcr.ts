@@ -23,6 +23,9 @@ export interface OfflineOcrResult {
   rawNumbersFound: number;
   processedWidth: number;
   processedHeight: number;
+  rowBandsFound: number;
+  avgConfidenceScore: number;
+  looksHandwritten: boolean;
 }
 
 /**
@@ -116,6 +119,9 @@ export function assessImageSharpness(img: HTMLImageElement): ImageSharpnessResul
   // Very dark/washed-out or smeared out-of-focus photos have extremely low high-frequency Laplacian variance.
   const isTooDarkOrFlat = meanLuminance < 28 || contrastStd < 12;
   const isBlurry = lapVariance < 85 || isTooDarkOrFlat;
+
+  canvas.width = 0;
+  canvas.height = 0;
 
   return {
     isBlurry,
@@ -530,7 +536,7 @@ function classifyDigitGlyph(
  * Extracts quantities & prices even when offline or server AI is unreachable.
  */
 export function runOfflineInvoiceNumberOcr(img: HTMLImageElement): OfflineOcrResult {
-  const maxW = 900;
+  const maxW = 800;
   const scale = Math.min(1, maxW / Math.max(1, img.width || 1));
   const w = Math.max(120, Math.round((img.width || 1) * scale));
   const h = Math.max(120, Math.round((img.height || 1) * scale));
@@ -540,7 +546,16 @@ export function runOfflineInvoiceNumberOcr(img: HTMLImageElement): OfflineOcrRes
   canvas.height = h;
   const ctx = canvas.getContext('2d');
   if (!ctx) {
-    return { rows: [], detectedTotal: 0, rawNumbersFound: 0, processedWidth: w, processedHeight: h };
+    return {
+      rows: [],
+      detectedTotal: 0,
+      rawNumbersFound: 0,
+      processedWidth: w,
+      processedHeight: h,
+      rowBandsFound: 0,
+      avgConfidenceScore: 0,
+      looksHandwritten: false
+    };
   }
 
   ctx.drawImage(img, 0, 0, w, h);
@@ -619,6 +634,8 @@ export function runOfflineInvoiceNumberOcr(img: HTMLImageElement): OfflineOcrRes
   const rows: OfflineOcrRow[] = [];
   let rawNumbersFound = 0;
   let detectedTotal = 0;
+  let scoreSum = 0;
+  let scoreCount = 0;
 
   for (let bIdx = 0; bIdx < rowBands.length && rows.length < 30; bIdx++) {
     const band = rowBands[bIdx];
@@ -700,6 +717,8 @@ export function runOfflineInvoiceNumberOcr(img: HTMLImageElement): OfflineOcrRes
     const nums = numericTokens.map((t) => t.value);
     const avgRowScore =
       numericTokens.reduce((s, t) => s + t.avgScore, 0) / numericTokens.length;
+    scoreSum += avgRowScore;
+    scoreCount += 1;
 
     // Heuristic role assignment (qty, unitCost, lineTotal):
     let quantity = 1;
@@ -772,6 +791,8 @@ export function runOfflineInvoiceNumberOcr(img: HTMLImageElement): OfflineOcrRes
         );
         linePreviewDataUrl = stripCanvas.toDataURL('image/jpeg', 0.72);
       }
+      stripCanvas.width = 0;
+      stripCanvas.height = 0;
     } catch {
       linePreviewDataUrl = undefined;
     }
@@ -809,11 +830,22 @@ export function runOfflineInvoiceNumberOcr(img: HTMLImageElement): OfflineOcrRes
     }
   }
 
+  canvas.width = 0;
+  canvas.height = 0;
+
+  const avgConfidenceScore = scoreCount > 0 ? Number((scoreSum / scoreCount).toFixed(2)) : 0;
+  const looksHandwritten =
+    (rowBands.length > 0 && rows.length === 0) ||
+    (rows.length > 0 && avgConfidenceScore > 0 && avgConfidenceScore < 0.74);
+
   return {
     rows,
     detectedTotal: Number(detectedTotal.toFixed(2)),
     rawNumbersFound,
     processedWidth: w,
-    processedHeight: h
+    processedHeight: h,
+    rowBandsFound: rowBands.length,
+    avgConfidenceScore,
+    looksHandwritten
   };
 }

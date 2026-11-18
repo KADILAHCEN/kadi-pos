@@ -15,7 +15,9 @@ import {
   ImagePlus,
   Layers,
   AlertCircle,
-  ScanLine
+  ScanLine,
+  Flashlight,
+  Focus
 } from 'lucide-react';
 
 type ScanFormatMode = 'all' | 'barcode' | 'qr';
@@ -106,6 +108,8 @@ export const BarcodeScannerModal: React.FC<BarcodeScannerModalProps> = ({
   const [selectedDeviceId, setSelectedDeviceId] = useState<string | undefined>(undefined);
   const [torchSupported, setTorchSupported] = useState(false);
   const [torchOn, setTorchOn] = useState(false);
+  const [cameraRetryNonce, setCameraRetryNonce] = useState(0);
+  const [focusReticle, setFocusReticle] = useState<{ x: number; y: number } | null>(null);
   const [imageScanMsg, setImageScanMsg] = useState<string | null>(null);
 
   const videoRef = useRef<HTMLVideoElement>(null);
@@ -332,14 +336,23 @@ export const BarcodeScannerModal: React.FC<BarcodeScannerModalProps> = ({
         controlsRef.current = controls;
         setCameraActive(true);
 
-        // Check if torch / flash is supported
+        // Check torch & apply continuous autofocus on active track
         try {
           const caps = controls.streamVideoCapabilitiesGet?.((track) => [track]);
           if (caps && 'torch' in caps && (caps as { torch?: boolean }).torch) {
             setTorchSupported(true);
           }
+          const tracks = (videoRef.current?.srcObject as MediaStream | null)?.getVideoTracks?.() || [];
+          const activeTrack = tracks[0];
+          if (activeTrack) {
+            activeTrack
+              .applyConstraints({
+                advanced: [{ focusMode: 'continuous' } as unknown as MediaTrackConstraintSet]
+              })
+              .catch(() => {});
+          }
         } catch {
-          // Torch capability check not supported on this browser
+          // Capabilities check optional
         }
 
         // Populate camera list after permission is granted so labels are available
@@ -356,8 +369,8 @@ export const BarcodeScannerModal: React.FC<BarcodeScannerModalProps> = ({
           setCameraActive(false);
           setCameraError(
             isAr
-              ? 'تعذر فتح الكاميرا (يرجى السماح بصلاحية الكاميرا)، أو استخدم خيار «مسح من صورة» / الإدخال اليدوي.'
-              : 'Camera access denied or unavailable. Try scanning from an image or manual entry.'
+              ? 'تعذر فتح الكاميرا — اضغط على "سمح للكاميرا" لتفعيلها أو استخدم المسح من صورة.'
+              : 'Camera access denied or unavailable. Click Allow Camera or scan from image.'
           );
         }
       }
@@ -369,16 +382,48 @@ export const BarcodeScannerModal: React.FC<BarcodeScannerModalProps> = ({
       mounted = false;
       stopScanner();
     };
-  }, [selectedDeviceId, createReader, stopScanner, isAr]);
+  }, [selectedDeviceId, cameraRetryNonce, createReader, stopScanner, isAr]);
 
   const handleToggleTorch = async () => {
-    if (!controlsRef.current?.switchTorch) return;
+    const next = !torchOn;
+    setTorchOn(next);
+    if (controlsRef.current?.switchTorch && torchSupported) {
+      try {
+        await controlsRef.current.switchTorch(next);
+      } catch {
+        setTorchSupported(false);
+      }
+    }
+  };
+
+  const handleTriggerAutoFocus = async (evt?: React.MouseEvent<HTMLDivElement>) => {
+    if (evt) {
+      const rect = evt.currentTarget.getBoundingClientRect();
+      setFocusReticle({
+        x: Math.round(((evt.clientX - rect.left) / Math.max(1, rect.width)) * 100),
+        y: Math.round(((evt.clientY - rect.top) / Math.max(1, rect.height)) * 100)
+      });
+    } else {
+      setFocusReticle({ x: 50, y: 50 });
+    }
+    window.setTimeout(() => setFocusReticle(null), 900);
+
+    const tracks = (videoRef.current?.srcObject as MediaStream | null)?.getVideoTracks?.() || [];
+    const track = tracks[0];
+    if (!track) return;
     try {
-      const next = !torchOn;
-      await controlsRef.current.switchTorch(next);
-      setTorchOn(next);
+      await track.applyConstraints({
+        advanced: [{ focusMode: 'single-shot' } as unknown as MediaTrackConstraintSet]
+      });
+      window.setTimeout(() => {
+        track
+          .applyConstraints?.({
+            advanced: [{ focusMode: 'continuous' } as unknown as MediaTrackConstraintSet]
+          })
+          .catch(() => {});
+      }, 600);
     } catch {
-      setTorchSupported(false);
+      // Focus constraint unsupported on this camera
     }
   };
 
@@ -575,7 +620,12 @@ export const BarcodeScannerModal: React.FC<BarcodeScannerModalProps> = ({
           )}
 
           {/* Live Camera Viewport */}
-          <div className="relative aspect-16/10 w-full bg-slate-950 rounded-2xl overflow-hidden flex items-center justify-center border-2 border-slate-800 shadow-inner">
+          <div
+            onClick={(e) => {
+              if (cameraActive) void handleTriggerAutoFocus(e);
+            }}
+            className="relative aspect-16/10 w-full bg-slate-950 rounded-2xl overflow-hidden flex items-center justify-center border-2 border-slate-800 shadow-inner cursor-crosshair"
+          >
             <video
               ref={videoRef}
               autoPlay
@@ -584,12 +634,36 @@ export const BarcodeScannerModal: React.FC<BarcodeScannerModalProps> = ({
               className={`w-full h-full object-cover ${cameraActive ? 'opacity-100' : 'opacity-0'}`}
             />
 
+            {torchOn && !torchSupported && cameraActive && (
+              <div className="absolute inset-0 bg-white/25 pointer-events-none mix-blend-screen" />
+            )}
+
+            {focusReticle && cameraActive && (
+              <div
+                style={{ left: `${focusReticle.x}%`, top: `${focusReticle.y}%` }}
+                className="absolute -translate-x-1/2 -translate-y-1/2 w-14 h-14 rounded-xl border-2 border-emerald-400 pointer-events-none"
+              />
+            )}
+
             {!cameraActive && (
-              <div className="absolute inset-0 flex flex-col items-center justify-center text-slate-300 text-xs text-center p-5 gap-2">
+              <div className="absolute inset-0 flex flex-col items-center justify-center text-slate-300 text-xs text-center p-5 gap-3">
                 <Camera className="w-9 h-9 text-emerald-400 opacity-80" />
                 <span className="max-w-xs leading-relaxed">
                   {cameraError || (isAr ? 'جاري تشغيل الكاميرا وتهيئة الماسح...' : 'Starting camera & barcode engine...')}
                 </span>
+                {cameraError && (
+                  <button
+                    type="button"
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      setCameraRetryNonce((n) => n + 1);
+                    }}
+                    className="px-4 py-2 rounded-xl bg-emerald-600 hover:bg-emerald-700 text-white text-xs font-black flex items-center gap-1.5"
+                  >
+                    <Camera className="w-3.5 h-3.5" />
+                    <span>{isAr ? 'سمح للكاميرا' : 'Allow Camera'}</span>
+                  </button>
+                )}
               </div>
             )}
 
@@ -610,7 +684,10 @@ export const BarcodeScannerModal: React.FC<BarcodeScannerModalProps> = ({
                 )}
 
                 {/* Top status & controls overlay */}
-                <div className="absolute top-3 inset-x-3 flex items-center justify-between gap-2">
+                <div
+                  onClick={(e) => e.stopPropagation()}
+                  className="absolute top-3 inset-x-3 flex items-center justify-between gap-2"
+                >
                   <span
                     className={`px-2.5 py-1 rounded-full bg-slate-950/75 text-[10px] font-bold flex items-center gap-1.5 backdrop-blur-xs ${
                       scanFormatMode === 'qr' ? 'text-indigo-300' : 'text-emerald-300'
@@ -641,26 +718,35 @@ export const BarcodeScannerModal: React.FC<BarcodeScannerModalProps> = ({
                   </span>
 
                   <div className="flex items-center gap-1.5">
-                    {torchSupported && (
-                      <button
-                        type="button"
-                        onClick={handleToggleTorch}
-                        className={`p-2 rounded-xl backdrop-blur-xs transition-colors ${
-                          torchOn
-                            ? 'bg-amber-400 text-slate-950'
-                            : 'bg-slate-950/70 text-white hover:bg-slate-900'
-                        }`}
-                        title={isAr ? 'تشغيل/إيقاف الفلاش' : 'Toggle Flashlight'}
-                      >
-                        <Zap className="w-4 h-4" />
-                      </button>
-                    )}
+                    <button
+                      type="button"
+                      onClick={() => void handleTriggerAutoFocus()}
+                      className="px-2 py-1.5 rounded-xl bg-slate-950/75 hover:bg-slate-900 text-emerald-300 backdrop-blur-xs transition-colors flex items-center gap-1 text-[10px] font-bold"
+                      title={isAr ? 'تركيز تلقائي' : 'Auto-Focus'}
+                    >
+                      <Focus className="w-3.5 h-3.5" />
+                      <span className="hidden sm:inline">{isAr ? 'تركيز' : 'Focus'}</span>
+                    </button>
+
+                    <button
+                      type="button"
+                      onClick={handleToggleTorch}
+                      className={`px-2 py-1.5 rounded-xl backdrop-blur-xs transition-colors flex items-center gap-1 text-[10px] font-bold ${
+                        torchOn
+                          ? 'bg-amber-400 text-slate-950'
+                          : 'bg-slate-950/75 text-white hover:bg-slate-900'
+                      }`}
+                      title={isAr ? 'فلاش' : 'Flashlight'}
+                    >
+                      <Flashlight className="w-3.5 h-3.5" />
+                      <span className="hidden sm:inline">{isAr ? 'فلاش' : 'Flash'}</span>
+                    </button>
 
                     {devices.length > 1 && (
                       <button
                         type="button"
                         onClick={handleSwitchCamera}
-                        className="p-2 rounded-xl bg-slate-950/70 hover:bg-slate-900 text-white backdrop-blur-xs transition-colors flex items-center gap-1 text-[10px] font-bold"
+                        className="p-2 rounded-xl bg-slate-950/75 hover:bg-slate-900 text-white backdrop-blur-xs transition-colors flex items-center gap-1 text-[10px] font-bold"
                         title={isAr ? 'تبديل الكاميرا' : 'Switch Camera'}
                       >
                         <RefreshCw className="w-3.5 h-3.5" />

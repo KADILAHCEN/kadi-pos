@@ -1767,4 +1767,272 @@ export function exportBourseThermalPdf(params: {
   };
 }
 
+// ======================================================
+// 7. Weekly Market Trends Radar Report PDF
+// ======================================================
+export interface MarketRadarWeeklyPdfItem {
+  rank: number;
+  itemName: string;
+  categoryLabel: string;
+  weeklyRequests: number;
+  todayRequests: number;
+  stockStatusLabel: string;
+  missedRevenue: number;
+  suggestedSuppliers: string[];
+}
+
+export function exportMarketRadarWeeklyPdf(params: {
+  topItems: MarketRadarWeeklyPdfItem[];
+  totalWeeklyMissingRequests: number;
+  totalDistinctUnavailable: number;
+  totalEstimatedLostRevenue: number;
+  periodLabel: string;
+  settings: StoreSettings;
+  currencySymbol: string;
+  language: 'ar' | 'fr' | 'en';
+}): string {
+  const {
+    topItems,
+    totalWeeklyMissingRequests,
+    totalDistinctUnavailable,
+    totalEstimatedLostRevenue,
+    periodLabel,
+    settings,
+    currencySymbol,
+    language
+  } = params;
+
+  const isAr = language === 'ar';
+  const width = 794;
+  const rowH = 56;
+  const headerH = 195;
+  const summaryH = 95;
+  const tableHeaderH = 38;
+  const rowsH = Math.max(1, topItems.length) * rowH;
+  const height = Math.max(920, headerH + summaryH + tableHeaderH + rowsH + 140);
+  const scale = Math.min(2, 11800 / Math.max(1, height));
+
+  const canvas = document.createElement('canvas');
+  canvas.width = Math.round(width * scale);
+  canvas.height = Math.round(height * scale);
+  const ctx = canvas.getContext('2d')!;
+  ctx.scale(scale, scale);
+
+  ctx.fillStyle = '#ffffff';
+  ctx.fillRect(0, 0, width, height);
+
+  const padX = 36;
+  const contentW = width - padX * 2;
+  const rightEdge = width - padX;
+  const leftEdge = padX;
+
+  const drawText = (
+    text: string,
+    x: number,
+    y: number,
+    opts?: {
+      font?: string;
+      color?: string;
+      align?: CanvasTextAlign;
+      dir?: CanvasDirection;
+      maxWidth?: number;
+    }
+  ) => {
+    ctx.save();
+    ctx.font = opts?.font || '12px "Cairo", "Segoe UI", Tahoma, sans-serif';
+    ctx.fillStyle = opts?.color || '#0f172a';
+    ctx.textAlign = opts?.align || (isAr ? 'right' : 'left');
+    ctx.direction = opts?.dir || (isAr ? 'rtl' : 'ltr');
+    if (opts?.maxWidth) {
+      ctx.fillText(text, x, y, opts.maxWidth);
+    } else {
+      ctx.fillText(text, x, y);
+    }
+    ctx.restore();
+  };
+
+  let curY = 28;
+  const hasLogo = Boolean(settings.storeLogo);
+  if (hasLogo) {
+    drawStoreLogoBadge(ctx, settings.storeLogo, isAr ? rightEdge - 48 : leftEdge, curY, 44);
+  }
+
+  const titleX = isAr ? (hasLogo ? rightEdge - 60 : rightEdge) : hasLogo ? leftEdge + 56 : leftEdge;
+  drawText(settings.storeName || 'Kadi POS', titleX, curY + 18, {
+    font: 'bold 18px "Cairo", sans-serif',
+    color: '#0f172a'
+  });
+  drawText(
+    isAr
+      ? 'التقرير الأسبوعي لرادار اتجاهات السوق — أكثر 5 سلع طلباً وغير متوفرة'
+      : 'Weekly Market Trends Radar — Top 5 Unavailable Demand Report',
+    titleX,
+    curY + 42,
+    { font: 'bold 13px "Cairo", sans-serif', color: '#b45309' }
+  );
+  drawText(
+    `${isAr ? 'الفترة:' : 'Period:'} ${periodLabel} · ${new Date().toLocaleDateString(
+      isAr ? 'ar-MA' : 'en-GB'
+    )}`,
+    titleX,
+    curY + 64,
+    { font: '11px "Cairo", sans-serif', color: '#64748b' }
+  );
+
+  curY += 86;
+  ctx.strokeStyle = '#cbd5e1';
+  ctx.lineWidth = 1;
+  ctx.beginPath();
+  ctx.moveTo(padX, curY);
+  ctx.lineTo(rightEdge, curY);
+  ctx.stroke();
+  curY += 20;
+
+  // Summary metrics bar
+  ctx.fillStyle = '#fffbeb';
+  ctx.fillRect(padX, curY, contentW, 68);
+  ctx.strokeStyle = '#fde68a';
+  ctx.strokeRect(padX, curY, contentW, 68);
+
+  const colW = contentW / 3;
+  const metrics = [
+    {
+      label: isAr ? 'مجموع طلبات السلع المفقودة' : 'Total Missing Requests',
+      val: String(totalWeeklyMissingRequests)
+    },
+    {
+      label: isAr ? 'عدد الأصناف غير المتوفرة' : 'Unavailable Distinct Items',
+      val: String(totalDistinctUnavailable)
+    },
+    {
+      label: isAr ? 'المبيعات الضائعة المقدرة' : 'Est. Missed Sales',
+      val: `${totalEstimatedLostRevenue.toFixed(0)} ${currencySymbol}`
+    }
+  ];
+
+  metrics.forEach((m, i) => {
+    const cx = isAr ? rightEdge - colW * i - colW / 2 : leftEdge + colW * i + colW / 2;
+    drawText(m.label, cx, curY + 24, {
+      font: 'bold 10.5px "Cairo", sans-serif',
+      color: '#78350f',
+      align: 'center',
+      maxWidth: colW - 14
+    });
+    drawText(m.val, cx, curY + 50, {
+      font: 'bold 16px monospace',
+      color: '#0f172a',
+      align: 'center'
+    });
+  });
+
+  curY += 88;
+
+  // Table header
+  ctx.fillStyle = '#0f172a';
+  ctx.fillRect(padX, curY, contentW, tableHeaderH);
+  drawText(isAr ? 'الرتبة والسلعة المفقودة' : 'Rank & Missing Item', rightEdge - 14, curY + 23, {
+    font: 'bold 11px "Cairo", sans-serif',
+    color: '#ffffff',
+    align: 'right'
+  });
+  drawText(isAr ? 'التصنيف' : 'Category', padX + 410, curY + 23, {
+    font: 'bold 11px "Cairo", sans-serif',
+    color: '#ffffff',
+    align: 'center'
+  });
+  drawText(isAr ? 'تكرار الطلب' : 'Requests', padX + 285, curY + 23, {
+    font: 'bold 11px "Cairo", sans-serif',
+    color: '#ffffff',
+    align: 'center'
+  });
+  drawText(isAr ? 'الموردون المفترضون المقترحون' : 'Suggested Suppliers', padX + 125, curY + 23, {
+    font: 'bold 11px "Cairo", sans-serif',
+    color: '#ffffff',
+    align: 'center'
+  });
+
+  curY += tableHeaderH;
+
+  if (topItems.length === 0) {
+    ctx.fillStyle = '#f8fafc';
+    ctx.fillRect(padX, curY, contentW, rowH);
+    ctx.strokeStyle = '#e2e8f0';
+    ctx.strokeRect(padX, curY, contentW, rowH);
+    drawText(
+      isAr ? 'لا توجد سلع مفقودة مسجلة في هذه الفترة' : 'No missing item requests recorded in this period',
+      width / 2,
+      curY + 32,
+      { font: 'bold 12px "Cairo", sans-serif', color: '#64748b', align: 'center' }
+    );
+    curY += rowH;
+  } else {
+    topItems.forEach((item, idx) => {
+      ctx.fillStyle = idx % 2 === 0 ? '#ffffff' : '#f8fafc';
+      ctx.fillRect(padX, curY, contentW, rowH);
+      ctx.strokeStyle = '#e2e8f0';
+      ctx.strokeRect(padX, curY, contentW, rowH);
+
+      drawText(`#${item.rank} · ${item.itemName}`, rightEdge - 14, curY + 22, {
+        font: 'bold 12px "Cairo", sans-serif',
+        color: '#0f172a',
+        align: 'right',
+        maxWidth: 230
+      });
+      drawText(item.stockStatusLabel, rightEdge - 14, curY + 42, {
+        font: '10px "Cairo", sans-serif',
+        color: '#be123c',
+        align: 'right',
+        maxWidth: 230
+      });
+
+      drawText(item.categoryLabel, padX + 410, curY + 31, {
+        font: 'bold 10.5px "Cairo", sans-serif',
+        color: '#334155',
+        align: 'center',
+        maxWidth: 115
+      });
+
+      drawText(`${item.weeklyRequests}x`, padX + 285, curY + 24, {
+        font: 'bold 13px monospace',
+        color: '#b45309',
+        align: 'center'
+      });
+      drawText(
+        item.missedRevenue > 0 ? `${item.missedRevenue.toFixed(0)} ${currencySymbol}` : '-',
+        padX + 285,
+        curY + 42,
+        {
+          font: '10px monospace',
+          color: '#64748b',
+          align: 'center'
+        }
+      );
+
+      drawText(item.suggestedSuppliers.join(' / '), padX + 125, curY + 30, {
+        font: 'bold 10px "Cairo", sans-serif',
+        color: '#0f766e',
+        align: 'center',
+        maxWidth: 220
+      });
+
+      curY += rowH;
+    });
+  }
+
+  curY += 26;
+  drawText(
+    isAr
+      ? 'تم توليد هذا التقرير تلقائياً من صفحة رادار اتجاهات السوق — Kadi POS'
+      : 'Generated by Market Trends Radar — Kadi POS',
+    width / 2,
+    curY,
+    { font: '10px "Cairo", sans-serif', color: '#94a3b8', align: 'center' }
+  );
+
+  const filename = `KadiPOS_Market_Radar_Weekly_${new Date().toISOString().slice(0, 10)}.pdf`;
+  saveCanvasAsPaginatedA4Pdf(canvas, width, height, filename);
+  return filename;
+}
+
+
 

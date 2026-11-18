@@ -32,7 +32,8 @@ import {
   PieChart,
   Briefcase,
   Award,
-  Ear
+  Ear,
+  Compass
 } from 'lucide-react';
 
 export type TabIconKey =
@@ -68,7 +69,8 @@ export type TabIconKey =
   | 'pie_chart'
   | 'briefcase'
   | 'award'
-  | 'ear';
+  | 'ear'
+  | 'compass';
 
 export type TabColorKey =
   | 'emerald'
@@ -120,6 +122,7 @@ export const TAB_ICON_OPTIONS: TabIconOption[] = [
   { key: 'award', labelAr: 'وسام', labelEn: 'Award', icon: Award },
   { key: 'briefcase', labelAr: 'عمل', labelEn: 'Briefcase', icon: Briefcase },
   { key: 'ear', labelAr: 'ودن الحانوت', labelEn: 'Shop Ear', icon: Ear },
+  { key: 'compass', labelAr: 'رادار السوق', labelEn: 'Market Radar', icon: Compass },
   { key: 'smartphone', labelAr: 'هاتف', labelEn: 'Phone', icon: Smartphone },
   { key: 'printer', labelAr: 'طابعة', labelEn: 'Printer', icon: Printer },
   { key: 'settings', labelAr: 'إعدادات', labelEn: 'Settings', icon: Settings }
@@ -310,6 +313,7 @@ export interface PosTabDefinition {
     | 'analytics'
     | 'customers_peak'
     | 'shop_ear'
+    | 'market_radar'
     | 'dream'
     | 'ai_assistant'
     | 'alerts'
@@ -468,6 +472,18 @@ export const POS_TAB_CATALOG: PosTabDefinition[] = [
     shortLabelEn: 'Shop Ear',
     defaultIcon: 'ear',
     defaultColor: 'orange',
+    showInTopNav: true
+  },
+  {
+    id: 'market_radar',
+    labelAr: 'رادار اتجاهات السوق',
+    labelFr: 'Radar Marché',
+    labelEn: 'Market Radar',
+    shortLabelAr: 'رادار السوق',
+    shortLabelFr: 'Radar',
+    shortLabelEn: 'Radar',
+    defaultIcon: 'compass',
+    defaultColor: 'amber',
     showInTopNav: true
   },
   {

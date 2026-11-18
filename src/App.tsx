@@ -26,6 +26,7 @@ import { DreamView } from './components/analytics/DreamView';
 import { BourseHanoutView } from './components/bourse/BourseHanoutView';
 import { SmartDreamGoalBanner } from './components/analytics/SmartDreamGoalBanner';
 import { ShopEarView } from './components/shopEar/ShopEarView';
+import { MarketRadarView } from './components/marketRadar/MarketRadarView';
 import { ShopEarQuickModal } from './components/shopEar/ShopEarQuickModal';
 import { PurchaseInvoiceScanModal } from './components/inventory/PurchaseInvoiceScanModal';
 import { AiAssistantView } from './components/ai/AiAssistantView';
@@ -676,6 +677,7 @@ const PosMainContent: React.FC = () => {
         {currentTab === 'customers_peak' && <CustomersPeakView />}
         {currentTab === 'dream' && <DreamView />}
         {currentTab === 'shop_ear' && <ShopEarView />}
+        {currentTab === 'market_radar' && <MarketRadarView />}
         {currentTab === 'ai_assistant' && <AiAssistantView />}
         {currentTab === 'alerts' && <AlertsView />}
         {currentTab === 'settings' && <SettingsView />}

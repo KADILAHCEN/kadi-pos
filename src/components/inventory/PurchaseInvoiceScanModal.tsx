@@ -30,7 +30,11 @@ import {
   Edit3,
   WifiOff,
   ZoomIn,
-  Search
+  Search,
+  Flashlight,
+  Focus,
+  ShieldAlert,
+  RefreshCw
 } from 'lucide-react';
 
 export type PurchaseInvoiceMode = 'official_ice' | 'informal_noir';
@@ -81,35 +85,45 @@ const normalizeUnitType = (raw?: string): UnitType => {
   return 'piece';
 };
 
-const compressImageFileToJpeg = (fileOrBlob: Blob): Promise<{ base64: string; dataUrl: string }> =>
+const compressImageFileToJpeg = (
+  fileOrBlob: Blob,
+  maxDim = 800,
+  quality = 0.78
+): Promise<{ base64: string; dataUrl: string }> =>
   new Promise((resolve, reject) => {
-    const reader = new FileReader();
-    reader.onerror = () => reject(new Error('تعذر قراءة الصورة المختارة'));
-    reader.onload = () => {
-      const src = String(reader.result || '');
-      const img = new Image();
-      img.onerror = () => reject(new Error('صيغة الصورة غير مدعومة'));
-      img.onload = () => {
-        const maxDim = 1600;
+    const objectUrl = URL.createObjectURL(fileOrBlob);
+    const img = new Image();
+    img.onerror = () => {
+      URL.revokeObjectURL(objectUrl);
+      reject(new Error('صيغة الصورة غير مدعومة'));
+    };
+    img.onload = () => {
+      try {
         const scale = Math.min(1, maxDim / Math.max(img.width || 1, img.height || 1));
-        const w = Math.max(1, Math.round(img.width * scale));
-        const h = Math.max(1, Math.round(img.height * scale));
+        const w = Math.max(1, Math.round((img.width || 1) * scale));
+        const h = Math.max(1, Math.round((img.height || 1) * scale));
         const canvas = document.createElement('canvas');
         canvas.width = w;
         canvas.height = h;
         const ctx = canvas.getContext('2d');
         if (!ctx) {
+          URL.revokeObjectURL(objectUrl);
           reject(new Error('Canvas unavailable'));
           return;
         }
         ctx.drawImage(img, 0, 0, w, h);
-        const dataUrl = canvas.toDataURL('image/jpeg', 0.85);
+        const dataUrl = canvas.toDataURL('image/jpeg', quality);
         const base64 = dataUrl.replace(/^data:image\/jpeg;base64,/, '');
+        canvas.width = 0;
+        canvas.height = 0;
+        URL.revokeObjectURL(objectUrl);
         resolve({ base64, dataUrl });
-      };
-      img.src = src;
+      } catch (err) {
+        URL.revokeObjectURL(objectUrl);
+        reject(err);
+      }
     };
-    reader.readAsDataURL(fileOrBlob);
+    img.src = objectUrl;
   });
 
 const findBestCatalogProduct = (
@@ -162,10 +176,19 @@ export const PurchaseInvoiceScanModal: React.FC = () => {
   const [previewDataUrl, setPreviewDataUrl] = useState<string | null>(null);
   const [showZoomPhoto, setShowZoomPhoto] = useState(false);
   const [isLiveCameraOpen, setIsLiveCameraOpen] = useState(false);
+  const [cameraPermission, setCameraPermission] = useState<
+    'idle' | 'requesting' | 'granted' | 'denied' | 'unsupported'
+  >('idle');
+  const [torchSupported, setTorchSupported] = useState(false);
+  const [flashOn, setFlashOn] = useState(false);
+  const [autoFocusActive, setAutoFocusActive] = useState(true);
+  const [focusReticle, setFocusReticle] = useState<{ x: number; y: number } | null>(null);
+
   const [isScanning, setIsScanning] = useState(false);
+  const [isBackgroundEnhancing, setIsBackgroundEnhancing] = useState(false);
   const [scanError, setScanError] = useState<string | null>(null);
   const [isBlurryError, setIsBlurryError] = useState(false);
-  const [isAiFailure, setIsAiFailure] = useState(false);
+  const [handwrittenMessage, setHandwrittenMessage] = useState<string | null>(null);
   const [scanNotice, setScanNotice] = useState<string | null>(null);
   const [usedOfflineFallback, setUsedOfflineFallback] = useState(false);
   const [isHandwrittenDoc, setIsHandwrittenDoc] = useState(false);
@@ -187,12 +210,30 @@ export const PurchaseInvoiceScanModal: React.FC = () => {
   const phoneCameraInputRef = useRef<HTMLInputElement | null>(null);
   const itemsTableRef = useRef<HTMLDivElement | null>(null);
   const firstRowInputRef = useRef<HTMLInputElement | null>(null);
+  const focusTimerRef = useRef<number | null>(null);
+  const bgAbortRef = useRef<AbortController | null>(null);
 
   const stopCameraStream = () => {
+    if (bgAbortRef.current) {
+      bgAbortRef.current.abort();
+      bgAbortRef.current = null;
+    }
     if (streamRef.current) {
-      streamRef.current.getTracks().forEach((t) => t.stop());
+      streamRef.current.getTracks().forEach((t) => {
+        try {
+          // Ensure hardware torch turns off cleanly
+          t.applyConstraints?.({ advanced: [{ torch: false } as MediaTrackConstraintSet] }).catch(
+            () => {}
+          );
+        } catch {
+          // ignore
+        }
+        t.stop();
+      });
       streamRef.current = null;
     }
+    setFlashOn(false);
+    setTorchSupported(false);
     setIsLiveCameraOpen(false);
   };
 
@@ -202,10 +243,12 @@ export const PurchaseInvoiceScanModal: React.FC = () => {
     setInvoiceMode(mode);
     setPreviewDataUrl(null);
     setShowZoomPhoto(false);
+    setCameraPermission('idle');
     setIsScanning(false);
+    setIsBackgroundEnhancing(false);
     setScanError(null);
     setIsBlurryError(false);
-    setIsAiFailure(false);
+    setHandwrittenMessage(null);
     setScanNotice(null);
     setUsedOfflineFallback(false);
     setIsHandwrittenDoc(false);
@@ -225,6 +268,10 @@ export const PurchaseInvoiceScanModal: React.FC = () => {
       const detail = (evt as CustomEvent<{ defaultMode?: PurchaseInvoiceMode }>).detail;
       resetFormState(detail?.defaultMode || 'official_ice');
       setIsOpen(true);
+      // Immediately ask for Camera permission & open fast camera on first open
+      window.setTimeout(() => {
+        void startLiveCamera();
+      }, 60);
     };
     window.addEventListener('kadi:open-purchase-invoice-scanner', handleOpen);
     return () => {
@@ -391,53 +438,138 @@ export const PurchaseInvoiceScanModal: React.FC = () => {
   };
 
   /**
-   * Local Canvas OCR Fallback: Runs 100% offline with zero external CDN requests.
-   * Extracts quantities and prices from image rows and ensures list is NEVER left blank.
+   * Optional quick background AI name/metadata enrichment (never blocks offline OCR results,
+   * never shows a red network error if internet is slow or disconnected).
    */
-  const executeOfflineOcrFallback = async (
-    img: HTMLImageElement,
-    reasonNotice?: string
-  ): Promise<number> => {
-    const ocr = runOfflineInvoiceNumberOcr(img);
-
-    if (ocr.rows.length > 0) {
-      const offlineItems: ScannedLineItem[] = ocr.rows.map((r, idx) => ({
-        id: `ocr-${Date.now()}-${idx}`,
-        include: true,
-        rawName: isAr ? `سلعة ${idx + 1} (اختار من اللائحة ولا اكتب الإسم)` : `Scanned Item #${idx + 1}`,
-        matchedProductId: '',
-        quantity: r.quantity,
-        unitCost: r.unitCost,
-        sellPrice: r.unitCost > 0 ? Number((r.unitCost * 1.2).toFixed(2)) : 0,
-        unitType: 'piece',
-        confidence: r.confidence,
-        source: 'offline_ocr',
-        linePreviewDataUrl: r.linePreviewDataUrl
-      }));
-      setItems(offlineItems);
-      setUsedOfflineFallback(true);
-      setScanNotice(
-        reasonNotice ||
-          (isAr
-            ? `خدمة القراءة المحلية (بلا أنترنت) لقات ${ocr.rows.length} سطور بالأرقام — اختار إسم السلعة وصحّح الكمية/الثمن إلى كان مكتوب باليد قبل ما تزيد للمخزون.`
-            : `Offline OCR detected ${ocr.rows.length} numeric rows — link item names and adjust quantities/prices below.`)
-      );
-      return offlineItems.length;
+  const runBackgroundAiEnrichment = async (
+    base64: string,
+    hadOfflineRows: boolean
+  ): Promise<void> => {
+    if (typeof navigator !== 'undefined' && !navigator.onLine) return;
+    if (bgAbortRef.current) {
+      bgAbortRef.current.abort();
     }
+    const controller = new AbortController();
+    bgAbortRef.current = controller;
+    const timeoutId = window.setTimeout(() => controller.abort(), 5000);
+    setIsBackgroundEnhancing(true);
 
-    // Even if OCR sees no crisp digits (e.g. cursive handwriting or blank paper),
-    // never show a dead-end (0) list: open a ready manual entry row immediately.
-    setItems((prev) => (prev.length > 0 ? prev : [buildEmptyManualRow()]));
-    setUsedOfflineFallback(true);
-    setScanNotice(
-      reasonNotice ||
-        (isAr
-          ? 'ما بانوش أرقام واضحين فـ الصورة — فتحنا ليك سطر باش تدخل السلعة والكمية يدوياً ولا تختار من سلع الحانوت.'
-          : 'Could not read clear numbers from photo — use manual row or quick catalog picks below.')
-    );
-    return 0;
+    try {
+      const res = await fetch('/api/ai/scan-purchase-invoice', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        signal: controller.signal,
+        body: JSON.stringify({
+          imageBase64: base64,
+          mimeType: 'image/jpeg',
+          existingProducts: products.map((p) => p.name).slice(0, 400),
+          language
+        })
+      });
+
+      const parsed = await safeParseJsonResponse<ScannedInvoiceResponse>(res);
+      if (controller.signal.aborted || parsed.isNonJson || !parsed.data || !res.ok) {
+        return;
+      }
+
+      const inv = parsed.data.invoice || {};
+      const extractedIce = (inv.supplierIce || '').replace(/\s+/g, '').trim();
+
+      if (inv.supplierName) setSupplierName(inv.supplierName.trim());
+      if (inv.supplierPhone) setSupplierPhone(inv.supplierPhone.trim());
+      if (extractedIce) setSupplierIce(extractedIce);
+      if (inv.invoiceNumber) setInvoiceNumber(inv.invoiceNumber.trim());
+      if (inv.invoiceDate && /^\d{4}-\d{2}-\d{2}$/.test(inv.invoiceDate)) {
+        setInvoiceDate(inv.invoiceDate);
+      }
+
+      if (invoiceMode !== 'informal_noir' && (extractedIce || inv.hasOfficialMarkers)) {
+        setInvoiceMode('official_ice');
+      }
+
+      const aiItems = inv.items || [];
+      if (aiItems.length > 0) {
+        const extractedRows: ScannedLineItem[] = aiItems.map((raw, idx) => {
+          const name = (raw.rawName || raw.matchedCatalogName || '').trim();
+          const matched = findBestCatalogProduct(name, raw.matchedCatalogName, products);
+          const qty = Math.max(0.1, Number(raw.quantity) || 1);
+          const rawUnitCost = Number(raw.unitCost);
+          const rawLineTotal = Number(raw.lineTotal);
+          const computedUnitCost =
+            Number.isFinite(rawUnitCost) && rawUnitCost > 0
+              ? rawUnitCost
+              : Number.isFinite(rawLineTotal) && rawLineTotal > 0
+              ? rawLineTotal / qty
+              : matched
+              ? matched.costPrice
+              : 0;
+
+          const suggestedSell = matched
+            ? matched.price
+            : computedUnitCost > 0
+            ? Number((computedUnitCost * 1.25).toFixed(2))
+            : 10;
+
+          const conf =
+            raw.confidence === 'high' || raw.confidence === 'medium' || raw.confidence === 'low'
+              ? raw.confidence
+              : inv.isHandwritten
+              ? 'medium'
+              : 'high';
+
+          return {
+            id: `scan-${Date.now()}-${idx}`,
+            include: true,
+            rawName: name,
+            matchedProductId: matched?.id || '',
+            quantity: Number(qty.toFixed(2)),
+            unitCost: Number(Math.max(0, computedUnitCost).toFixed(2)),
+            sellPrice: suggestedSell,
+            unitType: matched ? matched.unitType : normalizeUnitType(raw.unitType),
+            confidence: conf,
+            source: 'ai'
+          };
+        });
+
+        setItems(extractedRows);
+        setHandwrittenMessage(null);
+        setIsHandwrittenDoc(Boolean(inv.isHandwritten));
+        setScanNotice(
+          extractedIce
+            ? isAr
+              ? `✅ تقرات الفاتورة الرسمية (ICE: ${extractedIce}) وتطابقو ${extractedRows.length} سلع.`
+              : `✅ Official ICE (${extractedIce}) & ${extractedRows.length} items matched.`
+            : isAr
+            ? `✅ تحسنات الأسماء والكميات تلقائياً (${extractedRows.length} سلع) — راجعهم وأكد الإضافة.`
+            : `✅ Auto-matched ${extractedRows.length} items — review and confirm below.`
+        );
+      } else if (inv.isHandwritten && !hadOfflineRows) {
+        setIsHandwrittenDoc(true);
+        setHandwrittenMessage(
+          isAr
+            ? 'الخط غير واضح، عاود صور في إضاءة مزيانة'
+            : 'Handwriting is not clear — retake photo in good lighting'
+        );
+      }
+    } catch {
+      // Silent fail — never disturb offline OCR results or show connection errors when internet is slow/offline
+    } finally {
+      window.clearTimeout(timeoutId);
+      if (bgAbortRef.current === controller) {
+        bgAbortRef.current = null;
+      }
+      setIsBackgroundEnhancing(false);
+    }
   };
 
+  /**
+   * OFFLINE-OCR-FIRST PIPELINE:
+   * 1. Compress <= 800px JPEG to avoid mobile memory crashes.
+   * 2. Run local blur check.
+   * 3. Read printed numbers & rows IMMEDIATELY via Offline OCR without waiting for internet.
+   * 4. If handwritten / low digit confidence: never show error -> show
+   *    "الخط غير واضح، عاود صور في إضاءة مزيانة" + "دخل يدوياً" button.
+   */
   const analyzeImageBlob = async (
     blob: Blob,
     options: { skipBlurCheck?: boolean; forceOfflineOnly?: boolean } = {}
@@ -445,22 +577,20 @@ export const PurchaseInvoiceScanModal: React.FC = () => {
     lastCapturedBlobRef.current = blob;
     setScanError(null);
     setIsBlurryError(false);
-    setIsAiFailure(false);
+    setHandwrittenMessage(null);
     setScanNotice(null);
     setUsedOfflineFallback(false);
     setIsHandwrittenDoc(false);
     setCompletedMessage(null);
     setIsScanning(true);
 
-    let localDataUrl = '';
     try {
-      const { base64, dataUrl } = await compressImageFileToJpeg(blob);
-      localDataUrl = dataUrl;
+      const { base64, dataUrl } = await compressImageFileToJpeg(blob, 800, 0.78);
       setPreviewDataUrl(dataUrl);
 
       const decodedImg = await loadBlobToImage(dataUrl);
 
-      // Step 1: Local Blur Detection BEFORE hitting AI / OCR
+      // Step 1: Local Blur Detection BEFORE OCR
       if (!options.skipBlurCheck) {
         const sharpness = assessImageSharpness(decodedImg);
         if (sharpness.isBlurry) {
@@ -475,161 +605,87 @@ export const PurchaseInvoiceScanModal: React.FC = () => {
         }
       }
 
-      // Step 2: If explicitly offline or browser has no network, jump directly to Local OCR
-      if (options.forceOfflineOnly || (typeof navigator !== 'undefined' && !navigator.onLine)) {
-        await executeOfflineOcrFallback(
-          decodedImg,
-          isAr
-            ? 'ما كاينش أنترنت دابا — استعملنا القراءة المحلية من التصويرة باش نجبدو الأرقام. راجعهم وصحّح قبل الإضافة.'
-            : 'No internet connection — local offline OCR extracted numbers below.'
-        );
-        return;
-      }
+      // Step 2: OFFLINE OCR FIRST (zero internet wait)
+      const ocr = runOfflineInvoiceNumberOcr(decodedImg);
+      setUsedOfflineFallback(true);
 
-      // Step 3: Call AI Invoice OCR endpoint with timeout protection
-      const controller = new AbortController();
-      const timeoutId = window.setTimeout(() => controller.abort(), 22000);
-
-      let res: Response;
-      try {
-        res = await fetch('/api/ai/scan-purchase-invoice', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          signal: controller.signal,
-          body: JSON.stringify({
-            imageBase64: base64,
-            mimeType: 'image/jpeg',
-            existingProducts: products.map((p) => p.name).slice(0, 400),
-            language
-          })
-        });
-      } finally {
-        window.clearTimeout(timeoutId);
-      }
-
-      const parsed = await safeParseJsonResponse<ScannedInvoiceResponse>(res);
-      if (parsed.isNonJson || !parsed.data || !res.ok) {
-        throw new Error(
-          parsed.data?.error ||
-            (isAr ? 'تعذر الاتصال بخدمة قراءة الفواتير الذكية' : 'AI invoice service unavailable')
-        );
-      }
-
-      const inv = parsed.data.invoice || {};
-      const extractedIce = (inv.supplierIce || '').replace(/\s+/g, '').trim();
-
-      if (inv.supplierName) setSupplierName(inv.supplierName.trim());
-      if (inv.supplierPhone) setSupplierPhone(inv.supplierPhone.trim());
-      if (extractedIce) setSupplierIce(extractedIce);
-      if (inv.invoiceNumber) setInvoiceNumber(inv.invoiceNumber.trim());
-      if (inv.invoiceDate && /^\d{4}-\d{2}-\d{2}$/.test(inv.invoiceDate)) {
-        setInvoiceDate(inv.invoiceDate);
-      }
-      setIsHandwrittenDoc(Boolean(inv.isHandwritten));
-
-      // Keep user's explicit Stock-Only ("بوار/نوار") mode untouched if they chose it, otherwise auto-suggest official if ICE detected
-      if (invoiceMode !== 'informal_noir' && (extractedIce || inv.hasOfficialMarkers)) {
-        setInvoiceMode('official_ice');
-      }
-
-      const extractedRows: ScannedLineItem[] = (inv.items || []).map((raw, idx) => {
-        const name = (raw.rawName || raw.matchedCatalogName || '').trim();
-        const matched = findBestCatalogProduct(name, raw.matchedCatalogName, products);
-        const qty = Math.max(0.1, Number(raw.quantity) || 1);
-        const rawUnitCost = Number(raw.unitCost);
-        const rawLineTotal = Number(raw.lineTotal);
-        const computedUnitCost =
-          Number.isFinite(rawUnitCost) && rawUnitCost > 0
-            ? rawUnitCost
-            : Number.isFinite(rawLineTotal) && rawLineTotal > 0
-            ? rawLineTotal / qty
-            : matched
-            ? matched.costPrice
-            : 0;
-
-        const suggestedSell = matched
-          ? matched.price
-          : computedUnitCost > 0
-          ? Number((computedUnitCost * 1.25).toFixed(2))
-          : 10;
-
-        const conf =
-          raw.confidence === 'high' || raw.confidence === 'medium' || raw.confidence === 'low'
-            ? raw.confidence
-            : inv.isHandwritten
-            ? 'medium'
-            : 'high';
-
-        return {
-          id: `scan-${Date.now()}-${idx}`,
+      if (ocr.rows.length > 0 && !ocr.looksHandwritten) {
+        const offlineItems: ScannedLineItem[] = ocr.rows.map((r, idx) => ({
+          id: `ocr-${Date.now()}-${idx}`,
           include: true,
-          rawName: name,
-          matchedProductId: matched?.id || '',
-          quantity: Number(qty.toFixed(2)),
-          unitCost: Number(Math.max(0, computedUnitCost).toFixed(2)),
-          sellPrice: suggestedSell,
-          unitType: matched ? matched.unitType : normalizeUnitType(raw.unitType),
-          confidence: conf,
-          source: 'ai'
-        };
-      });
+          rawName: isAr
+            ? `سلعة ${idx + 1} (اختار من اللائحة ولا اكتب الإسم)`
+            : `Scanned Item #${idx + 1}`,
+          matchedProductId: '',
+          quantity: r.quantity,
+          unitCost: r.unitCost,
+          sellPrice: r.unitCost > 0 ? Number((r.unitCost * 1.2).toFixed(2)) : 0,
+          unitType: 'piece',
+          confidence: r.confidence,
+          source: 'offline_ocr',
+          linePreviewDataUrl: r.linePreviewDataUrl
+        }));
 
-      if (extractedRows.length === 0) {
-        // AI connected but parsed 0 items -> fall back automatically to local OCR + manual starter row
-        await executeOfflineOcrFallback(
-          decodedImg,
+        setItems(offlineItems);
+        setScanNotice(
           isAr
-            ? 'الفاتورة ما بانتش واضحة بزاف — جبدنا الأرقام محلياً وزدنا ليك سطر لتعديل الكمية يدوياً.'
-            : 'AI returned no lines — extracted local numbers and opened manual row below.'
+            ? `⚡ القراءة المحلية السريعة (بلا أنترنت) جبدات ${offlineItems.length} سطور بالأرقام — اختار أسماء السلع وصحّح إلى احتجتي.`
+            : `⚡ Offline OCR immediately read ${offlineItems.length} numeric rows — link item names or confirm below.`
         );
+        setIsScanning(false);
+
+        // Optional non-blocking quick AI enrichment if online (won't erase or complain if slow)
+        if (!options.forceOfflineOnly && typeof navigator !== 'undefined' && navigator.onLine) {
+          void runBackgroundAiEnrichment(base64, true);
+        }
         return;
       }
 
-      setItems(extractedRows);
-      setScanNotice(
-        inv.isHandwritten
-          ? isAr
-            ? `✅ تقرات الفاتورة المكتوبة باليد (${extractedRows.length} سلع) — تأكد من الأرقام والكميات وعدّلها يدوياً قبل التأكيد.`
-            : `✅ Handwritten note scanned (${extractedRows.length} items) — please verify numbers before saving.`
-          : extractedIce
-          ? isAr
-            ? `✅ تقرات الفاتورة الرسمية (ICE: ${extractedIce}) — راجع السلع وأكد الإضافة.`
-            : `✅ Official ICE (${extractedIce}) detected — review items below.`
-          : isAr
-          ? `✅ تقرات ${extractedRows.length} سلع بنجاح! تقدر تعدل الكمية أو الأثمنة قبل ما تزيد للمخزون.`
-          : `✅ Extracted ${extractedRows.length} items! Adjust numbers if needed before saving.`
-      );
-    } catch {
-      // CRITICAL FIX: Never leave user stuck on "تعذر الاتصال..." with an empty (0) list!
-      setIsAiFailure(true);
-      setScanError(
-        invoiceMode === 'informal_noir'
-          ? isAr
-            ? 'تعذر الاتصال بالذكاء الاصطناعي — خدامين دابا بالقراءة المحلية (بلا أنترنت)، وتقدر تكمل وضع "نوار / بوار" وتزيد الكميات يدوياً نيشان للمخزون!'
-            : 'AI offline — local OCR & Stock-Only manual entry ready below.'
-          : isAr
-          ? 'ما قدرناش نتصلو بخدمة AI دابا — شغلنا القراءة المحلية من التصويرة (بلا أنترنت) وتقدر تعاود المحاولة أو تدخل السلع يدوياً.'
-          : 'AI service failed — switched to local offline OCR & manual entry.'
+      // Handwritten / unclear lines: DO NOT show an error — show friendly lighting & manual prompt
+      setIsHandwrittenDoc(true);
+      setHandwrittenMessage(
+        isAr
+          ? 'الخط غير واضح، عاود صور في إضاءة مزيانة'
+          : 'Handwriting is not clear — retake photo in good lighting'
       );
 
-      // Run offline OCR fallback directly on decoded blob/dataUrl
-      try {
-        const decodedImg = await loadBlobToImage(localDataUrl || blob);
-        await executeOfflineOcrFallback(
-          decodedImg,
-          isAr
-            ? 'القراءة المحلية (بلا أنترنت) جبدات الأرقام الممكنة من التصويرة — تأكد من الأسماء والأرقام أسفله.'
-            : 'Local offline OCR scanned numbers from your photo — review and adjust below.'
-        );
-      } catch {
-        setItems((prev) => (prev.length > 0 ? prev : [buildEmptyManualRow()]));
+      if (ocr.rows.length > 0) {
+        const partialItems: ScannedLineItem[] = ocr.rows.map((r, idx) => ({
+          id: `ocr-hw-${Date.now()}-${idx}`,
+          include: true,
+          rawName: isAr ? `سلعة ${idx + 1}` : `Item #${idx + 1}`,
+          matchedProductId: '',
+          quantity: r.quantity,
+          unitCost: r.unitCost,
+          sellPrice: r.unitCost > 0 ? Number((r.unitCost * 1.2).toFixed(2)) : 0,
+          unitType: 'piece',
+          confidence: 'low',
+          source: 'offline_ocr',
+          linePreviewDataUrl: r.linePreviewDataUrl
+        }));
+        setItems(partialItems);
+      } else {
+        setItems((prev) => (prev.length > 0 ? prev : []));
       }
-    } finally {
+
+      setIsScanning(false);
+
+      // Try quick non-blocking online read if available in background (silent fallback)
+      if (!options.forceOfflineOnly && typeof navigator !== 'undefined' && navigator.onLine) {
+        void runBackgroundAiEnrichment(base64, ocr.rows.length > 0);
+      }
+    } catch {
+      setIsHandwrittenDoc(true);
+      setHandwrittenMessage(
+        isAr
+          ? 'الخط غير واضح، عاود صور في إضاءة مزيانة'
+          : 'Could not clearly read handwriting — retake in brighter lighting'
+      );
       setIsScanning(false);
     }
   };
 
-  const handleRetryAiScan = () => {
+  const handleRetryScan = () => {
     if (!lastCapturedBlobRef.current) return;
     void analyzeImageBlob(lastCapturedBlobRef.current, { skipBlurCheck: true });
   };
@@ -650,56 +706,138 @@ export const PurchaseInvoiceScanModal: React.FC = () => {
     e.target.value = '';
   };
 
+  const applyCameraFocusAndTorch = async (
+    track: MediaStreamTrack | undefined,
+    opts: { focusPulse?: boolean; nextFlash?: boolean } = {}
+  ) => {
+    if (!track || !track.applyConstraints) return;
+    const advanced: MediaTrackConstraintSet[] = [];
+    if (opts.focusPulse) {
+      advanced.push({ focusMode: 'single-shot' } as unknown as MediaTrackConstraintSet);
+    } else if (autoFocusActive) {
+      advanced.push({ focusMode: 'continuous' } as unknown as MediaTrackConstraintSet);
+    }
+    if (typeof opts.nextFlash === 'boolean' && torchSupported) {
+      advanced.push({ torch: opts.nextFlash } as unknown as MediaTrackConstraintSet);
+    }
+    if (advanced.length > 0) {
+      try {
+        await track.applyConstraints({ advanced });
+      } catch {
+        // Device does not support requested advanced constraint cleanly
+      }
+    }
+    if (opts.focusPulse && autoFocusActive) {
+      window.setTimeout(() => {
+        track
+          .applyConstraints?.({
+            advanced: [{ focusMode: 'continuous' } as unknown as MediaTrackConstraintSet]
+          })
+          .catch(() => {});
+      }, 650);
+    }
+  };
+
   const startLiveCamera = async () => {
     setScanError(null);
     setIsBlurryError(false);
+    setHandwrittenMessage(null);
+
     if (!navigator.mediaDevices?.getUserMedia) {
-      setScanError(
-        isAr
-          ? 'المتصفح ما كيدعمش الكاميرا المباشرة — استعمل زر "تصوير بالهاتف".'
-          : 'Live camera not supported; use Phone Camera button.'
-      );
+      setCameraPermission('unsupported');
       return;
     }
 
+    stopCameraStream();
+    setCameraPermission('requesting');
+
     try {
       const stream = await navigator.mediaDevices.getUserMedia({
-        video: { facingMode: { ideal: 'environment' } },
+        video: {
+          facingMode: { ideal: 'environment' },
+          width: { ideal: 1280 },
+          height: { ideal: 720 }
+        },
         audio: false
       });
       streamRef.current = stream;
+      setCameraPermission('granted');
       setIsLiveCameraOpen(true);
+
+      const videoTrack = stream.getVideoTracks()[0];
+      if (videoTrack) {
+        try {
+          const caps = videoTrack.getCapabilities?.() as { torch?: boolean; focusMode?: string[] } | undefined;
+          setTorchSupported(Boolean(caps?.torch));
+        } catch {
+          setTorchSupported(false);
+        }
+        void applyCameraFocusAndTorch(videoTrack);
+      }
+
       window.setTimeout(() => {
         if (videoRef.current) {
           videoRef.current.srcObject = stream;
-          void videoRef.current.play();
+          void videoRef.current.play().catch(() => {});
         }
-      }, 60);
+      }, 30);
     } catch {
-      setScanError(
-        isAr
-          ? 'ما قدرناش نحلو الكاميرا (تحقق من الإذن) — استعمل زر "تصوير بالهاتف".'
-          : 'Could not open camera; use Phone Camera button.'
-      );
+      setCameraPermission('denied');
+      setIsLiveCameraOpen(false);
     }
+  };
+
+  const handleToggleFlash = async () => {
+    const next = !flashOn;
+    setFlashOn(next);
+    const track = streamRef.current?.getVideoTracks()[0];
+    if (track && torchSupported) {
+      await applyCameraFocusAndTorch(track, { nextFlash: next });
+    }
+  };
+
+  const triggerManualAutoFocus = async (evt?: React.MouseEvent<HTMLDivElement>) => {
+    if (evt) {
+      const rect = evt.currentTarget.getBoundingClientRect();
+      const x = Math.round(((evt.clientX - rect.left) / Math.max(1, rect.width)) * 100);
+      const y = Math.round(((evt.clientY - rect.top) / Math.max(1, rect.height)) * 100);
+      setFocusReticle({ x, y });
+    } else {
+      setFocusReticle({ x: 50, y: 50 });
+    }
+    setAutoFocusActive(true);
+    if (focusTimerRef.current) window.clearTimeout(focusTimerRef.current);
+    focusTimerRef.current = window.setTimeout(() => setFocusReticle(null), 950);
+
+    const track = streamRef.current?.getVideoTracks()[0];
+    await applyCameraFocusAndTorch(track, { focusPulse: true });
   };
 
   const captureLiveFrame = () => {
     const video = videoRef.current;
     if (!video || !video.videoWidth || !video.videoHeight) return;
+
+    // Scale directly to max 800px before creating JPEG blob to avoid mobile memory errors
+    const maxDim = 800;
+    const scale = Math.min(1, maxDim / Math.max(video.videoWidth, video.videoHeight));
+    const w = Math.max(1, Math.round(video.videoWidth * scale));
+    const h = Math.max(1, Math.round(video.videoHeight * scale));
+
     const canvas = document.createElement('canvas');
-    canvas.width = video.videoWidth;
-    canvas.height = video.videoHeight;
+    canvas.width = w;
+    canvas.height = h;
     const ctx = canvas.getContext('2d');
     if (!ctx) return;
-    ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
+    ctx.drawImage(video, 0, 0, w, h);
     canvas.toBlob(
       (blob) => {
+        canvas.width = 0;
+        canvas.height = 0;
         stopCameraStream();
         if (blob) void analyzeImageBlob(blob);
       },
       'image/jpeg',
-      0.9
+      0.8
     );
   };
 
@@ -1037,17 +1175,140 @@ export const PurchaseInvoiceScanModal: React.FC = () => {
               </div>
             </div>
 
+            {/* Permission Request / Denied Card with prominent 'سمح للكاميرا' button */}
+            {cameraPermission === 'requesting' && !isLiveCameraOpen && (
+              <div className="p-4 rounded-xl bg-slate-900 text-white flex items-center justify-center gap-2.5 text-xs font-bold">
+                <Loader2 className="w-4 h-4 animate-spin text-amber-400" />
+                <span>
+                  {isAr ? 'جاري طلب إذن الكاميرا وفتح العدسة...' : 'Requesting camera permission...'}
+                </span>
+              </div>
+            )}
+
+            {cameraPermission === 'denied' && !isLiveCameraOpen && (
+              <div className="p-4 rounded-xl bg-amber-50 dark:bg-amber-950/40 border border-amber-300 dark:border-amber-700 flex flex-col sm:flex-row sm:items-center justify-between gap-3">
+                <div className="flex items-start gap-2.5 text-xs text-amber-950 dark:text-amber-200">
+                  <ShieldAlert className="w-5 h-5 text-amber-600 shrink-0 mt-0.5" />
+                  <div>
+                    <div className="font-black">
+                      {isAr
+                        ? 'إذن الكاميرا مرفوض أو مسدود دابا'
+                        : 'Camera permission was denied'}
+                    </div>
+                    <div className="text-[11px] opacity-85 mt-0.5">
+                      {isAr
+                        ? 'اضغط على "سمح للكاميرا" باش تعاود تفتحها، ولا صور بتطبيق التيليفون.'
+                        : 'Click "Allow Camera" to grant permission or use Phone Camera.'}
+                    </div>
+                  </div>
+                </div>
+                <div className="flex flex-wrap items-center gap-2 shrink-0">
+                  <button
+                    type="button"
+                    onClick={() => void startLiveCamera()}
+                    className="px-4 py-2 rounded-xl bg-emerald-600 hover:bg-emerald-700 text-white text-xs font-black flex items-center gap-1.5"
+                  >
+                    <Camera className="w-4 h-4" />
+                    <span>{isAr ? 'سمح للكاميرا' : 'Allow Camera'}</span>
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => phoneCameraInputRef.current?.click()}
+                    className="px-3 py-2 rounded-xl bg-white dark:bg-slate-900 border border-amber-300 dark:border-amber-700 text-xs font-bold text-slate-800 dark:text-slate-200"
+                  >
+                    {isAr ? 'كاميرا التيليفون' : 'Phone Cam'}
+                  </button>
+                </div>
+              </div>
+            )}
+
             {isLiveCameraOpen && (
-              <div className="rounded-xl overflow-hidden bg-black relative">
-                <video ref={videoRef} playsInline muted className="w-full max-h-64 object-cover" />
-                <div className="p-3 bg-slate-900/90 flex items-center justify-center gap-3">
+              <div
+                onClick={(e) => void triggerManualAutoFocus(e)}
+                className="rounded-xl overflow-hidden bg-black relative select-none cursor-crosshair border border-slate-700"
+              >
+                <video
+                  ref={videoRef}
+                  playsInline
+                  muted
+                  className="w-full max-h-72 object-cover"
+                />
+
+                {/* Screen Fill-Light Flash Assist overlay when hardware LED flash isn't present */}
+                {flashOn && !torchSupported && (
+                  <div className="absolute inset-0 bg-white/30 pointer-events-none mix-blend-screen" />
+                )}
+
+                {/* Document Alignment Guide Frame */}
+                <div className="absolute inset-4 border-2 border-dashed border-amber-400/70 rounded-xl pointer-events-none" />
+
+                {/* Tap-to-focus Reticle */}
+                {focusReticle && (
+                  <div
+                    style={{ left: `${focusReticle.x}%`, top: `${focusReticle.y}%` }}
+                    className="absolute -translate-x-1/2 -translate-y-1/2 w-14 h-14 rounded-xl border-2 border-emerald-400 shadow-[0_0_0_2px_rgba(0,0,0,0.4)] pointer-events-none transition-transform"
+                  />
+                )}
+
+                {/* Top Camera Overlay: Flash & Auto-Focus */}
+                <div
+                  onClick={(e) => e.stopPropagation()}
+                  className="absolute top-2.5 inset-x-2.5 flex flex-wrap items-center justify-between gap-2"
+                >
+                  <button
+                    type="button"
+                    onClick={() => void handleToggleFlash()}
+                    className={`px-3 py-1.5 rounded-xl text-[11px] font-black flex items-center gap-1.5 backdrop-blur-xs transition-colors ${
+                      flashOn
+                        ? 'bg-amber-400 text-slate-950'
+                        : 'bg-slate-950/75 text-white hover:bg-slate-900'
+                    }`}
+                  >
+                    <Flashlight className="w-3.5 h-3.5" />
+                    <span>
+                      {flashOn
+                        ? isAr
+                          ? 'فلاش شاعل'
+                          : 'Flash ON'
+                        : isAr
+                        ? 'فلاش'
+                        : 'Flash'}
+                    </span>
+                  </button>
+
+                  <button
+                    type="button"
+                    onClick={() => void triggerManualAutoFocus()}
+                    className={`px-3 py-1.5 rounded-xl text-[11px] font-black flex items-center gap-1.5 backdrop-blur-xs transition-colors ${
+                      autoFocusActive
+                        ? 'bg-emerald-600/90 text-white hover:bg-emerald-600'
+                        : 'bg-slate-950/75 text-white hover:bg-slate-900'
+                    }`}
+                  >
+                    <Focus className="w-3.5 h-3.5" />
+                    <span>{isAr ? 'تركيز تلقائي' : 'Auto-Focus'}</span>
+                  </button>
+                </div>
+
+                {/* Bottom Shutter Bar */}
+                <div
+                  onClick={(e) => e.stopPropagation()}
+                  className="p-3 bg-slate-950/90 flex items-center justify-center gap-3"
+                >
                   <button
                     type="button"
                     onClick={captureLiveFrame}
-                    className="px-5 py-2 rounded-xl bg-amber-400 hover:bg-amber-500 text-slate-950 text-xs font-black flex items-center gap-2"
+                    className="px-6 py-2.5 rounded-xl bg-amber-400 hover:bg-amber-500 text-slate-950 text-xs font-black flex items-center gap-2 shadow-lg"
                   >
                     <Camera className="w-4 h-4" />
                     <span>{isAr ? 'صور وقرا الفاتورة دابا' : 'Capture & Read Invoice'}</span>
+                  </button>
+                  <button
+                    type="button"
+                    onClick={stopCameraStream}
+                    className="px-3 py-2.5 rounded-xl bg-slate-800 hover:bg-slate-700 text-slate-200 text-xs font-bold"
+                  >
+                    {isAr ? 'سد' : 'Close'}
                   </button>
                 </div>
               </div>
@@ -1058,8 +1319,19 @@ export const PurchaseInvoiceScanModal: React.FC = () => {
                 <Loader2 className="w-6 h-6 animate-spin" />
                 <span>
                   {isAr
-                    ? 'جاري قراءة الفاتورة والأرقام (أونلاين + محلي)...'
-                    : 'Reading invoice photo and extracting items & numbers...'}
+                    ? 'جاري ضغط الصورة (<=800px) وقراءة الأرقام محلياً...'
+                    : 'Compressing photo & running fast offline OCR...'}
+                </span>
+              </div>
+            )}
+
+            {isBackgroundEnhancing && !isScanning && (
+              <div className="px-3 py-1.5 rounded-xl bg-slate-100 dark:bg-slate-800 text-[11px] font-bold text-slate-600 dark:text-slate-300 inline-flex items-center gap-1.5">
+                <RefreshCw className="w-3 h-3 animate-spin text-emerald-600" />
+                <span>
+                  {isAr
+                    ? 'كنطابقو الأسماء مع مخزونك (بلا ما نعطّلوك)...'
+                    : 'Matching catalog names in background...'}
                 </span>
               </div>
             )}
@@ -1084,17 +1356,17 @@ export const PurchaseInvoiceScanModal: React.FC = () => {
                   </button>
                   <div className="text-xs text-slate-600 dark:text-slate-300">
                     <div className="font-bold text-slate-900 dark:text-white flex items-center gap-1.5">
-                      <span>{isAr ? 'التصويرة واجدة' : 'Invoice photo loaded'}</span>
+                      <span>{isAr ? 'التصويرة واجدة (مضغوطة <=800px)' : 'Photo Ready (<=800px)'}</span>
                       {usedOfflineFallback && (
                         <span className="px-1.5 py-0.5 rounded bg-sky-100 dark:bg-sky-950 text-sky-700 dark:text-sky-300 text-[10px] font-black">
-                          {isAr ? 'OCR محلي' : 'Local OCR'}
+                          {isAr ? 'OCR محلي' : 'Offline OCR'}
                         </span>
                       )}
                     </div>
                     <div className="text-[11px] text-slate-500">
                       {isAr
-                        ? 'كليكي على التصويرة باش تكبّرها وتراجع الأرقام المكتوبة باليد.'
-                        : 'Click thumbnail to zoom & verify handwritten numbers.'}
+                        ? 'كليكي على التصويرة باش تكبّرها وتراجع الأرقام.'
+                        : 'Click thumbnail to zoom & verify numbers.'}
                     </div>
                   </div>
                 </div>
@@ -1103,7 +1375,15 @@ export const PurchaseInvoiceScanModal: React.FC = () => {
                   <div className="flex flex-wrap items-center gap-1.5">
                     <button
                       type="button"
-                      onClick={handleRetryAiScan}
+                      onClick={() => void startLiveCamera()}
+                      className="px-2.5 py-1.5 rounded-xl bg-emerald-600 hover:bg-emerald-700 text-[11px] font-black text-white flex items-center gap-1"
+                    >
+                      <Camera className="w-3 h-3" />
+                      <span>{isAr ? 'عاود صور' : 'Retake'}</span>
+                    </button>
+                    <button
+                      type="button"
+                      onClick={handleRetryScan}
                       className="px-2.5 py-1.5 rounded-xl bg-white dark:bg-slate-900 border border-slate-300 dark:border-slate-700 hover:bg-slate-100 text-[11px] font-bold text-slate-800 dark:text-slate-200 flex items-center gap-1"
                     >
                       <RotateCw className="w-3 h-3 text-amber-600" />
@@ -1115,7 +1395,7 @@ export const PurchaseInvoiceScanModal: React.FC = () => {
                       className="px-2.5 py-1.5 rounded-xl bg-white dark:bg-slate-900 border border-slate-300 dark:border-slate-700 hover:bg-slate-100 text-[11px] font-bold text-sky-700 dark:text-sky-300 flex items-center gap-1"
                     >
                       <WifiOff className="w-3 h-3" />
-                      <span>{isAr ? 'قرا محلياً (OCR)' : 'Local OCR'}</span>
+                      <span>{isAr ? 'قرا محلياً (OCR)' : 'Offline OCR'}</span>
                     </button>
                   </div>
                 )}
@@ -1141,7 +1421,35 @@ export const PurchaseInvoiceScanModal: React.FC = () => {
             )}
           </div>
 
-          {/* BLURRY PHOTO OR AI FAILURE BANNER WITH ACTION BUTTONS */}
+          {/* HANDWRITTEN FRIENDLY PROMPT (NO ERROR!) */}
+          {handwrittenMessage && (
+            <div className="p-4 rounded-2xl bg-amber-50 dark:bg-amber-950/45 border border-amber-300 dark:border-amber-700 text-amber-950 dark:text-amber-200 space-y-2.5">
+              <div className="flex items-start gap-2.5 text-xs font-black">
+                <Edit3 className="w-4 h-4 text-amber-600 shrink-0 mt-0.5" />
+                <span>{handwrittenMessage}</span>
+              </div>
+              <div className="flex flex-wrap items-center gap-2">
+                <button
+                  type="button"
+                  onClick={addManualLineAndFocus}
+                  className="px-4 py-2 rounded-xl bg-slate-900 dark:bg-amber-400 text-white dark:text-slate-950 text-xs font-black flex items-center gap-1.5"
+                >
+                  <Edit3 className="w-3.5 h-3.5" />
+                  <span>{isAr ? 'دخل يدوياً' : 'Enter Manually'}</span>
+                </button>
+                <button
+                  type="button"
+                  onClick={() => void startLiveCamera()}
+                  className="px-3.5 py-2 rounded-xl bg-white dark:bg-slate-800 border border-amber-300 dark:border-amber-700 text-xs font-bold text-amber-900 dark:text-amber-200 flex items-center gap-1.5"
+                >
+                  <Camera className="w-3.5 h-3.5" />
+                  <span>{isAr ? 'عاود صور في إضاءة مزيانة' : 'Retake Photo'}</span>
+                </button>
+              </div>
+            </div>
+          )}
+
+          {/* BLURRY PHOTO BANNER WITH ACTION BUTTONS */}
           {scanError && (
             <div
               className={`p-4 rounded-2xl border space-y-2.5 ${
@@ -1160,7 +1468,7 @@ export const PurchaseInvoiceScanModal: React.FC = () => {
                   <>
                     <button
                       type="button"
-                      onClick={() => phoneCameraInputRef.current?.click()}
+                      onClick={() => void startLiveCamera()}
                       className="px-3.5 py-2 rounded-xl bg-amber-400 hover:bg-amber-500 text-slate-950 text-xs font-black flex items-center gap-1.5"
                     >
                       <Camera className="w-3.5 h-3.5" />
@@ -1169,7 +1477,7 @@ export const PurchaseInvoiceScanModal: React.FC = () => {
                     {lastCapturedBlobRef.current && (
                       <button
                         type="button"
-                        onClick={handleRetryAiScan}
+                        onClick={handleRetryScan}
                         className="px-3 py-2 rounded-xl bg-white dark:bg-slate-800 border border-amber-300 dark:border-amber-700 text-xs font-bold text-amber-900 dark:text-amber-200 flex items-center gap-1.5"
                       >
                         <RotateCw className="w-3.5 h-3.5" />
@@ -1190,7 +1498,7 @@ export const PurchaseInvoiceScanModal: React.FC = () => {
                     {lastCapturedBlobRef.current && (
                       <button
                         type="button"
-                        onClick={handleRetryAiScan}
+                        onClick={handleRetryScan}
                         className="px-3.5 py-2 rounded-xl bg-amber-400 hover:bg-amber-500 text-slate-950 text-xs font-black flex items-center gap-1.5"
                       >
                         <RotateCw className="w-3.5 h-3.5" />
@@ -1212,8 +1520,8 @@ export const PurchaseInvoiceScanModal: React.FC = () => {
           )}
 
           {scanNotice && (
-            <div className="px-4 py-2.5 rounded-2xl bg-amber-50 dark:bg-amber-950/40 border border-amber-300 dark:border-amber-800 text-amber-900 dark:text-amber-200 text-xs font-bold flex items-start gap-2">
-              <Sparkles className="w-4 h-4 text-amber-600 shrink-0 mt-0.5" />
+            <div className="px-4 py-2.5 rounded-2xl bg-emerald-50 dark:bg-emerald-950/35 border border-emerald-300 dark:border-emerald-800 text-emerald-900 dark:text-emerald-200 text-xs font-bold flex items-start gap-2">
+              <Sparkles className="w-4 h-4 text-emerald-600 shrink-0 mt-0.5" />
               <span>{scanNotice}</span>
             </div>
           )}
@@ -1225,13 +1533,13 @@ export const PurchaseInvoiceScanModal: React.FC = () => {
                   ? '✍️ مراجعة الأرقام: تقدر تعدل الكمية (- / +) والأثمنة ديال كل سطر قبل ما تزيدهم للمخزون.'
                   : '✍️ Number Check: Adjust quantities (- / +) & prices before confirming restock.'}
               </span>
-              {isAiFailure && lastCapturedBlobRef.current && (
+              {lastCapturedBlobRef.current && (
                 <button
                   type="button"
-                  onClick={handleRetryAiScan}
+                  onClick={handleRetryScan}
                   className="text-[11px] font-black underline text-sky-700 dark:text-sky-300"
                 >
-                  {isAr ? 'حاول مرة أخرى بالذكاء الاصطناعي' : 'Retry AI'}
+                  {isAr ? 'عاود القراءة' : 'Rescan'}
                 </button>
               )}
             </div>

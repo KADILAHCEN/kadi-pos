@@ -103,6 +103,7 @@ export type AppTabId =
   | 'analytics'
   | 'customers_peak'
   | 'shop_ear'
+  | 'market_radar'
   | 'dream'
   | 'ai_assistant'
   | 'alerts'
