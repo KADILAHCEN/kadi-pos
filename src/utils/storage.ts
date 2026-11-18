@@ -143,8 +143,11 @@ export async function loadList<T>(storeName: string): Promise<T[] | null> {
       const request = store.getAll();
 
       request.onsuccess = () => {
-        const results = request.result as T[];
-        if (results && results.length > 0) {
+        const raw = request.result;
+        const results = Array.isArray(raw)
+          ? (raw.filter((item) => item !== null && typeof item === 'object') as T[])
+          : [];
+        if (results.length > 0) {
           resolve(results);
         } else {
           resolve(null);
@@ -223,7 +226,16 @@ export function safeLocalStorageSet(key: string, value: string): void {
 export function safeLocalStorageGet<T>(key: string, fallback: T): T {
   try {
     const item = localStorage.getItem(key);
-    return item ? JSON.parse(item) : fallback;
+    if (!item) return fallback;
+    const parsed = JSON.parse(item);
+    if (parsed === null || parsed === undefined) return fallback;
+    if (Array.isArray(fallback)) {
+      return (Array.isArray(parsed) ? parsed : fallback) as T;
+    }
+    if (typeof fallback === 'object' && fallback !== null) {
+      return (typeof parsed === 'object' && !Array.isArray(parsed) ? parsed : fallback) as T;
+    }
+    return parsed as T;
   } catch {
     return fallback;
   }
@@ -428,7 +440,11 @@ export async function saveExpensesToIndexedDB(expenses: Expense[]): Promise<bool
 export async function loadExpensesFromIndexedDB(): Promise<Expense[] | null> {
   const rows = await loadList<Expense>(STORES.EXPENSES);
   if (!rows) return null;
-  return rows.sort((a, b) => b.date.localeCompare(a.date) || b.createdAt.localeCompare(a.createdAt));
+  return rows.sort(
+    (a, b) =>
+      String(b.date || '').localeCompare(String(a.date || '')) ||
+      String(b.createdAt || '').localeCompare(String(a.createdAt || ''))
+  );
 }
 
 export async function saveRemoteOrdersToIndexedDB(orders: RemoteOrder[]): Promise<boolean> {
@@ -438,7 +454,7 @@ export async function saveRemoteOrdersToIndexedDB(orders: RemoteOrder[]): Promis
 export async function loadRemoteOrdersFromIndexedDB(): Promise<RemoteOrder[] | null> {
   const rows = await loadList<RemoteOrder>(STORES.REMOTE_ORDERS);
   if (!rows) return null;
-  return rows.sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime());
+  return rows.sort((a, b) => new Date(b.createdAt || 0).getTime() - new Date(a.createdAt || 0).getTime());
 }
 
 export async function saveDeliveryZonesToIndexedDB(zones: DeliveryZone[]): Promise<boolean> {
@@ -456,7 +472,11 @@ export async function saveCpuRecordsToIndexedDB(records: CpuQuarterRecord[]): Pr
 export async function loadCpuRecordsFromIndexedDB(): Promise<CpuQuarterRecord[] | null> {
   const rows = await loadList<CpuQuarterRecord>(STORES.CPU_RECORDS);
   if (!rows) return null;
-  return rows.sort((a, b) => b.year - a.year || b.quarter.localeCompare(a.quarter));
+  return rows.sort(
+    (a, b) =>
+      (Number(b.year) || 0) - (Number(a.year) || 0) ||
+      String(b.quarter || '').localeCompare(String(a.quarter || ''))
+  );
 }
 
 export async function saveSupplierInvoicesToIndexedDB(invoices: SupplierInvoice[]): Promise<boolean> {
@@ -466,7 +486,11 @@ export async function saveSupplierInvoicesToIndexedDB(invoices: SupplierInvoice[
 export async function loadSupplierInvoicesFromIndexedDB(): Promise<SupplierInvoice[] | null> {
   const rows = await loadList<SupplierInvoice>(STORES.SUPPLIER_INVOICES);
   if (!rows) return null;
-  return rows.sort((a, b) => b.date.localeCompare(a.date) || b.createdAt.localeCompare(a.createdAt));
+  return rows.sort(
+    (a, b) =>
+      String(b.date || '').localeCompare(String(a.date || '')) ||
+      String(b.createdAt || '').localeCompare(String(a.createdAt || ''))
+  );
 }
 
 

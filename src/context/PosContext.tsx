@@ -427,22 +427,97 @@ interface PosContextType {
 
 const PosContext = createContext<PosContextType | undefined>(undefined);
 
+function isPlainRecord(val: unknown): val is Record<string, unknown> {
+  return val !== null && typeof val === 'object' && !Array.isArray(val);
+}
+
+function safeReadStorageArray<T>(
+  key: string,
+  fallback: T[],
+  options?: { allowEmpty?: boolean }
+): T[] {
+  try {
+    const saved = localStorage.getItem(key);
+    if (!saved) return fallback;
+    const parsed: unknown = JSON.parse(saved);
+    if (!Array.isArray(parsed)) return fallback;
+    const valid = parsed.filter((item) => item !== null && typeof item === 'object') as T[];
+    if (options?.allowEmpty === false && valid.length === 0) return fallback;
+    return valid;
+  } catch {
+    return fallback;
+  }
+}
+
+function safeReadStorageObject<T extends object>(key: string, fallback: T): T {
+  try {
+    const saved = localStorage.getItem(key);
+    if (!saved) return fallback;
+    const parsed: unknown = JSON.parse(saved);
+    if (!isPlainRecord(parsed)) return fallback;
+    return { ...fallback, ...(parsed as Partial<T>) };
+  } catch {
+    return fallback;
+  }
+}
+
+function normalizeStoreSettings(raw: unknown): StoreSettings {
+  const base = isPlainRecord(raw) ? (raw as Partial<StoreSettings>) : {};
+  return {
+    ...initialSettings,
+    ...base,
+    currencySymbol:
+      typeof base.currencySymbol === 'string' && base.currencySymbol.trim()
+        ? base.currencySymbol
+        : initialSettings.currencySymbol,
+    language:
+      base.language === 'ar' || base.language === 'fr' || base.language === 'en'
+        ? base.language
+        : initialSettings.language,
+    customPalettes: Array.isArray(base.customPalettes)
+      ? base.customPalettes
+      : initialSettings.customPalettes,
+    tabCustomizations: isPlainRecord(base.tabCustomizations)
+      ? (base.tabCustomizations as StoreSettings['tabCustomizations'])
+      : initialSettings.tabCustomizations,
+    dailyFixedExpenses: isPlainRecord(base.dailyFixedExpenses)
+      ? {
+          ...(initialSettings.dailyFixedExpenses || {
+            rentPerDay: 50,
+            electricityPerDay: 15,
+            internetPerDay: 5,
+            transportPerDay: 10,
+            otherPerDay: 0
+          }),
+          ...(base.dailyFixedExpenses as Partial<NonNullable<StoreSettings['dailyFixedExpenses']>>)
+        }
+      : initialSettings.dailyFixedExpenses,
+    cpuSettings: isPlainRecord(base.cpuSettings)
+      ? {
+          ...DEFAULT_CPU_SETTINGS,
+          ...(base.cpuSettings as Partial<CpuTaxSettings>)
+        }
+      : initialSettings.cpuSettings,
+    theftAlertSettings: isPlainRecord(base.theftAlertSettings)
+      ? {
+          ...DEFAULT_THEFT_ALERT_SETTINGS,
+          ...(base.theftAlertSettings as Partial<TheftAlertSettings>)
+        }
+      : initialSettings.theftAlertSettings
+  };
+}
+
 export const PosProvider: React.FC<{ children: ReactNode }> = ({ children }) => {
   // Navigation State — Opens directly on 'فين مشى المحال' Home Summary Page
   const [currentTab, setCurrentTab] = useState<AppTabId>('home_summary');
 
   // Activity Log State (سجل العمليات والنشاطات الرقابية)
-  const [activityLogs, setActivityLogs] = useState<ActivityLogItem[]>(() => {
-    try {
-      const saved = localStorage.getItem('kadi_pos_activity_logs');
-      return saved ? JSON.parse(saved) : initialActivityLogs;
-    } catch {
-      return initialActivityLogs;
-    }
-  });
+  const [activityLogs, setActivityLogs] = useState<ActivityLogItem[]>(() =>
+    safeReadStorageArray<ActivityLogItem>('kadi_pos_activity_logs', initialActivityLogs)
+  );
 
   useEffect(() => {
-    localStorage.setItem('kadi_pos_activity_logs', JSON.stringify(activityLogs));
+    safeLocalStorageSet('kadi_pos_activity_logs', JSON.stringify(activityLogs));
   }, [activityLogs]);
 
   const addActivityLog = (logData: Omit<ActivityLogItem, 'id' | 'timestamp'>) => {
@@ -470,17 +545,12 @@ export const PosProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
       .replace(/ى/g, 'ي')
       .replace(/\s+/g, ' ');
 
-  const [shopEarRequests, setShopEarRequests] = useState<ShopEarRequest[]>(() => {
-    try {
-      const saved = localStorage.getItem('kadi_pos_shop_ear_requests_v1');
-      return saved ? JSON.parse(saved) : [];
-    } catch {
-      return [];
-    }
-  });
+  const [shopEarRequests, setShopEarRequests] = useState<ShopEarRequest[]>(() =>
+    safeReadStorageArray<ShopEarRequest>('kadi_pos_shop_ear_requests_v1', [])
+  );
 
   useEffect(() => {
-    localStorage.setItem('kadi_pos_shop_ear_requests_v1', JSON.stringify(shopEarRequests));
+    safeLocalStorageSet('kadi_pos_shop_ear_requests_v1', JSON.stringify(shopEarRequests));
   }, [shopEarRequests]);
 
   const markMatchingShopEarArrivedInternal = useCallback((prod: { id: string; name: string; price?: number }) => {
@@ -614,7 +684,8 @@ export const PosProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
   const [settings, setSettings] = useState<StoreSettings>(() => {
     try {
       const saved = localStorage.getItem('kadi_pos_settings_v3');
-      const parsed: StoreSettings = saved ? JSON.parse(saved) : initialSettings;
+      const parsedRaw: unknown = saved ? JSON.parse(saved) : null;
+      const parsed = normalizeStoreSettings(parsedRaw);
       const trueDarkMigrated = localStorage.getItem('kadi_pos_true_dark_v1');
       if (!trueDarkMigrated) {
         const nextSettings: StoreSettings = {
@@ -622,8 +693,8 @@ export const PosProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
           theme: 'dark',
           themeMode: 'dark'
         };
-        localStorage.setItem('kadi_pos_true_dark_v1', '1');
-        localStorage.setItem('kadi_pos_settings_v3', JSON.stringify(nextSettings));
+        safeLocalStorageSet('kadi_pos_true_dark_v1', '1');
+        safeLocalStorageSet('kadi_pos_settings_v3', JSON.stringify(nextSettings));
         return nextSettings;
       }
       return parsed;
@@ -720,7 +791,7 @@ export const PosProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
       ) {
         merged.yearlyProfitTarget = Math.max(1200, Math.round(Number(newSettings.monthlyProfitTarget) * 12));
       }
-      localStorage.setItem('kadi_pos_settings_v3', JSON.stringify(merged));
+      safeLocalStorageSet('kadi_pos_settings_v3', JSON.stringify(merged));
       return merged;
     });
 
@@ -805,14 +876,9 @@ export const PosProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
   };
 
   // User Management & RBAC Permissions
-  const [users, setUsers] = useState<AppUser[]>(() => {
-    try {
-      const saved = localStorage.getItem('kadi_pos_users_v3');
-      return saved ? JSON.parse(saved) : initialUsers;
-    } catch {
-      return initialUsers;
-    }
-  });
+  const [users, setUsers] = useState<AppUser[]>(() =>
+    safeReadStorageArray<AppUser>('kadi_pos_users_v3', initialUsers, { allowEmpty: false })
+  );
 
   const [currentUserId, setCurrentUserIdState] = useState<string>(() => {
     try {
@@ -851,11 +917,11 @@ export const PosProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
   };
 
   useEffect(() => {
-    localStorage.setItem('kadi_pos_users_v3', JSON.stringify(users));
+    safeLocalStorageSet('kadi_pos_users_v3', JSON.stringify(users));
   }, [users]);
 
   useEffect(() => {
-    localStorage.setItem('kadi_pos_current_user_id', currentUserId);
+    safeLocalStorageSet('kadi_pos_current_user_id', currentUserId);
   }, [currentUserId]);
 
   const currentUser = useMemo(() => {
@@ -939,28 +1005,18 @@ export const PosProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
   };
 
   // Products & Categories
-  const [products, setProducts] = useState<Product[]>(() => {
-    try {
-      const saved = localStorage.getItem('kadi_pos_products_v3');
-      return saved ? JSON.parse(saved) : initialProducts;
-    } catch {
-      return initialProducts;
-    }
-  });
+  const [products, setProducts] = useState<Product[]>(() =>
+    safeReadStorageArray<Product>('kadi_pos_products_v3', initialProducts)
+  );
 
-  const [categories, setCategories] = useState<Category[]>(() => {
-    try {
-      const saved = localStorage.getItem('kadi_pos_categories_v3');
-      return saved ? JSON.parse(saved) : initialCategories;
-    } catch {
-      return initialCategories;
-    }
-  });
+  const [categories, setCategories] = useState<Category[]>(() =>
+    safeReadStorageArray<Category>('kadi_pos_categories_v3', initialCategories, { allowEmpty: false })
+  );
 
   useEffect(() => {
     // Check IndexedDB on mount for high-capacity 2000+ catalog
     loadProductsFromIndexedDB().then((dbProducts) => {
-      if (dbProducts && dbProducts.length > 0) {
+      if (Array.isArray(dbProducts) && dbProducts.length > 0) {
         setProducts(dbProducts);
       }
     });
@@ -969,17 +1025,13 @@ export const PosProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
   useEffect(() => {
     // Persist to IndexedDB (supports 2000+ to 50000+ items without quota limit)
     saveProductsToIndexedDB(products);
-    try {
-      if (products.length <= 500) {
-        localStorage.setItem('kadi_pos_products_v3', JSON.stringify(products));
-      }
-    } catch {
-      // safely skip if quota exceeded
+    if (products.length <= 500) {
+      safeLocalStorageSet('kadi_pos_products_v3', JSON.stringify(products));
     }
   }, [products]);
 
   useEffect(() => {
-    localStorage.setItem('kadi_pos_categories_v3', JSON.stringify(categories));
+    safeLocalStorageSet('kadi_pos_categories_v3', JSON.stringify(categories));
   }, [categories]);
 
   const seedLargeCatalogDemo = (count: number = 2000) => {
@@ -1671,71 +1723,60 @@ export const PosProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
 
   // Stock Movements Tracking State
   const [stockMovements, setStockMovements] = useState<StockMovement[]>(() => {
-    try {
-      const saved = localStorage.getItem('kadi_pos_stock_movements_v3');
-      if (saved) return JSON.parse(saved);
-      // Pre-seed some realistic tracking records for Moroccan grocery
-      return [
-        {
-          id: 'mov-1',
-          productId: 'prod-1',
-          productName: 'زيت زيتون بكر ممتاز وادي سوس (باللتر)',
-          date: new Date(Date.now() - 24 * 3600 * 1000).toISOString(),
-          type: 'restock',
-          quantityChange: 30,
-          previousStock: 25,
-          newStock: 55,
-          unit: 'liter',
-          costPerUnit: 68,
-          reason: 'توريد شحنة زيت زيتون معصرة وادي سوس'
-        },
-        {
-          id: 'mov-2',
-          productId: 'prod-7',
-          productName: 'دقيق القمح اللين ميمونة فاخر (بالكيلو)',
-          date: new Date(Date.now() - 12 * 3600 * 1000).toISOString(),
-          type: 'restock',
-          quantityChange: 100,
-          previousStock: 60,
-          newStock: 160,
-          unit: 'kg',
-          costPerUnit: 4.7,
-          reason: 'توريد أكياس دقيق ميمونة من المطاحن الكبرى'
-        },
-        {
-          id: 'mov-3',
-          productId: 'prod-10',
-          productName: 'حليب سنطرال معقم طازج UHT (1 لتر)',
-          date: new Date(Date.now() - 6 * 3600 * 1000).toISOString(),
-          type: 'restock',
-          quantityChange: 60,
-          previousStock: 30,
-          newStock: 90,
-          unit: 'liter',
-          costPerUnit: 5.8,
-          reason: 'تسليم شحنة الحليب الصباحية من موزع سنطرال'
-        }
-      ];
-    } catch {
-      return [];
-    }
+    const defaultMovements: StockMovement[] = [
+      {
+        id: 'mov-1',
+        productId: 'prod-1',
+        productName: 'زيت زيتون بكر ممتاز وادي سوس (باللتر)',
+        date: new Date(Date.now() - 24 * 3600 * 1000).toISOString(),
+        type: 'restock',
+        quantityChange: 30,
+        previousStock: 25,
+        newStock: 55,
+        unit: 'liter',
+        costPerUnit: 68,
+        reason: 'توريد شحنة زيت زيتون معصرة وادي سوس'
+      },
+      {
+        id: 'mov-2',
+        productId: 'prod-7',
+        productName: 'دقيق القمح اللين ميمونة فاخر (بالكيلو)',
+        date: new Date(Date.now() - 12 * 3600 * 1000).toISOString(),
+        type: 'restock',
+        quantityChange: 100,
+        previousStock: 60,
+        newStock: 160,
+        unit: 'kg',
+        costPerUnit: 4.7,
+        reason: 'توريد أكياس دقيق ميمونة من المطاحن الكبرى'
+      },
+      {
+        id: 'mov-3',
+        productId: 'prod-10',
+        productName: 'حليب سنطرال معقم طازج UHT (1 لتر)',
+        date: new Date(Date.now() - 6 * 3600 * 1000).toISOString(),
+        type: 'restock',
+        quantityChange: 60,
+        previousStock: 30,
+        newStock: 90,
+        unit: 'liter',
+        costPerUnit: 5.8,
+        reason: 'تسليم شحنة الحليب الصباحية من موزع سنطرال'
+      }
+    ];
+    return safeReadStorageArray<StockMovement>('kadi_pos_stock_movements_v3', defaultMovements);
   });
 
   useEffect(() => {
-    localStorage.setItem('kadi_pos_stock_movements', JSON.stringify(stockMovements));
+    safeLocalStorageSet('kadi_pos_stock_movements', JSON.stringify(stockMovements));
   }, [stockMovements]);
 
-  const [stocktakeHistory, setStocktakeHistory] = useState<StocktakeSessionRecord[]>(() => {
-    try {
-      const saved = localStorage.getItem('kadi_pos_stocktake_history');
-      return saved ? JSON.parse(saved) : [];
-    } catch {
-      return [];
-    }
-  });
+  const [stocktakeHistory, setStocktakeHistory] = useState<StocktakeSessionRecord[]>(() =>
+    safeReadStorageArray<StocktakeSessionRecord>('kadi_pos_stocktake_history', [])
+  );
 
   useEffect(() => {
-    localStorage.setItem('kadi_pos_stocktake_history', JSON.stringify(stocktakeHistory));
+    safeLocalStorageSet('kadi_pos_stocktake_history', JSON.stringify(stocktakeHistory));
   }, [stocktakeHistory]);
 
   const adjustStock = (
@@ -1974,19 +2015,14 @@ export const PosProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
 
   // Anti-Theft & Loss Prevention State (نظام تنبيه السرقة وحماية الصندوق والمخزون)
   const activeBranchNameRef = useRef<string>('');
-  const [theftAlerts, setTheftAlerts] = useState<TheftAlertItem[]>(() => {
-    try {
-      const saved = localStorage.getItem('kadi_pos_theft_alerts');
-      return saved ? JSON.parse(saved) : [];
-    } catch {
-      return [];
-    }
-  });
+  const [theftAlerts, setTheftAlerts] = useState<TheftAlertItem[]>(() =>
+    safeReadStorageArray<TheftAlertItem>('kadi_pos_theft_alerts', [])
+  );
   const [activeTheftToasts, setActiveTheftToasts] = useState<TheftAlertItem[]>([]);
   const [isSirenActive, setIsSirenActive] = useState(false);
 
   useEffect(() => {
-    localStorage.setItem('kadi_pos_theft_alerts', JSON.stringify(theftAlerts));
+    safeLocalStorageSet('kadi_pos_theft_alerts', JSON.stringify(theftAlerts));
   }, [theftAlerts]);
 
   useEffect(() => {
@@ -2473,20 +2509,15 @@ export const PosProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
   }, [products]);
 
   // Cart & Active Ticket
-  const [cart, setCart] = useState<CartItem[]>(() => {
-    try {
-      const saved = localStorage.getItem('kadi_pos_cart');
-      return saved ? JSON.parse(saved) : [];
-    } catch {
-      return [];
-    }
-  });
+  const [cart, setCart] = useState<CartItem[]>(() =>
+    safeReadStorageArray<CartItem>('kadi_pos_cart', [])
+  );
 
   const [orderDiscount, setOrderDiscountState] = useState<{ type: 'percent' | 'fixed'; value: number } | null>(null);
   const [selectedCustomer, setSelectedCustomer] = useState<Customer | null>(null);
 
   useEffect(() => {
-    localStorage.setItem('kadi_pos_cart', JSON.stringify(cart));
+    safeLocalStorageSet('kadi_pos_cart', JSON.stringify(cart));
   }, [cart]);
 
   const addToCart = (
@@ -2754,81 +2785,74 @@ export const PosProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
 
   // Orders State
   const [orders, setOrders] = useState<Order[]>(() => {
-    try {
-      const saved = localStorage.getItem('kadi_pos_orders');
-      if (saved) return JSON.parse(saved);
-      // Pre-seed a couple of realistic recent orders
-      const sampleOrders: Order[] = [
-        {
-          id: 'ord-1001',
-          orderNumber: '#KD-1001',
-          date: new Date(Date.now() - 2 * 3600 * 1000).toISOString(),
-          items: [
-            {
-              productId: 'prod-2',
-              productName: 'فلات وايت أسترالي',
-              price: 18.0,
-              costPrice: 6.0,
-              quantity: 2,
-              variantName: 'صغير (Small - 6oz)',
-              total: 36.0,
-              discount: 0
-            },
-            {
-              productId: 'prod-5',
-              productName: 'كرواسون زبدة فرنسي فاخر',
-              price: 15.0,
-              costPrice: 5.0,
-              quantity: 1,
-              total: 15.0,
-              discount: 0
-            }
-          ],
-          subtotal: 51.0,
-          discountTotal: 0,
-          taxTotal: 7.65,
-          grandTotal: 58.65,
-          costTotal: 17.0,
-          profitTotal: 34.0,
-          paymentMethod: 'card',
-          cashierName: 'كاشير كادي (المسؤول)',
-          customerId: 'cust-1',
-          customerName: 'سلطان القحطاني',
-          status: 'completed',
-          zatcaQrString: ''
-        },
-        {
-          id: 'ord-1002',
-          orderNumber: '#KD-1002',
-          date: new Date(Date.now() - 45 * 60 * 1000).toISOString(),
-          items: [
-            {
-              productId: 'prod-8',
-              productName: 'عطر كادي الخاص (Kadi Signature Oud)',
-              price: 240.0,
-              costPrice: 95.0,
-              quantity: 1,
-              variantName: 'عبوة 50 مل (50ml)',
-              total: 240.0,
-              discount: 0
-            }
-          ],
-          subtotal: 240.0,
-          discountTotal: 0,
-          taxTotal: 36.0,
-          grandTotal: 276.0,
-          costTotal: 95.0,
-          profitTotal: 145.0,
-          paymentMethod: 'apple_pay',
-          cashierName: 'كاشير كادي (المسؤول)',
-          status: 'completed',
-          zatcaQrString: ''
-        }
-      ];
-      return sampleOrders;
-    } catch {
-      return [];
-    }
+    const sampleOrders: Order[] = [
+      {
+        id: 'ord-1001',
+        orderNumber: '#KD-1001',
+        date: new Date(Date.now() - 2 * 3600 * 1000).toISOString(),
+        items: [
+          {
+            productId: 'prod-2',
+            productName: 'فلات وايت أسترالي',
+            price: 18.0,
+            costPrice: 6.0,
+            quantity: 2,
+            variantName: 'صغير (Small - 6oz)',
+            total: 36.0,
+            discount: 0
+          },
+          {
+            productId: 'prod-5',
+            productName: 'كرواسون زبدة فرنسي فاخر',
+            price: 15.0,
+            costPrice: 5.0,
+            quantity: 1,
+            total: 15.0,
+            discount: 0
+          }
+        ],
+        subtotal: 51.0,
+        discountTotal: 0,
+        taxTotal: 7.65,
+        grandTotal: 58.65,
+        costTotal: 17.0,
+        profitTotal: 34.0,
+        paymentMethod: 'card',
+        cashierName: 'كاشير كادي (المسؤول)',
+        customerId: 'cust-1',
+        customerName: 'سلطان القحطاني',
+        status: 'completed',
+        zatcaQrString: ''
+      },
+      {
+        id: 'ord-1002',
+        orderNumber: '#KD-1002',
+        date: new Date(Date.now() - 45 * 60 * 1000).toISOString(),
+        items: [
+          {
+            productId: 'prod-8',
+            productName: 'عطر كادي الخاص (Kadi Signature Oud)',
+            price: 240.0,
+            costPrice: 95.0,
+            quantity: 1,
+            variantName: 'عبوة 50 مل (50ml)',
+            total: 240.0,
+            discount: 0
+          }
+        ],
+        subtotal: 240.0,
+        discountTotal: 0,
+        taxTotal: 36.0,
+        grandTotal: 276.0,
+        costTotal: 95.0,
+        profitTotal: 145.0,
+        paymentMethod: 'apple_pay',
+        cashierName: 'كاشير كادي (المسؤول)',
+        status: 'completed',
+        zatcaQrString: ''
+      }
+    ];
+    return safeReadStorageArray<Order>('kadi_pos_orders', sampleOrders);
   });
 
   const [lastCompletedOrder, setLastCompletedOrder] = useState<Order | null>(null);
@@ -2859,17 +2883,12 @@ export const PosProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
   }, [orders]);
 
   // Customers State
-  const [customers, setCustomers] = useState<Customer[]>(() => {
-    try {
-      const saved = localStorage.getItem('kadi_pos_customers');
-      return saved ? JSON.parse(saved) : initialCustomers;
-    } catch {
-      return initialCustomers;
-    }
-  });
+  const [customers, setCustomers] = useState<Customer[]>(() =>
+    safeReadStorageArray<Customer>('kadi_pos_customers', initialCustomers)
+  );
 
   useEffect(() => {
-    localStorage.setItem('kadi_pos_customers', JSON.stringify(customers));
+    safeLocalStorageSet('kadi_pos_customers', JSON.stringify(customers));
   }, [customers]);
 
   // Automatic Real-time Trade Zakat Calculation (حساب آلي عند تجاوز نصاب 85 جم ذهب)
@@ -2878,17 +2897,15 @@ export const PosProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
   }, [products, customers, settings]);
 
   // Credit Ledger (كناش الكريدي والديون)
-  const [creditTransactions, setCreditTransactions] = useState<CreditTransaction[]>(() => {
-    try {
-      const saved = localStorage.getItem('kadi_pos_credit_transactions_v1');
-      return saved ? JSON.parse(saved) : initialCreditTransactions;
-    } catch {
-      return initialCreditTransactions;
-    }
-  });
+  const [creditTransactions, setCreditTransactions] = useState<CreditTransaction[]>(() =>
+    safeReadStorageArray<CreditTransaction>(
+      'kadi_pos_credit_transactions_v1',
+      initialCreditTransactions
+    )
+  );
 
   useEffect(() => {
-    localStorage.setItem('kadi_pos_credit_transactions_v1', JSON.stringify(creditTransactions));
+    safeLocalStorageSet('kadi_pos_credit_transactions_v1', JSON.stringify(creditTransactions));
   }, [creditTransactions]);
 
   const addCustomer = (customerData: Omit<Customer, 'id' | 'points' | 'balance' | 'tier' | 'totalSpent' | 'ordersCount' | 'createdAt'> & { balance?: number }) => {
@@ -3203,14 +3220,9 @@ export const PosProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
   };
 
   // Multi-Branch Management State (إدارة الفروع المتعددة والمزامنة)
-  const [branches, setBranches] = useState<Branch[]>(() => {
-    try {
-      const saved = localStorage.getItem('kadi_pos_branches_v1');
-      return saved ? JSON.parse(saved) : initialBranches;
-    } catch {
-      return initialBranches;
-    }
-  });
+  const [branches, setBranches] = useState<Branch[]>(() =>
+    safeReadStorageArray<Branch>('kadi_pos_branches_v1', initialBranches, { allowEmpty: false })
+  );
 
   const [activeBranchId, setActiveBranchIdState] = useState<string>(() => {
     try {
@@ -3221,14 +3233,9 @@ export const PosProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
     }
   });
 
-  const [branchTransfers, setBranchTransfers] = useState<BranchTransfer[]>(() => {
-    try {
-      const saved = localStorage.getItem('kadi_pos_branch_transfers');
-      return saved ? JSON.parse(saved) : initialTransfers;
-    } catch {
-      return initialTransfers;
-    }
-  });
+  const [branchTransfers, setBranchTransfers] = useState<BranchTransfer[]>(() =>
+    safeReadStorageArray<BranchTransfer>('kadi_pos_branch_transfers', initialTransfers)
+  );
 
   const [isSyncing, setIsSyncing] = useState(false);
   const [lastSyncTime, setLastSyncTime] = useState<string>(() => {
@@ -3243,11 +3250,11 @@ export const PosProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
   });
 
   useEffect(() => {
-    localStorage.setItem('kadi_pos_branches_v1', JSON.stringify(branches));
+    safeLocalStorageSet('kadi_pos_branches_v1', JSON.stringify(branches));
   }, [branches]);
 
   useEffect(() => {
-    localStorage.setItem('kadi_pos_branch_transfers', JSON.stringify(branchTransfers));
+    safeLocalStorageSet('kadi_pos_branch_transfers', JSON.stringify(branchTransfers));
   }, [branchTransfers]);
 
   const activeBranch = useMemo<Branch>(() => {
@@ -3261,7 +3268,7 @@ export const PosProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
 
   const setActiveBranchId = (id: string) => {
     setActiveBranchIdState(id);
-    localStorage.setItem('kadi_pos_active_branch_id', id);
+    safeLocalStorageSet('kadi_pos_active_branch_id', id);
     if (settings.enableSoundEffects) {
       playSound('click');
     }
@@ -3382,7 +3389,7 @@ export const PosProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
         }))
       );
       setLastSyncTime(nowTime);
-      localStorage.setItem('kadi_pos_last_sync_time', nowTime);
+      safeLocalStorageSet('kadi_pos_last_sync_time', nowTime);
       if (settings.enableSoundEffects) {
         playSound('success');
       }
@@ -3532,14 +3539,9 @@ export const PosProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
   }, [syncPendingOfflineSales]);
 
   // Expenses State (إدارة المصاريف: كراء، كهرباء، نقل، شراء بضاعة، أخرى)
-  const [expenses, setExpenses] = useState<Expense[]>(() => {
-    try {
-      const saved = localStorage.getItem('kadi_pos_expenses_v1');
-      return saved ? JSON.parse(saved) : [];
-    } catch {
-      return [];
-    }
-  });
+  const [expenses, setExpenses] = useState<Expense[]>(() =>
+    safeReadStorageArray<Expense>('kadi_pos_expenses_v1', [])
+  );
   const expensesHydratedRef = useRef(false);
 
   useEffect(() => {
@@ -3630,14 +3632,9 @@ export const PosProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
   // ==========================================================
   // Supplier Purchase Invoices (فواتير الموردين ومشتريات السلعة)
   // ==========================================================
-  const [supplierInvoices, setSupplierInvoices] = useState<SupplierInvoice[]>(() => {
-    try {
-      const saved = localStorage.getItem('kadi_pos_supplier_invoices_v1');
-      return saved ? JSON.parse(saved) : [];
-    } catch {
-      return [];
-    }
-  });
+  const [supplierInvoices, setSupplierInvoices] = useState<SupplierInvoice[]>(() =>
+    safeReadStorageArray<SupplierInvoice>('kadi_pos_supplier_invoices_v1', [])
+  );
   const supplierHydratedRef = useRef(false);
 
   useEffect(() => {
@@ -3725,14 +3722,9 @@ export const PosProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
   // ==========================================================
   // Remote Sales, Delivery Zones & WhatsApp Orders (البيع عن بعد)
   // ==========================================================
-  const [deliveryZones, setDeliveryZones] = useState<DeliveryZone[]>(() => {
-    try {
-      const saved = localStorage.getItem('kadi_pos_delivery_zones_v1');
-      return saved ? JSON.parse(saved) : DEFAULT_DELIVERY_ZONES;
-    } catch {
-      return DEFAULT_DELIVERY_ZONES;
-    }
-  });
+  const [deliveryZones, setDeliveryZones] = useState<DeliveryZone[]>(() =>
+    safeReadStorageArray<DeliveryZone>('kadi_pos_delivery_zones_v1', DEFAULT_DELIVERY_ZONES)
+  );
   const deliveryZonesHydratedRef = useRef(false);
 
   useEffect(() => {
@@ -3790,13 +3782,7 @@ export const PosProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
   };
 
   const [remoteOrders, setRemoteOrders] = useState<RemoteOrder[]>(() => {
-    try {
-      const saved = localStorage.getItem('kadi_pos_remote_orders_v1');
-      if (saved) return JSON.parse(saved);
-    } catch {
-      // ignore
-    }
-    return [
+    const defaultRemote: RemoteOrder[] = [
       {
         id: 'rem-demo-1',
         orderNumber: 'WA-1001',
@@ -3832,6 +3818,7 @@ export const PosProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
         source: 'catalog_link'
       }
     ];
+    return safeReadStorageArray<RemoteOrder>('kadi_pos_remote_orders_v1', defaultRemote);
   });
   const remoteOrdersHydratedRef = useRef(false);
 
@@ -4120,15 +4107,13 @@ export const PosProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
       : DEFAULT_CPU_SETTINGS;
   }, [settings.cpuSettings]);
 
-  const [cpuRecords, setCpuRecords] = useState<CpuQuarterRecord[]>(() => {
-    try {
-      const saved = localStorage.getItem('kadi_pos_cpu_records_v1');
-      if (saved) return JSON.parse(saved);
-    } catch {
-      // ignore
-    }
-    return createInitialCpuRecords(DEFAULT_CPU_SETTINGS);
-  });
+  const [cpuRecords, setCpuRecords] = useState<CpuQuarterRecord[]>(() =>
+    safeReadStorageArray<CpuQuarterRecord>(
+      'kadi_pos_cpu_records_v1',
+      createInitialCpuRecords(DEFAULT_CPU_SETTINGS),
+      { allowEmpty: false }
+    )
+  );
   const cpuHydratedRef = useRef(false);
 
   useEffect(() => {
@@ -4296,60 +4281,71 @@ export const PosProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
 
   // Shifts State
   const [currentShift, setCurrentShift] = useState<Shift>(() => {
-    try {
-      const saved = localStorage.getItem('kadi_pos_current_shift');
-      return saved ? JSON.parse(saved) : initialShift;
-    } catch {
-      return initialShift;
-    }
+    const parsed = safeReadStorageObject<Shift>('kadi_pos_current_shift', initialShift);
+    return {
+      ...initialShift,
+      ...parsed,
+      openedAt:
+        typeof parsed.openedAt === 'string' && parsed.openedAt
+          ? parsed.openedAt
+          : initialShift.openedAt,
+      startingCash: Number.isFinite(Number(parsed.startingCash))
+        ? Number(parsed.startingCash)
+        : initialShift.startingCash,
+      cashTransactions: Array.isArray(parsed.cashTransactions) ? parsed.cashTransactions : []
+    };
   });
 
-  const [shiftsHistory, setShiftsHistory] = useState<Shift[]>(() => {
-    try {
-      const saved = localStorage.getItem('kadi_pos_shifts_history');
-      return saved ? JSON.parse(saved) : [];
-    } catch {
-      return [];
-    }
-  });
+  const [shiftsHistory, setShiftsHistory] = useState<Shift[]>(() =>
+    safeReadStorageArray<Shift>('kadi_pos_shifts_history', [])
+  );
 
   useEffect(() => {
-    localStorage.setItem('kadi_pos_current_shift', JSON.stringify(currentShift));
+    safeLocalStorageSet('kadi_pos_current_shift', JSON.stringify(currentShift));
   }, [currentShift]);
 
   useEffect(() => {
-    localStorage.setItem('kadi_pos_shifts_history', JSON.stringify(shiftsHistory));
+    safeLocalStorageSet('kadi_pos_shifts_history', JSON.stringify(shiftsHistory));
   }, [shiftsHistory]);
 
   // Emergency Re-Opening Sessions (الفتح الاستعجالي والوقت بدل الضائع - بلا مدة محدودة)
   const [currentEmergencySession, setCurrentEmergencySession] = useState<EmergencyOpeningSession | null>(() => {
     try {
       const saved = localStorage.getItem('kadi_pos_current_emergency_session');
-      return saved ? JSON.parse(saved) : null;
+      if (!saved) return null;
+      const parsed: unknown = JSON.parse(saved);
+      if (!isPlainRecord(parsed) || typeof parsed.status !== 'string') return null;
+      return {
+        ...(parsed as unknown as EmergencyOpeningSession),
+        customerKeys: Array.isArray(parsed.customerKeys)
+          ? (parsed.customerKeys as string[])
+          : [],
+        ordersCount: Number(parsed.ordersCount) || 0,
+        totalSales: Number(parsed.totalSales) || 0
+      };
     } catch {
       return null;
     }
   });
 
-  const [emergencySessions, setEmergencySessions] = useState<EmergencyOpeningSession[]>(() => {
-    try {
-      const saved = localStorage.getItem('kadi_pos_emergency_sessions');
-      return saved ? JSON.parse(saved) : [];
-    } catch {
-      return [];
-    }
-  });
+  const [emergencySessions, setEmergencySessions] = useState<EmergencyOpeningSession[]>(() =>
+    safeReadStorageArray<EmergencyOpeningSession>('kadi_pos_emergency_sessions', [])
+  );
 
   useEffect(() => {
-    if (currentEmergencySession) {
-      localStorage.setItem('kadi_pos_current_emergency_session', JSON.stringify(currentEmergencySession));
-    } else {
-      localStorage.removeItem('kadi_pos_current_emergency_session');
+    try {
+      if (currentEmergencySession) {
+        safeLocalStorageSet('kadi_pos_current_emergency_session', JSON.stringify(currentEmergencySession));
+      } else {
+        localStorage.removeItem('kadi_pos_current_emergency_session');
+      }
+    } catch {
+      // ignore
     }
   }, [currentEmergencySession]);
 
   useEffect(() => {
-    localStorage.setItem('kadi_pos_emergency_sessions', JSON.stringify(emergencySessions));
+    safeLocalStorageSet('kadi_pos_emergency_sessions', JSON.stringify(emergencySessions));
   }, [emergencySessions]);
 
   const recordOvertimeOrderInSession = useCallback(
@@ -4727,17 +4723,12 @@ export const PosProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
   };
 
   // Held Tickets State
-  const [heldTickets, setHeldTickets] = useState<HeldTicket[]>(() => {
-    try {
-      const saved = localStorage.getItem('kadi_pos_held_tickets');
-      return saved ? JSON.parse(saved) : [];
-    } catch {
-      return [];
-    }
-  });
+  const [heldTickets, setHeldTickets] = useState<HeldTicket[]>(() =>
+    safeReadStorageArray<HeldTicket>('kadi_pos_held_tickets', [])
+  );
 
   useEffect(() => {
-    localStorage.setItem('kadi_pos_held_tickets', JSON.stringify(heldTickets));
+    safeLocalStorageSet('kadi_pos_held_tickets', JSON.stringify(heldTickets));
   }, [heldTickets]);
 
   const holdCurrentTicket = (title?: string, note?: string) => {
@@ -5273,8 +5264,8 @@ export const PosProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
       if (data.creditTransactions && Array.isArray(data.creditTransactions)) {
         setCreditTransactions(data.creditTransactions);
       }
-      if (data.settings) {
-        setSettings(data.settings);
+      if (data.settings && isPlainRecord(data.settings)) {
+        setSettings(normalizeStoreSettings(data.settings));
       }
       if (data.orders && Array.isArray(data.orders)) {
         setOrders(data.orders);

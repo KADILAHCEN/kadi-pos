@@ -72,6 +72,7 @@ import {
 
 import { OfflineIndicator } from './components/pwa/OfflineIndicator';
 import { PinGateModal } from './components/auth/PinGateModal';
+import { AppErrorBoundary } from './components/AppErrorBoundary';
 
 const PosMainContent: React.FC = () => {
   const {
@@ -567,13 +568,13 @@ const PosMainContent: React.FC = () => {
             <span className="truncate">
               {isAr
                 ? `فتح استعجالي مفتوح (بلا مدة) · الوقت بدل الضائع: ${Math.max(
-                    currentEmergencySession.customerKeys.length,
-                    currentEmergencySession.ordersCount
-                  )} زبون · ${currentEmergencySession.totalSales.toFixed(2)} ${currencySymbol}`
+                    (currentEmergencySession.customerKeys || []).length,
+                    currentEmergencySession.ordersCount || 0
+                  )} زبون · ${(Number(currentEmergencySession.totalSales) || 0).toFixed(2)} ${currencySymbol}`
                 : `Emergency Open Active · Overtime: ${Math.max(
-                    currentEmergencySession.customerKeys.length,
-                    currentEmergencySession.ordersCount
-                  )} customers · ${currentEmergencySession.totalSales.toFixed(2)} ${currencySymbol}`}
+                    (currentEmergencySession.customerKeys || []).length,
+                    currentEmergencySession.ordersCount || 0
+                  )} customers · ${(Number(currentEmergencySession.totalSales) || 0).toFixed(2)} ${currencySymbol}`}
             </span>
           </div>
           <button
@@ -801,8 +802,10 @@ const PosMainContent: React.FC = () => {
 
 export default function App() {
   return (
-    <PosProvider>
-      <PosMainContent />
-    </PosProvider>
+    <AppErrorBoundary>
+      <PosProvider>
+        <PosMainContent />
+      </PosProvider>
+    </AppErrorBoundary>
   );
 }
