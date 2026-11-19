@@ -18,7 +18,9 @@ import {
   ShieldAlert,
   Zap,
   Unlock,
-  Ear
+  Ear,
+  Wifi,
+  WifiOff
 } from 'lucide-react';
 import { PinGateModal } from './auth/PinGateModal';
 import { KExecutivePanel } from './KExecutivePanel';
@@ -57,7 +59,9 @@ export const Navbar: React.FC = () => {
     currentEmergencySession,
     openEmergencySession,
     closeEmergencySession,
-    shopEarRequests
+    shopEarRequests,
+    isOnline,
+    cloudSyncState
   } = usePos();
 
   const arrivedShopEarCount = shopEarRequests.filter((r) => r.status === 'arrived').length;
@@ -265,6 +269,63 @@ export const Navbar: React.FC = () => {
 
       {/* Zone 3: Shift Status & Utilities */}
       <div className="flex flex-nowrap items-center justify-end gap-1.5 sm:gap-2 shrink-0">
+        {/* Live Firestore Multi-Device Sync Indicator */}
+        {(() => {
+          const isCloudSynced =
+            isOnline &&
+            cloudSyncState.isSignedIn &&
+            (cloudSyncState.status === 'synced' || cloudSyncState.status === 'syncing');
+          const count = cloudSyncState.activeDevicesCount;
+          const label = isCloudSynced
+            ? `متصل ومزامن مع ${count} أجهزة ✅`
+            : 'غير متصل ⚠️';
+          return (
+            <button
+              type="button"
+              onClick={() => {
+                setShowKPanel(false);
+                setShowBranchDropdown(false);
+                setShowUserDropdown(false);
+                setShowPaletteDropdown(false);
+                try {
+                  sessionStorage.setItem('kadi_settings_subtab', 'devices');
+                } catch {
+                  // ignore
+                }
+                handleTabClick('settings');
+                window.setTimeout(() => {
+                  window.dispatchEvent(new CustomEvent('kadi:open-connected-devices'));
+                }, 40);
+              }}
+              title={
+                isCloudSynced
+                  ? isAr
+                    ? `المزامنة الفورية نشطة (${cloudSyncState.deviceName})`
+                    : `Synced live across ${count} devices`
+                  : !isOnline
+                  ? isAr
+                    ? 'لا يوجد إنترنت — العمل من localStorage. اضغط لإدارة الأجهزة'
+                    : 'Offline — working from localStorage'
+                  : isAr
+                  ? 'اضغط لربط حساب Google وتفعيل المزامنة الفورية عبر Firestore'
+                  : 'Click to connect Google & enable live Firestore sync'
+              }
+              className={`flex items-center gap-1.5 px-2.5 py-1 text-[11px] font-extrabold rounded-lg border transition-colors whitespace-nowrap shrink-0 ${
+                isCloudSynced
+                  ? 'bg-emerald-50 dark:bg-emerald-950/60 border-emerald-200 dark:border-emerald-800 text-emerald-700 dark:text-emerald-300 hover:bg-emerald-100'
+                  : 'bg-amber-50 dark:bg-amber-950/60 border-amber-300 dark:border-amber-800 text-amber-800 dark:text-amber-300 hover:bg-amber-100'
+              }`}
+            >
+              {isCloudSynced ? (
+                <Wifi className="w-3.5 h-3.5 text-emerald-600 dark:text-emerald-400 shrink-0" />
+              ) : (
+                <WifiOff className="w-3.5 h-3.5 text-amber-600 dark:text-amber-400 shrink-0" />
+              )}
+              <span>{label}</span>
+            </button>
+          );
+        })()}
+
         {/* Alerts Center Button -> Navigates directly to in-app AlertsView page */}
         {(() => {
           const zakatAlertCount = zakatSummary.hasReachedNisab ? 1 : 0;
@@ -789,6 +850,10 @@ export const Navbar: React.FC = () => {
             } else if (pendingTab === 'shifts' && sessionStorage.getItem('kadi_open_daily_report') === '1') {
               window.setTimeout(() => {
                 window.dispatchEvent(new CustomEvent('kadi:open-daily-report'));
+              }, 80);
+            } else if (pendingTab === 'settings' && sessionStorage.getItem('kadi_settings_subtab') === 'devices') {
+              window.setTimeout(() => {
+                window.dispatchEvent(new CustomEvent('kadi:open-connected-devices'));
               }, 80);
             }
             setPendingTab(null);

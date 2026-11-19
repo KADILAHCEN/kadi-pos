@@ -1,0 +1,159 @@
+rules_version = '2';
+
+service cloud.firestore {
+  match /databases/{database}/documents {
+    // Global Default-Deny Safety Net
+    match /{document=**} {
+      allow read, write: if false;
+    }
+
+    function isSignedIn() {
+      return request.auth != null;
+    }
+
+    function isVerifiedUser() {
+      return isSignedIn() && request.auth.token.email_verified == true;
+    }
+
+    function isValidId(id) {
+      return id is string && id.size() > 0 && id.size() <= 128 && id.matches('^[a-zA-Z0-9_\\-]+$');
+    }
+
+    function incoming() {
+      return request.resource.data;
+    }
+
+    function existing() {
+      return resource.data;
+    }
+
+    function isValidStoreDoc(data) {
+      return data.keys().hasAll([
+          'products',
+          'sales',
+          'cash',
+          'lastUpdated',
+          'updatedBy',
+          'devices',
+          'ownerUid',
+          'ownerEmail',
+          'allowedEmails',
+          'serverSyncedAt'
+        ])
+        && data.keys().hasOnly([
+          'products',
+          'sales',
+          'cash',
+          'lastUpdated',
+          'updatedBy',
+          'devices',
+          'ownerUid',
+          'ownerEmail',
+          'allowedEmails',
+          'serverSyncedAt'
+        ])
+        && data.products is list
+        && data.products.size() <= 2500
+        && data.sales is list
+        && data.sales.size() <= 600
+        && data.cash is map
+        && data.lastUpdated is number
+        && data.lastUpdated >= 0
+        && data.updatedBy is string
+        && data.updatedBy.size() > 0
+        && data.updatedBy.size() <= 160
+        && data.devices is map
+        && data.devices.size() <= 50
+        && data.ownerUid is string
+        && data.ownerUid.size() > 0
+        && data.ownerUid.size() <= 128
+        && data.ownerEmail is string
+        && data.ownerEmail.size() > 0
+        && data.ownerEmail.size() <= 160
+        && data.allowedEmails is list
+        && data.allowedEmails.size() <= 20
+        && (data.allowedEmails.size() == 0 || data.allowedEmails[0] is string)
+        && data.serverSyncedAt is timestamp;
+    }
+
+    function isStoreOwner(docData) {
+      return isVerifiedUser()
+        && docData.ownerUid == request.auth.uid
+        && docData.ownerEmail == request.auth.token.email;
+    }
+
+    function isStoreOperator(docData) {
+      return isVerifiedUser()
+        && (
+          docData.ownerUid == request.auth.uid
+          || (
+            request.auth.token.email is string
+            && request.auth.token.email.size() <= 160
+            && request.auth.token.email in docData.allowedEmails
+          )
+        );
+    }
+
+    // Boot connection check document (read-only ping)
+    match /test/connection {
+      allow get: if true;
+      allow list, write: if false;
+    }
+
+    // Shared real-time POS store sync document: kadi_pos/store
+    match /kadi_pos/{docId} {
+      allow get: if isVerifiedUser()
+        && isValidId(docId)
+        && docId == 'store'
+        && (resource == null || isStoreOperator(existing()));
+
+      allow list: if isVerifiedUser()
+        && existing().ownerUid == request.auth.uid;
+
+      allow create: if isVerifiedUser()
+        && isValidId(docId)
+        && docId == 'store'
+        && isValidStoreDoc(incoming())
+        && incoming().ownerUid == request.auth.uid
+        && incoming().ownerEmail == request.auth.token.email
+        && incoming().serverSyncedAt == request.time;
+
+      allow update: if isVerifiedUser()
+        && isValidId(docId)
+        && docId == 'store'
+        && isValidStoreDoc(incoming())
+        && isStoreOperator(existing())
+        && incoming().ownerUid == existing().ownerUid
+        && incoming().ownerEmail == existing().ownerEmail
+        && incoming().serverSyncedAt == request.time
+        && (
+          // Action 1: POS store data & device heartbeat sync (products, sales, cash, devices)
+          (
+            incoming().diff(existing()).affectedKeys().hasOnly([
+              'products',
+              'sales',
+              'cash',
+              'lastUpdated',
+              'updatedBy',
+              'devices',
+              'serverSyncedAt'
+            ])
+          )
+          ||
+          // Action 2: Owner-only access list / device registry management
+          (
+            isStoreOwner(existing())
+            && incoming().diff(existing()).affectedKeys().hasOnly([
+              'devices',
+              'allowedEmails',
+              'lastUpdated',
+              'updatedBy',
+              'serverSyncedAt'
+            ])
+          )
+        );
+
+      allow delete: if false;
+    }
+  }
+}

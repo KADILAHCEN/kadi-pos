@@ -44,7 +44,10 @@ import {
   Siren,
   QrCode,
   ExternalLink,
-  Gift
+  Gift,
+  Wifi,
+  WifiOff,
+  SlidersHorizontal
 } from 'lucide-react';
 import { OFFICIAL_APP_URL, buildQrImageUrl, openExternalLinkSafely } from '../../utils/remoteCatalog';
 import { PWAInstallButton } from '../pwa/PWAInstallButton';
@@ -56,6 +59,7 @@ import { BranchManagementSection } from './BranchManagementSection';
 import { ActivityLogSection } from './ActivityLogSection';
 import { GoogleWorkspaceSyncSection } from './GoogleWorkspaceSyncSection';
 import { TabCustomizationSection } from './TabCustomizationSection';
+import { ConnectedDevicesSection } from './ConnectedDevicesSection';
 
 export const SettingsView: React.FC = () => {
   const {
@@ -89,12 +93,39 @@ export const SettingsView: React.FC = () => {
     triggerTestTheftAlert,
     unresolvedTheftAlerts,
     currentUser,
-    verifyManagerPin
+    verifyManagerPin,
+    cloudSyncState,
+    isOnline
   } = usePos();
 
   const t = getT(language);
   const isAr = language === 'ar';
   const isFr = language === 'fr';
+
+  const [settingsSubTab, setSettingsSubTab] = useState<'all' | 'devices'>(() => {
+    try {
+      if (sessionStorage.getItem('kadi_settings_subtab') === 'devices') {
+        sessionStorage.removeItem('kadi_settings_subtab');
+        return 'devices';
+      }
+    } catch {
+      // ignore
+    }
+    return 'all';
+  });
+
+  useEffect(() => {
+    const handleOpenDevices = () => {
+      setSettingsSubTab('devices');
+      try {
+        sessionStorage.removeItem('kadi_settings_subtab');
+      } catch {
+        // ignore
+      }
+    };
+    window.addEventListener('kadi:open-connected-devices', handleOpenDevices);
+    return () => window.removeEventListener('kadi:open-connected-devices', handleOpenDevices);
+  }, []);
 
   const [savedToast, setSavedToast] = useState(false);
   const [importError, setImportError] = useState<string | null>(null);
@@ -465,26 +496,77 @@ export const SettingsView: React.FC = () => {
 
   return (
     <div className="flex-1 flex flex-col h-full overflow-y-auto bg-slate-50 dark:bg-slate-950 p-3 sm:p-6 space-y-4 sm:space-y-6">
-      {/* Title */}
-      <div className="flex items-center justify-between">
+      {/* Title & Settings Sub-Page Switcher */}
+      <div className="flex flex-wrap items-center justify-between gap-3">
         <div>
           <h2 className="text-xl font-black text-slate-900 dark:text-white">
             {t.settings_title}
           </h2>
           <p className="text-xs text-slate-500">
-            {isAr ? 'إدارة بيانات المتجر، الرقم الضريبي، العملة والنسخ الاحتياطي' : 'Store profile, tax number, currency, and data backup'}
+            {isAr
+              ? 'إدارة بيانات المتجر، الأجهزة المتصلة، الرقم الضريبي، العملة والنسخ الاحتياطي'
+              : 'Store profile, connected devices, tax number, currency, and data backup'}
           </p>
         </div>
 
-        {savedToast && (
-          <div className="px-4 py-2 bg-emerald-600 text-white rounded-xl text-xs font-bold flex items-center gap-1.5 shadow-md animate-in fade-in">
-            <Check className="w-4 h-4" />
-            <span>{isAr ? 'تم حفظ الإعدادات بنجاح' : 'Settings saved'}</span>
+        <div className="flex flex-wrap items-center gap-2">
+          <div className="inline-flex p-1 rounded-2xl bg-slate-200/70 dark:bg-slate-800 border border-slate-200 dark:border-slate-700">
+            <button
+              type="button"
+              onClick={() => setSettingsSubTab('all')}
+              className={`px-3.5 py-1.5 rounded-xl text-xs font-extrabold flex items-center gap-1.5 transition-colors ${
+                settingsSubTab === 'all'
+                  ? 'bg-white dark:bg-slate-900 text-slate-900 dark:text-white shadow-2xs'
+                  : 'text-slate-600 dark:text-slate-300 hover:text-slate-900 dark:hover:text-white'
+              }`}
+            >
+              <SlidersHorizontal className="w-3.5 h-3.5 text-emerald-600" />
+              <span>{isAr ? 'إعدادات المتجر' : 'Store Settings'}</span>
+            </button>
+
+            <button
+              type="button"
+              onClick={() => setSettingsSubTab('devices')}
+              className={`px-3.5 py-1.5 rounded-xl text-xs font-extrabold flex items-center gap-1.5 transition-colors ${
+                settingsSubTab === 'devices'
+                  ? 'bg-white dark:bg-slate-900 text-slate-900 dark:text-white shadow-2xs'
+                  : 'text-slate-600 dark:text-slate-300 hover:text-slate-900 dark:hover:text-white'
+              }`}
+            >
+              {isOnline && cloudSyncState.isSignedIn ? (
+                <Wifi className="w-3.5 h-3.5 text-emerald-600" />
+              ) : (
+                <WifiOff className="w-3.5 h-3.5 text-amber-500" />
+              )}
+              <span>{isAr ? 'إدارة الأجهزة المتصلة' : 'Connected Devices'}</span>
+              <span
+                className={`px-1.5 py-0.5 rounded-md text-[10px] font-black tabular-nums ${
+                  isOnline && cloudSyncState.isSignedIn
+                    ? 'bg-emerald-100 dark:bg-emerald-950 text-emerald-700 dark:text-emerald-300'
+                    : 'bg-amber-100 dark:bg-amber-950 text-amber-700 dark:text-amber-300'
+                }`}
+              >
+                {cloudSyncState.devices.length}
+              </span>
+            </button>
           </div>
-        )}
+
+          {savedToast && (
+            <div className="px-4 py-2 bg-emerald-600 text-white rounded-xl text-xs font-bold flex items-center gap-1.5 shadow-md animate-in fade-in">
+              <Check className="w-4 h-4" />
+              <span>{isAr ? 'تم حفظ الإعدادات بنجاح' : 'Settings saved'}</span>
+            </div>
+          )}
+        </div>
       </div>
 
-      <form onSubmit={handleSave} className="space-y-6 max-w-4xl">
+      {settingsSubTab === 'devices' ? (
+        <ConnectedDevicesSection />
+      ) : (
+        <>
+          <ConnectedDevicesSection />
+
+          <form onSubmit={handleSave} className="space-y-6 max-w-4xl">
         {/* Store Profile Card */}
         <div className="p-6 rounded-3xl bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 shadow-xs space-y-4">
           <h3 className="font-extrabold text-sm text-slate-900 dark:text-white flex items-center gap-2">
@@ -3170,6 +3252,8 @@ export const SettingsView: React.FC = () => {
         isOpen={showImportProductsModal}
         onClose={() => setShowImportProductsModal(false)}
       />
+        </>
+      )}
     </div>
   );
 };

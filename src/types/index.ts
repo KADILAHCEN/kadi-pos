@@ -52,6 +52,7 @@ export interface Product {
   availableModifiers?: ProductModifier[];
   branchStocks?: Record<string, number>; // Specific stock allocated per branch ID
   expiryDate?: string; // YYYY-MM-DD تاريخ انتهاء الصلاحية
+  updatedAt?: number; // Timestamp ms for Firestore conflict merge
 }
 
 export interface Branch {
@@ -213,6 +214,7 @@ export interface Order {
   customerAddress?: string;
   isEmergencyOvertime?: boolean;
   emergencySessionId?: string;
+  updatedAt?: number; // Timestamp ms for Firestore conflict merge
 }
 
 export interface OfflineSaleQueueItem {
@@ -274,6 +276,7 @@ export interface Shift {
   closingNotes?: string;
   retainedFloatForNextDay?: number;
   merchantWithdrawnCash?: number;
+  updatedAt?: number; // Timestamp ms for Firestore conflict merge
 }
 
 export interface EmergencyOpeningSession {
@@ -680,4 +683,46 @@ export interface StocktakeSessionRecord {
   notes?: string;
   items: StocktakeRecordItem[];
 }
+
+// =========================
+// Real-time Multi-Device Firestore Sync (kadi_pos/store)
+// =========================
+export interface ConnectedDeviceInfo {
+  deviceId: string;
+  deviceName: string;
+  userAgent: string;
+  cashierName: string;
+  lastActivity: string;
+  lastSyncAt: string;
+  lastUpdatedMs: number;
+  online: boolean;
+}
+
+export interface FirestoreCashState {
+  currentShift: Shift;
+  shiftsHistory: Shift[];
+  emergencySessions: EmergencyOpeningSession[];
+}
+
+export type FirestoreSyncStatus = 'synced' | 'syncing' | 'offline' | 'auth_required' | 'error';
+
+export interface FirestoreSyncState {
+  status: FirestoreSyncStatus;
+  deviceId: string;
+  deviceName: string;
+  isSignedIn: boolean;
+  userEmail: string | null;
+  userDisplayName: string | null;
+  isOwner: boolean;
+  ownerEmail: string | null;
+  allowedEmails: string[];
+  lastUpdated: number | null;
+  updatedBy: string | null;
+  devices: ConnectedDeviceInfo[];
+  activeDevicesCount: number;
+  hasPendingLocalChanges: boolean;
+  storeExistsInCloud: boolean;
+  lastError: string | null;
+}
+
 

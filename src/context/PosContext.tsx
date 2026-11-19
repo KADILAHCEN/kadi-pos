@@ -35,7 +35,10 @@ import {
   StocktakeRecordItem,
   StocktakeSessionRecord,
   EmergencyOpeningSession,
-  ShopEarRequest
+  ShopEarRequest,
+  ConnectedDeviceInfo,
+  FirestoreSyncState,
+  FirestoreSyncStatus
 } from '../types';
 import {
   initialProducts,
@@ -90,6 +93,25 @@ import {
   RetirementProgressSummary
 } from '../utils/cpuTax';
 import { BUILT_IN_PALETTES, applyPaletteToDocument } from '../utils/palettes';
+import { onAuthStateChanged, User } from 'firebase/auth';
+import { auth, signInWithGoogleForFirestore, signOutFromFirestore } from '../firebase';
+import {
+  FirestoreStoreDocument,
+  LocalStoreSyncPayload,
+  clearPendingCloudSyncFlag,
+  getOrCreateDeviceId,
+  getPendingCloudSyncFlag,
+  getShortDevicePlatform,
+  getStoredDeviceName,
+  loadLocalCloudBackup,
+  mergePosStoreData,
+  pushMergedStoreToFirestore,
+  saveLocalCloudBackup,
+  saveStoredDeviceName,
+  setPendingCloudSyncFlag,
+  subscribeStoreSyncDoc,
+  updateDeviceRegistryOnly
+} from '../utils/firestoreSync';
 
 export type AppTabId =
   | 'home_summary'
@@ -418,6 +440,16 @@ interface PosContextType {
   markShopEarNotified: (requestId: string, customerPhone?: string) => void;
   deleteShopEarRequest: (requestId: string) => void;
   clearNotifiedShopEarRequests: () => void;
+
+  // Real-time Multi-Device Firestore Sync (المزامنة الفورية عبر Firestore)
+  cloudSyncState: FirestoreSyncState;
+  signInCloudSync: () => Promise<{ success: boolean; error?: string }>;
+  signOutCloudSync: () => Promise<void>;
+  forceCloudSyncNow: (activityLabel?: string) => Promise<void>;
+  renameCurrentDevice: (newName: string) => Promise<void>;
+  removeConnectedDevice: (targetDeviceId: string) => Promise<void>;
+  addAllowedSyncEmail: (email: string) => Promise<{ success: boolean; error?: string }>;
+  removeAllowedSyncEmail: (email: string) => Promise<void>;
 
   // Utilities
   buildFullBackupObject: () => Record<string, unknown>;
@@ -1020,12 +1052,20 @@ export const PosProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
     safeReadStorageArray<Category>('kadi_pos_categories_v3', initialCategories, { allowEmpty: false })
   );
 
+  const [productsHydrated, setProductsHydrated] = useState(false);
+
   useEffect(() => {
-    // Check IndexedDB on mount for high-capacity 2000+ catalog
+    // Check IndexedDB on mount for high-capacity 2000+ catalog, falling back to local cloud backup if empty
     loadProductsFromIndexedDB().then((dbProducts) => {
       if (Array.isArray(dbProducts) && dbProducts.length > 0) {
         setProducts(dbProducts);
+      } else {
+        const cloudBackup = loadLocalCloudBackup();
+        if (cloudBackup && cloudBackup.products.length > 0) {
+          setProducts(cloudBackup.products);
+        }
       }
+      setProductsHydrated(true);
     });
   }, []);
 
@@ -2864,6 +2904,7 @@ export const PosProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
 
   const [lastCompletedOrder, setLastCompletedOrder] = useState<Order | null>(null);
   const ordersHydratedRef = useRef(false);
+  const [ordersHydrated, setOrdersHydrated] = useState(false);
 
   // Offline Mode & IndexedDB Offline Sales Sync Queue State
   const [isOnline, setIsOnline] = useState<boolean>(
@@ -3527,8 +3568,14 @@ export const PosProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
         if (cancelled) return;
         if (dbOrders && dbOrders.length > 0) {
           setOrders(dbOrders);
+        } else {
+          const cloudBackup = loadLocalCloudBackup();
+          if (cloudBackup && cloudBackup.sales.length > 0) {
+            setOrders(cloudBackup.sales);
+          }
         }
         ordersHydratedRef.current = true;
+        setOrdersHydrated(true);
 
         if (dbQueue.length > 0) {
           setOfflineSalesQueue(dbQueue);
@@ -4312,27 +4359,7 @@ export const PosProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
     [cpuRecords, cpuSettings.priorAccumulatedDays]
   );
 
-  // Listen for browser online / offline events and automatically sync queued offline sales
-  useEffect(() => {
-    const handleOnline = () => {
-      setIsOnline(true);
-      if (offlineQueueRef.current.length > 0) {
-        void syncPendingOfflineSales();
-      }
-    };
-
-    const handleOffline = () => {
-      setIsOnline(false);
-    };
-
-    window.addEventListener('online', handleOnline);
-    window.addEventListener('offline', handleOffline);
-
-    return () => {
-      window.removeEventListener('online', handleOnline);
-      window.removeEventListener('offline', handleOffline);
-    };
-  }, [syncPendingOfflineSales]);
+  // Browser online/offline state listeners moved/unified with Firestore sync engine below
 
   // Shifts State
   const [currentShift, setCurrentShift] = useState<Shift>(() => {
@@ -5417,6 +5444,679 @@ export const PosProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
     }
   };
 
+  // =====================================================================
+  // Real-time Multi-Device Firestore Sync (kadi_pos/store) & Offline Cache
+  // =====================================================================
+  const deviceIdRef = useRef<string>(getOrCreateDeviceId());
+  const [deviceName, setDeviceName] = useState<string>(() => getStoredDeviceName(deviceIdRef.current));
+  const [firebaseUser, setFirebaseUser] = useState<User | null>(() => auth.currentUser);
+  const [cloudDevices, setCloudDevices] = useState<ConnectedDeviceInfo[]>([]);
+  const [cloudOwnerEmail, setCloudOwnerEmail] = useState<string | null>(null);
+  const [cloudIsOwner, setCloudIsOwner] = useState<boolean>(false);
+  const [cloudAllowedEmails, setCloudAllowedEmails] = useState<string[]>([]);
+  const [cloudLastUpdated, setCloudLastUpdated] = useState<number | null>(null);
+  const [cloudUpdatedBy, setCloudUpdatedBy] = useState<string | null>(null);
+  const [storeExistsInCloud, setStoreExistsInCloud] = useState<boolean>(false);
+  const [cloudSyncingNow, setCloudSyncingNow] = useState<boolean>(false);
+  const [cloudSyncError, setCloudSyncError] = useState<string | null>(null);
+  const [hasPendingLocalChanges, setHasPendingLocalChanges] = useState<boolean>(
+    () => !!getPendingCloudSyncFlag()
+  );
+
+  const cachedRemoteDocRef = useRef<FirestoreStoreDocument | null>(null);
+  const isApplyingRemoteRef = useRef<boolean>(false);
+  const skipNextLocalPushRef = useRef<boolean>(false);
+  const syncDebounceTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const cloudPushInFlightRef = useRef<boolean>(false);
+  const lastLocalActivityRef = useRef<string>(
+    getPendingCloudSyncFlag() || 'تحديث بيانات المتجر'
+  );
+  const lastLocalUpdatedAtRef = useRef<number>(Date.now());
+
+  // Always keep latest state refs so callbacks never push stale closures
+  const latestProductsRef = useRef(products);
+  const latestOrdersRef = useRef(orders);
+  const latestCurrentShiftRef = useRef(currentShift);
+  const latestShiftsHistoryRef = useRef(shiftsHistory);
+  const latestEmergencySessionsRef = useRef(emergencySessions);
+  const latestDeviceNameRef = useRef(deviceName);
+  const latestCashierNameRef = useRef(currentUser.name);
+
+  latestProductsRef.current = products;
+  latestOrdersRef.current = orders;
+  latestCurrentShiftRef.current = currentShift;
+  latestShiftsHistoryRef.current = shiftsHistory;
+  latestEmergencySessionsRef.current = emergencySessions;
+  latestDeviceNameRef.current = deviceName;
+  latestCashierNameRef.current = currentUser.name;
+
+  // Track previous item signatures so concurrent item-level edits receive accurate timestamps
+  const prevItemSigsRef = useRef<{
+    products: Map<string, string>;
+    orders: Map<string, string>;
+    shifts: Map<string, string>;
+    emg: Map<string, string>;
+    productUpdatedAt: Map<string, number>;
+    orderUpdatedAt: Map<string, number>;
+    shiftUpdatedAt: Map<string, number>;
+    initialized: boolean;
+  }>({
+    products: new Map(),
+    orders: new Map(),
+    shifts: new Map(),
+    emg: new Map(),
+    productUpdatedAt: new Map(),
+    orderUpdatedAt: new Map(),
+    shiftUpdatedAt: new Map(),
+    initialized: false
+  });
+
+  const buildCurrentLocalPayload = useCallback((): LocalStoreSyncPayload => {
+    const pTs = prevItemSigsRef.current.productUpdatedAt;
+    const oTs = prevItemSigsRef.current.orderUpdatedAt;
+    const sTs = prevItemSigsRef.current.shiftUpdatedAt;
+
+    const stampedProducts = latestProductsRef.current.map((p) => {
+      const ts = p.updatedAt || pTs.get(p.id);
+      return ts ? { ...p, updatedAt: ts } : p;
+    });
+
+    const stampedOrders = latestOrdersRef.current.map((o) => {
+      const ts = o.updatedAt || oTs.get(o.id);
+      return ts ? { ...o, updatedAt: ts } : o;
+    });
+
+    const curShift = latestCurrentShiftRef.current;
+    const stampedCurShift: Shift = {
+      ...curShift,
+      updatedAt: curShift.updatedAt || sTs.get(curShift.id) || lastLocalUpdatedAtRef.current
+    };
+
+    const stampedHistory = latestShiftsHistoryRef.current.map((s) => {
+      const ts = s.updatedAt || sTs.get(s.id);
+      return ts ? { ...s, updatedAt: ts } : s;
+    });
+
+    return {
+      products: stampedProducts,
+      sales: stampedOrders,
+      cash: {
+        currentShift: stampedCurShift,
+        shiftsHistory: stampedHistory,
+        emergencySessions: latestEmergencySessionsRef.current
+      },
+      lastUpdated: lastLocalUpdatedAtRef.current,
+      updatedBy: `${deviceIdRef.current} · ${latestCashierNameRef.current}`
+    };
+  }, []);
+
+  // Listen to Firebase Auth session changes for Firestore sync
+  useEffect(() => {
+    const unsub = onAuthStateChanged(auth, (user) => {
+      setFirebaseUser(user);
+      if (!user) {
+        cachedRemoteDocRef.current = null;
+        setCloudDevices([]);
+        setStoreExistsInCloud(false);
+        setCloudSyncError(null);
+      }
+    });
+    return () => unsub();
+  }, []);
+
+  const pushCurrentStoreToCloud = useCallback(
+    async (activityLabel?: string, onlineFlag: boolean = true) => {
+      const user = auth.currentUser;
+      const nowOnline = typeof navigator !== 'undefined' ? navigator.onLine : isOnline;
+      if (!user || !user.emailVerified || !nowOnline) {
+        const label = activityLabel || lastLocalActivityRef.current;
+        setPendingCloudSyncFlag(label);
+        setHasPendingLocalChanges(true);
+        return;
+      }
+      if (cloudPushInFlightRef.current) return;
+
+      cloudPushInFlightRef.current = true;
+      setCloudSyncingNow(true);
+
+      try {
+        const localPayload = buildCurrentLocalPayload();
+        saveLocalCloudBackup(localPayload);
+
+        const writtenDoc = await pushMergedStoreToFirestore({
+          user,
+          localPayload,
+          cachedRemoteDoc: cachedRemoteDocRef.current,
+          deviceId: deviceIdRef.current,
+          deviceName: latestDeviceNameRef.current,
+          cashierName: latestCashierNameRef.current,
+          activityLabel: activityLabel || lastLocalActivityRef.current || 'تحديث البيانات',
+          online: onlineFlag
+        });
+
+        cachedRemoteDocRef.current = writtenDoc;
+        setCloudDevices(
+          Object.values(writtenDoc.devices).sort(
+            (a, b) => (b.lastUpdatedMs || 0) - (a.lastUpdatedMs || 0)
+          )
+        );
+        setCloudOwnerEmail(writtenDoc.ownerEmail || null);
+        setCloudIsOwner(writtenDoc.ownerUid === user.uid);
+        setCloudAllowedEmails(writtenDoc.allowedEmails || []);
+        setCloudLastUpdated(writtenDoc.lastUpdated);
+        setCloudUpdatedBy(writtenDoc.updatedBy);
+        setStoreExistsInCloud(true);
+        setHasPendingLocalChanges(false);
+        setCloudSyncError(null);
+      } catch (err) {
+        const msg = err instanceof Error ? err.message : String(err);
+        setCloudSyncError(msg);
+      } finally {
+        cloudPushInFlightRef.current = false;
+        setCloudSyncingNow(false);
+      }
+    },
+    [buildCurrentLocalPayload, isOnline]
+  );
+
+  // Real-time onSnapshot listener across all devices (kadi_pos/store)
+  useEffect(() => {
+    const isCoreHydrated = productsHydrated && ordersHydrated;
+    if (!isCoreHydrated || !isOnline || !firebaseUser || !firebaseUser.emailVerified) {
+      return;
+    }
+
+    setCloudSyncingNow(true);
+
+    const unsubscribe = subscribeStoreSyncDoc(
+      (remoteDoc, meta) => {
+        if (!remoteDoc) {
+          setStoreExistsInCloud(false);
+          setCloudSyncingNow(false);
+          // Initialize Firestore document from local store on first setup
+          void pushCurrentStoreToCloud('تهيئة المتجر والمزامنة السحابية الأولى', true);
+          return;
+        }
+
+        cachedRemoteDocRef.current = remoteDoc;
+        setStoreExistsInCloud(true);
+        setCloudOwnerEmail(remoteDoc.ownerEmail || null);
+        setCloudIsOwner(remoteDoc.ownerUid === firebaseUser.uid);
+        setCloudAllowedEmails(remoteDoc.allowedEmails || []);
+        setCloudLastUpdated(remoteDoc.lastUpdated);
+        setCloudUpdatedBy(remoteDoc.updatedBy);
+        setCloudSyncError(null);
+
+        const devicesList = Object.values(remoteDoc.devices).sort(
+          (a, b) => (b.lastUpdatedMs || 0) - (a.lastUpdatedMs || 0)
+        );
+        setCloudDevices(devicesList);
+
+        // Merge remote + local data using concurrent conflict resolution (never drop items from any device)
+        const localPayload = buildCurrentLocalPayload();
+        const merged = mergePosStoreData(localPayload, remoteDoc);
+
+        saveLocalCloudBackup(merged);
+
+        // Compare if merged data introduces updates not yet reflected in local React state
+        const prodChanged =
+          merged.products.length !== latestProductsRef.current.length ||
+          JSON.stringify(merged.products.map((p) => `${p.id}:${p.stock}:${p.price}:${p.costPrice}:${p.name}:${p.updatedAt || 0}`)) !==
+            JSON.stringify(latestProductsRef.current.map((p) => `${p.id}:${p.stock}:${p.price}:${p.costPrice}:${p.name}:${p.updatedAt || 0}`));
+
+        const salesChanged =
+          merged.sales.length !== latestOrdersRef.current.length ||
+          JSON.stringify(merged.sales.slice(0, 80).map((o) => `${o.id}:${o.status}:${o.grandTotal}:${o.refundedAmount || 0}:${o.updatedAt || 0}`)) !==
+            JSON.stringify(latestOrdersRef.current.slice(0, 80).map((o) => `${o.id}:${o.status}:${o.grandTotal}:${o.refundedAmount || 0}:${o.updatedAt || 0}`));
+
+        const cashChanged =
+          merged.cash.currentShift.id !== latestCurrentShiftRef.current.id ||
+          merged.cash.currentShift.status !== latestCurrentShiftRef.current.status ||
+          (merged.cash.currentShift.cashTransactions?.length || 0) !==
+            (latestCurrentShiftRef.current.cashTransactions?.length || 0) ||
+          merged.cash.shiftsHistory.length !== latestShiftsHistoryRef.current.length ||
+          merged.cash.emergencySessions.length !== latestEmergencySessionsRef.current.length;
+
+        if (prodChanged || salesChanged || cashChanged) {
+          isApplyingRemoteRef.current = true;
+          skipNextLocalPushRef.current = true;
+
+          // Update signature cache before React renders so local mutation detector stays clean
+          const nextProdSigs = new Map<string, string>();
+          merged.products.forEach((p) => {
+            nextProdSigs.set(p.id, `${p.name}|${p.price}|${p.costPrice}|${p.stock}|${p.lowStockThreshold}`);
+            if (p.updatedAt) prevItemSigsRef.current.productUpdatedAt.set(p.id, p.updatedAt);
+          });
+          prevItemSigsRef.current.products = nextProdSigs;
+
+          const nextOrderSigs = new Map<string, string>();
+          merged.sales.forEach((o) => {
+            nextOrderSigs.set(o.id, `${o.status}|${o.grandTotal}|${o.refundedAmount || 0}`);
+            if (o.updatedAt) prevItemSigsRef.current.orderUpdatedAt.set(o.id, o.updatedAt);
+          });
+          prevItemSigsRef.current.orders = nextOrderSigs;
+
+          const nextShiftSigs = new Map<string, string>();
+          [merged.cash.currentShift, ...merged.cash.shiftsHistory].forEach((s) => {
+            nextShiftSigs.set(s.id, `${s.status}|${s.cashTransactions?.length || 0}|${s.actualCashCounted || 0}`);
+            if (s.updatedAt) prevItemSigsRef.current.shiftUpdatedAt.set(s.id, s.updatedAt);
+          });
+          prevItemSigsRef.current.shifts = nextShiftSigs;
+
+          if (prodChanged) setProducts(merged.products);
+          if (salesChanged) setOrders(merged.sales);
+          if (cashChanged) {
+            setCurrentShift(merged.cash.currentShift);
+            setShiftsHistory(merged.cash.shiftsHistory);
+            setEmergencySessions(merged.cash.emergencySessions);
+          }
+
+          window.setTimeout(() => {
+            isApplyingRemoteRef.current = false;
+          }, 80);
+        }
+
+        const myDevice = remoteDoc.devices[deviceIdRef.current];
+        const pendingOfflineActivity = getPendingCloudSyncFlag();
+
+        if (!meta.fromCache) {
+          setCloudSyncingNow(false);
+        }
+
+        // If this device isn't registered yet, marked offline, or has offline mutations queued -> push back merged doc
+        if (
+          !meta.fromCache &&
+          (!myDevice ||
+            myDevice.online === false ||
+            pendingOfflineActivity ||
+            merged.products.length > remoteDoc.products.length ||
+            merged.sales.length > remoteDoc.sales.length)
+        ) {
+          void pushCurrentStoreToCloud(
+            pendingOfflineActivity || 'انضمام ومزامنة تلقائية للجهاز',
+            true
+          );
+        }
+      },
+      (errMsg) => {
+        setCloudSyncError(errMsg);
+        setCloudSyncingNow(false);
+      }
+    );
+
+    return () => {
+      unsubscribe();
+    };
+  }, [
+    productsHydrated,
+    ordersHydrated,
+    isOnline,
+    firebaseUser,
+    buildCurrentLocalPayload,
+    pushCurrentStoreToCloud
+  ]);
+
+  // Watch local store mutations (products, sales, cash) -> backup to localStorage + debounced Firestore push
+  useEffect(() => {
+    const isCoreHydrated = productsHydrated && ordersHydrated;
+    if (!isCoreHydrated) return;
+
+    const nowMs = Date.now();
+    const sigs = prevItemSigsRef.current;
+
+    // Detect exactly what changed locally to stamp item-level updatedAt & human activity label
+    const nextProdSigs = new Map<string, string>();
+    let productsModifiedCount = 0;
+    let firstChangedProductName = '';
+    products.forEach((p) => {
+      const sig = `${p.name}|${p.price}|${p.costPrice}|${p.stock}|${p.lowStockThreshold}`;
+      nextProdSigs.set(p.id, sig);
+      if (sigs.initialized && sigs.products.get(p.id) !== sig) {
+        productsModifiedCount++;
+        if (!firstChangedProductName) firstChangedProductName = p.name;
+        if (!isApplyingRemoteRef.current) {
+          sigs.productUpdatedAt.set(p.id, nowMs);
+        }
+      }
+    });
+    if (sigs.initialized && products.length < sigs.products.size && productsModifiedCount === 0) {
+      productsModifiedCount = Math.max(1, sigs.products.size - products.length);
+    }
+    sigs.products = nextProdSigs;
+
+    const nextOrderSigs = new Map<string, string>();
+    let ordersModifiedCount = 0;
+    let firstChangedOrderNum = '';
+    orders.forEach((o) => {
+      const sig = `${o.status}|${o.grandTotal}|${o.refundedAmount || 0}`;
+      nextOrderSigs.set(o.id, sig);
+      if (sigs.initialized && sigs.orders.get(o.id) !== sig) {
+        ordersModifiedCount++;
+        if (!firstChangedOrderNum) firstChangedOrderNum = o.orderNumber;
+        if (!isApplyingRemoteRef.current) {
+          sigs.orderUpdatedAt.set(o.id, nowMs);
+        }
+      }
+    });
+    sigs.orders = nextOrderSigs;
+
+    const nextShiftSigs = new Map<string, string>();
+    let cashModified = false;
+    [currentShift, ...shiftsHistory].forEach((s) => {
+      const sig = `${s.status}|${s.cashTransactions?.length || 0}|${s.actualCashCounted || 0}`;
+      nextShiftSigs.set(s.id, sig);
+      if (sigs.initialized && sigs.shifts.get(s.id) !== sig) {
+        cashModified = true;
+        if (!isApplyingRemoteRef.current) {
+          sigs.shiftUpdatedAt.set(s.id, nowMs);
+        }
+      }
+    });
+    sigs.shifts = nextShiftSigs;
+
+    if (!sigs.initialized) {
+      sigs.initialized = true;
+      saveLocalCloudBackup(buildCurrentLocalPayload());
+      return;
+    }
+
+    if (isApplyingRemoteRef.current || skipNextLocalPushRef.current) {
+      skipNextLocalPushRef.current = false;
+      saveLocalCloudBackup(buildCurrentLocalPayload());
+      return;
+    }
+
+    // Build descriptive activity label
+    let activity = 'تحديث بيانات المتجر';
+    if (ordersModifiedCount > 0) {
+      activity = firstChangedOrderNum
+        ? `مبيعة/فاتورة ${firstChangedOrderNum}`
+        : `تحديث المبيعات (${ordersModifiedCount})`;
+    } else if (cashModified) {
+      activity =
+        currentShift.status === 'closed'
+          ? `إغلاق الصندوق (#${currentShift.shiftNumber})`
+          : `عملية في الصندوق/الوردية (#${currentShift.shiftNumber})`;
+    } else if (productsModifiedCount > 0) {
+      activity =
+        productsModifiedCount === 1 && firstChangedProductName
+          ? `تحديث سلعة: ${firstChangedProductName}`
+          : `تحديث المخزون والسلع (${productsModifiedCount})`;
+    }
+
+    lastLocalActivityRef.current = activity;
+    lastLocalUpdatedAtRef.current = nowMs;
+    saveLocalCloudBackup(buildCurrentLocalPayload());
+
+    const onlineNow = typeof navigator !== 'undefined' ? navigator.onLine : isOnline;
+    const authed = !!firebaseUser && firebaseUser.emailVerified;
+
+    if (!onlineNow || !authed) {
+      setPendingCloudSyncFlag(activity);
+      setHasPendingLocalChanges(true);
+      return;
+    }
+
+    if (syncDebounceTimerRef.current) {
+      clearTimeout(syncDebounceTimerRef.current);
+    }
+    syncDebounceTimerRef.current = setTimeout(() => {
+      void pushCurrentStoreToCloud(activity, true);
+    }, 350);
+
+    return () => {
+      if (syncDebounceTimerRef.current) {
+        clearTimeout(syncDebounceTimerRef.current);
+      }
+    };
+  }, [
+    products,
+    orders,
+    currentShift,
+    shiftsHistory,
+    emergencySessions,
+    productsHydrated,
+    ordersHydrated,
+    isOnline,
+    firebaseUser,
+    buildCurrentLocalPayload,
+    pushCurrentStoreToCloud
+  ]);
+
+  // Periodic heartbeat (every 60s) & tab-focus sync so multi-device active status stays fresh
+  useEffect(() => {
+    if (!isOnline || !firebaseUser || !firebaseUser.emailVerified) return;
+
+    const interval = setInterval(() => {
+      if (document.visibilityState === 'visible') {
+        void pushCurrentStoreToCloud('متصل ونشط (نبض المزامنة)', true);
+      }
+    }, 60_000);
+
+    const handleVisibility = () => {
+      if (document.visibilityState === 'visible' && navigator.onLine) {
+        void pushCurrentStoreToCloud('نشط ومتزامن', true);
+      }
+    };
+    document.addEventListener('visibilitychange', handleVisibility);
+
+    return () => {
+      clearInterval(interval);
+      document.removeEventListener('visibilitychange', handleVisibility);
+    };
+  }, [isOnline, firebaseUser, pushCurrentStoreToCloud]);
+
+  // Online / Offline listeners: seamlessly switch between Firestore & localStorage and auto-sync on reconnect
+  useEffect(() => {
+    const handleOnline = () => {
+      setIsOnline(true);
+      if (offlineQueueRef.current.length > 0) {
+        void syncPendingOfflineSales();
+      }
+      if (auth.currentUser?.emailVerified) {
+        void pushCurrentStoreToCloud('استعادة الاتصال والمزامنة التلقائية', true);
+      }
+    };
+
+    const handleOffline = () => {
+      setIsOnline(false);
+    };
+
+    window.addEventListener('online', handleOnline);
+    window.addEventListener('offline', handleOffline);
+
+    return () => {
+      window.removeEventListener('online', handleOnline);
+      window.removeEventListener('offline', handleOffline);
+    };
+  }, [syncPendingOfflineSales, pushCurrentStoreToCloud]);
+
+  const signInCloudSync = useCallback(async (): Promise<{ success: boolean; error?: string }> => {
+    try {
+      setCloudSyncError(null);
+      const user = await signInWithGoogleForFirestore();
+      setFirebaseUser(user);
+      return { success: true };
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      setCloudSyncError(msg);
+      return { success: false, error: msg };
+    }
+  }, []);
+
+  const signOutCloudSync = useCallback(async (): Promise<void> => {
+    const user = auth.currentUser;
+    const cached = cachedRemoteDocRef.current;
+    if (user && cached && isOnline) {
+      try {
+        const myExisting = cached.devices[deviceIdRef.current];
+        const nextDevices = {
+          ...cached.devices,
+          [deviceIdRef.current]: {
+            deviceId: deviceIdRef.current,
+            deviceName: latestDeviceNameRef.current,
+            userAgent: getShortDevicePlatform(),
+            cashierName: latestCashierNameRef.current,
+            lastActivity: myExisting?.lastActivity || 'تسجيل الخروج من المزامنة',
+            lastSyncAt: new Date().toISOString(),
+            lastUpdatedMs: Date.now(),
+            online: false
+          }
+        };
+        await updateDeviceRegistryOnly({
+          user,
+          cachedRemoteDoc: cached,
+          nextDevices,
+          deviceId: deviceIdRef.current,
+          cashierName: latestCashierNameRef.current,
+          activityLabel: 'تسجيل الخروج من الجهاز'
+        });
+      } catch {
+        // Ignore if offline or non-owner
+      }
+    }
+    await signOutFromFirestore();
+    setFirebaseUser(null);
+  }, [isOnline]);
+
+  const forceCloudSyncNow = useCallback(
+    async (activityLabel?: string): Promise<void> => {
+      await pushCurrentStoreToCloud(activityLabel || 'مزامنة يدوية فورية', true);
+    },
+    [pushCurrentStoreToCloud]
+  );
+
+  const renameCurrentDevice = useCallback(
+    async (newName: string): Promise<void> => {
+      const saved = saveStoredDeviceName(newName);
+      setDeviceName(saved);
+      latestDeviceNameRef.current = saved;
+      if (auth.currentUser?.emailVerified && isOnline) {
+        await pushCurrentStoreToCloud(`تغيير اسم الجهاز إلى: ${saved}`, true);
+      }
+    },
+    [isOnline, pushCurrentStoreToCloud]
+  );
+
+  const removeConnectedDevice = useCallback(
+    async (targetDeviceId: string): Promise<void> => {
+      const user = auth.currentUser;
+      const cached = cachedRemoteDocRef.current;
+      if (!user || !cached || !isOnline) return;
+      const nextDevices = { ...cached.devices };
+      delete nextDevices[targetDeviceId];
+      await updateDeviceRegistryOnly({
+        user,
+        cachedRemoteDoc: cached,
+        nextDevices,
+        deviceId: deviceIdRef.current,
+        cashierName: latestCashierNameRef.current,
+        activityLabel: `إزالة جهاز من القائمة (${targetDeviceId})`
+      });
+    },
+    [isOnline]
+  );
+
+  const addAllowedSyncEmail = useCallback(
+    async (email: string): Promise<{ success: boolean; error?: string }> => {
+      const user = auth.currentUser;
+      const cached = cachedRemoteDocRef.current;
+      const clean = email.trim().toLowerCase();
+      if (!clean || !clean.includes('@')) {
+        return { success: false, error: 'البريد الإلكتروني غير صالح' };
+      }
+      if (!user || !cached) {
+        return { success: false, error: 'يجب الاتصال وتفعيل المزامنة أولاً' };
+      }
+      const nextEmails = Array.from(new Set([...(cached.allowedEmails || []), clean])).slice(0, 20);
+      try {
+        await updateDeviceRegistryOnly({
+          user,
+          cachedRemoteDoc: cached,
+          nextDevices: cached.devices,
+          nextAllowedEmails: nextEmails,
+          deviceId: deviceIdRef.current,
+          cashierName: latestCashierNameRef.current,
+          activityLabel: `إضافة بريد مصرح بالمزامنة: ${clean}`
+        });
+        return { success: true };
+      } catch (err) {
+        return { success: false, error: err instanceof Error ? err.message : String(err) };
+      }
+    },
+    []
+  );
+
+  const removeAllowedSyncEmail = useCallback(async (email: string): Promise<void> => {
+    const user = auth.currentUser;
+    const cached = cachedRemoteDocRef.current;
+    if (!user || !cached) return;
+    const nextEmails = (cached.allowedEmails || []).filter(
+      (e) => e.toLowerCase() !== email.trim().toLowerCase()
+    );
+    await updateDeviceRegistryOnly({
+      user,
+      cachedRemoteDoc: cached,
+      nextDevices: cached.devices,
+      nextAllowedEmails: nextEmails,
+      deviceId: deviceIdRef.current,
+      cashierName: latestCashierNameRef.current,
+      activityLabel: `سحب صلاحية بريد من المزامنة: ${email}`
+    });
+  }, []);
+
+  const cloudSyncState = useMemo<FirestoreSyncState>(() => {
+    const isSignedIn = !!firebaseUser && firebaseUser.emailVerified;
+    let status: FirestoreSyncStatus = 'offline';
+    if (!isOnline) {
+      status = 'offline';
+    } else if (!isSignedIn) {
+      status = 'auth_required';
+    } else if (cloudSyncError) {
+      status = 'error';
+    } else if (cloudSyncingNow) {
+      status = 'syncing';
+    } else {
+      status = 'synced';
+    }
+
+    const activeDevices = cloudDevices.filter((d) => d.online !== false);
+    const activeDevicesCount = isSignedIn && isOnline ? Math.max(1, activeDevices.length) : 0;
+
+    return {
+      status,
+      deviceId: deviceIdRef.current,
+      deviceName,
+      isSignedIn,
+      userEmail: firebaseUser?.email || null,
+      userDisplayName: firebaseUser?.displayName || null,
+      isOwner: cloudIsOwner,
+      ownerEmail: cloudOwnerEmail,
+      allowedEmails: cloudAllowedEmails,
+      lastUpdated: cloudLastUpdated,
+      updatedBy: cloudUpdatedBy,
+      devices: cloudDevices,
+      activeDevicesCount,
+      hasPendingLocalChanges,
+      storeExistsInCloud,
+      lastError: cloudSyncError
+    };
+  }, [
+    firebaseUser,
+    isOnline,
+    cloudSyncError,
+    cloudSyncingNow,
+    cloudDevices,
+    deviceName,
+    cloudIsOwner,
+    cloudOwnerEmail,
+    cloudAllowedEmails,
+    cloudLastUpdated,
+    cloudUpdatedBy,
+    hasPendingLocalChanges,
+    storeExistsInCloud
+  ]);
+
   return (
     <PosContext.Provider
       value={{
@@ -5588,6 +6288,14 @@ export const PosProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
         markShopEarNotified,
         deleteShopEarRequest,
         clearNotifiedShopEarRequests,
+        cloudSyncState,
+        signInCloudSync,
+        signOutCloudSync,
+        forceCloudSyncNow,
+        renameCurrentDevice,
+        removeConnectedDevice,
+        addAllowedSyncEmail,
+        removeAllowedSyncEmail,
         buildFullBackupObject,
         resetToDemoData,
         exportDatabaseJson,

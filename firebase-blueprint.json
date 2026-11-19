@@ -1,0 +1,76 @@
+{
+  "entities": {
+    "KadiPosStore": {
+      "title": "KadiPosStore",
+      "description": "Shared real-time POS store state synced across connected terminal devices in Firestore collection kadi_pos/store.",
+      "type": "object",
+      "properties": {
+        "products": {
+          "type": "array",
+          "description": "Synced catalog products list with updatedAt timestamps for merge conflict resolution."
+        },
+        "sales": {
+          "type": "array",
+          "description": "Synced POS sales orders list merged by order ID."
+        },
+        "cash": {
+          "type": "object",
+          "description": "Active shift cash drawer, closed shifts history, and emergency sessions."
+        },
+        "lastUpdated": {
+          "type": "number",
+          "description": "Epoch milliseconds timestamp of latest merged store update."
+        },
+        "updatedBy": {
+          "type": "string",
+          "maxLength": 160,
+          "description": "Device ID and cashier identifier of the latest updater."
+        },
+        "devices": {
+          "type": "object",
+          "description": "Map keyed by deviceId tracking each connected POS terminal's lastActivity, lastSyncAt, lastUpdatedMs, cashierName, and online state."
+        },
+        "ownerUid": {
+          "type": "string",
+          "maxLength": 128,
+          "pattern": "^[a-zA-Z0-9_\\-]+$",
+          "description": "Authenticated Firebase UID of the store owner."
+        },
+        "ownerEmail": {
+          "type": "string",
+          "maxLength": 160,
+          "description": "Verified Google email of the store owner."
+        },
+        "allowedEmails": {
+          "type": "array",
+          "description": "Bounded allowlist of verified staff emails authorized to sync with this store."
+        },
+        "serverSyncedAt": {
+          "type": "string",
+          "format": "date-time",
+          "description": "Firestore server timestamp verified against request.time."
+        }
+      },
+      "required": [
+        "products",
+        "sales",
+        "cash",
+        "lastUpdated",
+        "updatedBy",
+        "devices",
+        "ownerUid",
+        "ownerEmail",
+        "allowedEmails",
+        "serverSyncedAt"
+      ]
+    }
+  },
+  "firestore": {
+    "/kadi_pos/{docId}": {
+      "schema": {
+        "$ref": "#/entities/KadiPosStore"
+      },
+      "description": "Single shared store synchronization document (store) storing products, sales, cash drawer state, lastUpdated, updatedBy, and connected devices registry."
+    }
+  }
+}
