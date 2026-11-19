@@ -1,4 +1,4 @@
-import React, { useEffect, useMemo, useState } from 'react';
+import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { usePos } from '../../context/PosContext';
 import {
   CpuCnssBracket,
@@ -55,7 +55,12 @@ import {
   ArrowLeftRight,
   BarChart3,
   PieChart as PieChartIcon,
-  ListChecks
+  ListChecks,
+  Gauge,
+  Activity,
+  ShieldAlert,
+  Target,
+  Coins
 } from 'lucide-react';
 
 type CpuSubTab = 'overview' | 'simulator' | 'retirement' | 'settings';
@@ -81,12 +86,13 @@ export const CpuTaxView: React.FC = () => {
 
   const isAr = language === 'ar';
   const [subTab, setSubTab] = useState<CpuSubTab>('overview');
-  const [toast, setToast] = useState<{ ok: boolean; text: string } | null>(null);
+  const [toast, setToast] = useState<{ ok: boolean; warn?: boolean; text: string } | null>(null);
 
   // Quarter turnover declaration form
   const currentYear = new Date().getFullYear();
   const [formYear, setFormYear] = useState<number>(2026);
   const [formQuarter, setFormQuarter] = useState<CpuQuarterId>('Q4');
+  const [formInputScope, setFormInputScope] = useState<'quarterly' | 'annual'>('quarterly');
   const [formTurnover, setFormTurnover] = useState<string>(() => {
     const existing = cpuRecords.find((r) => r.year === 2026 && r.quarter === 'Q4');
     return existing ? String(existing.turnover) : '41500';
@@ -95,6 +101,11 @@ export const CpuTaxView: React.FC = () => {
     cpuSettings.retirementEnabled
   );
   const [formNotes, setFormNotes] = useState<string>('');
+
+  // Risk & Threshold Simulator V4 daily sales state
+  const [v4DailySales, setV4DailySales] = useState<number>(3600);
+  const lastThresholdToastKeyRef = useRef<string>('');
+  const [selectedDashboardBracketId, setSelectedDashboardBracketId] = useState<string | null>(null);
 
   // Multi-select rows for PDF report
   const [selectedRecordIds, setSelectedRecordIds] = useState<string[]>([]);
@@ -135,9 +146,9 @@ export const CpuTaxView: React.FC = () => {
     setDraftBrackets(cpuSettings.cnssBrackets.map((b) => ({ ...b })));
   }, [cpuSettings]);
 
-  const showToast = (text: string, ok: boolean = true) => {
-    setToast({ ok, text });
-    setTimeout(() => setToast(null), 3500);
+  const showToast = (text: string, ok: boolean = true, warn: boolean = false) => {
+    setToast({ ok, warn, text });
+    setTimeout(() => setToast(null), warn ? 5200 : 3500);
   };
 
   // Sorted records chronologically for chart & table
@@ -157,6 +168,330 @@ export const CpuTaxView: React.FC = () => {
   }, [formTurnover, cpuSettings, formRetirementEnabled]);
 
   const latestRecord = sortedRecordsDesc[0];
+
+  // Historical Sales Daily Average, Annual Projection, 6-Bracket Progress & Next-Month Forecast
+  const projectionAndThresholdAnalysis = useMemo(() => {
+    const coeffPct = Math.max(0, Number(cpuSettings.professionCoeffPct) || 6);
+    const taxPct = Math.max(0, Number(cpuSettings.taxRatePct) || 10);
+    const factor = (coeffPct / 100) * (taxPct / 100);
+    const retCoeff = Math.max(0, Number(cpuSettings.retirementCoeff) || 1.57);
+
+    const nowMs = Date.now();
+    const dayMs = 24 * 60 * 60 * 1000;
+    const last30Start = nowMs - 30 * dayMs;
+    const prev30Start = nowMs - 60 * dayMs;
+
+    let last30Sales = 0;
+    let last30OrdersCount = 0;
+    let prev30Sales = 0;
+
+    orders.forEach((o) => {
+      if (o.status !== 'completed') return;
+      const ms = new Date(o.date).getTime();
+      if (!Number.isFinite(ms)) return;
+      if (ms >= last30Start && ms <= nowMs) {
+        last30Sales += Number(o.grandTotal) || 0;
+        last30OrdersCount += 1;
+      } else if (ms >= prev30Start && ms < last30Start) {
+        prev30Sales += Number(o.grandTotal) || 0;
+      }
+    });
+
+    const hasPosSalesLast30 = last30Sales > 0;
+    const rawPosDailyAvg = Number((last30Sales / 30).toFixed(2));
+    const fallbackDailyAvg = Number(((activePreviewCalc.turnover || 0) / 90).toFixed(2));
+    const effectiveDailyAvg = hasPosSalesLast30 ? rawPosDailyAvg : fallbackDailyAvg;
+
+    // Growth rate comparing last 30 days vs previous 30 days (or latest two quarters fallback)
+    let growthRatePct = 0;
+    if (prev30Sales > 0 && hasPosSalesLast30) {
+      growthRatePct = Number((((last30Sales - prev30Sales) / prev30Sales) * 100).toFixed(1));
+    } else if (sortedRecordsAsc.length >= 2) {
+      const prevQ = sortedRecordsAsc[sortedRecordsAsc.length - 2];
+      const lastQ = sortedRecordsAsc[sortedRecordsAsc.length - 1];
+      if (prevQ.turnover > 0) {
+        growthRatePct = Number((((lastQ.turnover - prevQ.turnover) / prevQ.turnover) * 100).toFixed(1));
+      }
+    }
+
+    const currentAnnualTurnover = Number((activePreviewCalc.turnover * 4).toFixed(2));
+    const projectedAnnualTurnover = Number((effectiveDailyAvg * 365).toFixed(2));
+    const projectedCalc = calculateCpuBreakdown(
+      projectedAnnualTurnover / 4,
+      cpuSettings,
+      formRetirementEnabled
+    );
+
+    // Next Month Forecast based on daily avg & growth rate
+    const cappedGrowthRatio = Math.max(-0.5, Math.min(1, growthRatePct / 100));
+    const nextMonthDailyProjected = Number((effectiveDailyAvg * (1 + cappedGrowthRatio)).toFixed(2));
+    const nextMonthTurnover = Number((nextMonthDailyProjected * 30).toFixed(2));
+    const nextMonthAnnualized = Number((nextMonthTurnover * 12).toFixed(2));
+    const nextMonthCalc = calculateCpuBreakdown(
+      nextMonthAnnualized / 4,
+      cpuSettings,
+      formRetirementEnabled
+    );
+    const nextMonthProfitEst = Number((nextMonthTurnover * (coeffPct / 100)).toFixed(2));
+    const nextMonthCpuTax = Number((nextMonthTurnover * factor).toFixed(2));
+
+    const currentMonthTurnoverEst = Number((effectiveDailyAvg * 30).toFixed(2));
+    const currentMonthProfitEst = Number((currentMonthTurnoverEst * (coeffPct / 100)).toFixed(2));
+    const currentMonthCpuTax = Number((currentMonthTurnoverEst * factor).toFixed(2));
+
+    // Build all 6 CNSS Brackets with Annual CA Thresholds
+    const sortedBrackets = [...cpuSettings.cnssBrackets].sort(
+      (a, b) => a.minAnnualTax - b.minAnnualTax
+    );
+
+    const fifthBracketMaxTax =
+      sortedBrackets.length >= 2 && sortedBrackets[sortedBrackets.length - 2]?.maxAnnualTax
+        ? Number(sortedBrackets[sortedBrackets.length - 2].maxAnnualTax)
+        : 10000;
+    const limitCaCeiling = factor > 0 ? Math.round(fifthBracketMaxTax / factor) : 1666665;
+
+    const currentMatchedIdx = Math.max(
+      0,
+      sortedBrackets.findIndex((b) => b.id === activePreviewCalc.matchedBracket.id)
+    );
+    const activeMatchedBracket = sortedBrackets[currentMatchedIdx] || sortedBrackets[0];
+    const activeMonthlyAmoRef = Number((activeMatchedBracket?.monthlyAmo || 0).toFixed(2));
+    const activeMonthlyRetRef = formRetirementEnabled
+      ? Number((activeMonthlyAmoRef * retCoeff).toFixed(2))
+      : 0;
+    const currentAnnualCpuTax = Number((currentAnnualTurnover * factor).toFixed(2));
+
+    const bracketRows = sortedBrackets.map((b, idx) => {
+      const minCa = idx === 0 || factor <= 0 ? 0 : Math.ceil(b.minAnnualTax / factor);
+      const maxCa =
+        b.maxAnnualTax !== null && factor > 0
+          ? Math.floor(b.maxAnnualTax / factor)
+          : null;
+      const minQuarterCa = Math.round(minCa / 4);
+      const maxQuarterCa = maxCa !== null ? Math.round(maxCa / 4) : null;
+      const minCpuTax = Number(b.minAnnualTax || 0);
+      const maxCpuTax = b.maxAnnualTax !== null ? Number(b.maxAnnualTax) : null;
+      const prevMax =
+        idx > 0 && sortedBrackets[idx - 1].maxAnnualTax !== null && factor > 0
+          ? Math.floor((sortedBrackets[idx - 1].maxAnnualTax || 0) / factor)
+          : 0;
+      const span = maxCa !== null ? Math.max(1, maxCa - minCa) : Math.max(1, prevMax);
+
+      const calcFillPct = (val: number) => {
+        if (maxCa === null) {
+          if (val <= prevMax) return 0;
+          return Math.min(100, Number((((val - prevMax) / Math.max(1, prevMax * 0.5)) * 100).toFixed(1)));
+        }
+        if (val >= maxCa) return 100;
+        if (val <= minCa) return idx === 0 && val > 0 ? Math.min(100, Number(((val / maxCa) * 100).toFixed(1))) : 0;
+        return Math.min(100, Math.max(2, Number((((val - minCa) / span) * 100).toFixed(1))));
+      };
+
+      const pctCurrent = calcFillPct(currentAnnualTurnover);
+      const pctProjected = calcFillPct(projectedAnnualTurnover);
+
+      const isCurrentBracket = b.id === activePreviewCalc.matchedBracket.id;
+      const isProjectedBracket = b.id === projectedCalc.matchedBracket.id;
+      const isPassed = maxCa !== null && currentAnnualTurnover > maxCa;
+      const remainingCaToCeiling = maxCa !== null ? Math.max(0, maxCa - currentAnnualTurnover) : 0;
+      const remainingCpuToCeiling =
+        maxCpuTax !== null ? Math.max(0, Number((maxCpuTax - currentAnnualCpuTax).toFixed(2))) : 0;
+      const remainingDaysToCeiling =
+        maxCa !== null && !isPassed && effectiveDailyAvg > 0
+          ? Math.max(0, Math.ceil(remainingCaToCeiling / effectiveDailyAvg))
+          : null;
+
+      const monthlyAmo = Number((b.monthlyAmo || 0).toFixed(2));
+      const monthlyRetFull = Number((monthlyAmo * retCoeff).toFixed(2));
+      const quarterlyRetFull = Number((monthlyRetFull * 3).toFixed(2));
+      const annualRetFull = Number((monthlyRetFull * 12).toFixed(2));
+
+      const monthlyRet = formRetirementEnabled ? monthlyRetFull : 0;
+      const quarterlyAmo = Number((monthlyAmo * 3).toFixed(2));
+      const quarterlyRet = Number((monthlyRet * 3).toFixed(2));
+      const quarterlyTotalContrib = Number(((monthlyAmo + monthlyRet) * 3).toFixed(2));
+      const totalMonthlyProtection = Number((monthlyAmo + monthlyRet).toFixed(2));
+
+      const deltaMonthlyAmo = Number((monthlyAmo - activeMonthlyAmoRef).toFixed(2));
+      const deltaMonthlyRet = Number((monthlyRet - activeMonthlyRetRef).toFixed(2));
+      const deltaMonthlyRetFull = Number((monthlyRetFull - Number((activeMonthlyAmoRef * retCoeff).toFixed(2))).toFixed(2));
+      const deltaMonthlyTotal = Number((deltaMonthlyAmo + deltaMonthlyRet).toFixed(2));
+      const deltaQuarterlyContrib = Number((deltaMonthlyTotal * 3).toFixed(2));
+      const deltaAnnualContrib = Number((deltaMonthlyTotal * 12).toFixed(2));
+
+      const statusTone: 'passed' | 'critical' | 'approaching' | 'safe' | 'upcoming' = isPassed
+        ? 'passed'
+        : pctCurrent >= 90 || pctProjected >= 95
+        ? 'critical'
+        : pctCurrent >= 70 || pctProjected >= 80
+        ? 'approaching'
+        : isCurrentBracket
+        ? 'safe'
+        : 'upcoming';
+
+      const caUsageOfMaxPct =
+        maxCa !== null && maxCa > 0
+          ? Number(((currentAnnualTurnover / maxCa) * 100).toFixed(1))
+          : 100;
+
+      return {
+        index: idx + 1,
+        bracket: b,
+        shortName: isAr ? `شطر ${idx + 1}` : `Tr. ${idx + 1}`,
+        minCa,
+        maxCa,
+        minQuarterCa,
+        maxQuarterCa,
+        minCpuTax,
+        maxCpuTax,
+        pctCurrent,
+        pctProjected,
+        isCurrentBracket,
+        isProjectedBracket,
+        isPassed,
+        remainingCaToCeiling,
+        remainingCpuToCeiling,
+        remainingDaysToCeiling,
+        caUsageOfMaxPct,
+        monthlyAmo,
+        monthlyRet,
+        monthlyRetFull,
+        quarterlyAmo,
+        quarterlyRet,
+        quarterlyRetFull,
+        annualRetFull,
+        quarterlyTotalContrib,
+        totalMonthlyProtection,
+        deltaMonthlyAmo,
+        deltaMonthlyRet,
+        deltaMonthlyRetFull,
+        deltaMonthlyTotal,
+        deltaQuarterlyContrib,
+        deltaAnnualContrib,
+        statusTone
+      };
+    });
+
+    const currentBracketIdx = Math.max(
+      0,
+      bracketRows.findIndex((r) => r.isCurrentBracket)
+    );
+    const activeRow = bracketRows[currentBracketIdx];
+    const nextRow =
+      currentBracketIdx < bracketRows.length - 1 ? bracketRows[currentBracketIdx + 1] : null;
+
+    // Approach percentage within current bracket OR vs projected annual
+    const currentInBracketPct = activeRow?.maxCa
+      ? Math.min(100, Number(((currentAnnualTurnover / activeRow.maxCa) * 100).toFixed(1)))
+      : 100;
+    const projectedInBracketPct = activeRow?.maxCa
+      ? Math.min(200, Number(((projectedAnnualTurnover / activeRow.maxCa) * 100).toFixed(1)))
+      : 100;
+
+    // Global risk percentage vs limitCaCeiling (~1,666,665 MAD)
+    const thresholdRiskPct =
+      limitCaCeiling > 0
+        ? Number(((currentAnnualTurnover / limitCaCeiling) * 100).toFixed(1))
+        : 0;
+    const projectedThresholdRiskPct =
+      limitCaCeiling > 0
+        ? Number(((projectedAnnualTurnover / limitCaCeiling) * 100).toFixed(1))
+        : 0;
+
+    const effectiveRiskPct = Math.max(thresholdRiskPct, projectedThresholdRiskPct);
+    const riskZone: 'safe' | 'moderate' | 'warning' | 'danger' =
+      effectiveRiskPct >= 99
+        ? 'danger'
+        : effectiveRiskPct >= 90
+        ? 'warning'
+        : effectiveRiskPct >= 70
+        ? 'moderate'
+        : 'safe';
+
+    const chartRows = bracketRows.map((row) => ({
+      name: row.shortName,
+      fullLabel: row.bracket.label,
+      amoMonthly: row.monthlyAmo,
+      retMonthly: row.monthlyRet,
+      totalMonthlyContrib: Number((row.monthlyAmo + row.monthlyRet).toFixed(2)),
+      maxCaK: row.maxCa !== null ? Math.round(row.maxCa / 1000) : Math.round((limitCaCeiling * 1.25) / 1000),
+      isCurrent: row.isCurrentBracket,
+      isProjected: row.isProjectedBracket
+    }));
+
+    return {
+      hasPosSalesLast30,
+      last30Sales: Number(last30Sales.toFixed(2)),
+      last30OrdersCount,
+      rawPosDailyAvg,
+      effectiveDailyAvg,
+      growthRatePct,
+      currentAnnualTurnover,
+      projectedAnnualTurnover,
+      projectedCalc,
+      currentMonthTurnoverEst,
+      currentMonthProfitEst,
+      currentMonthCpuTax,
+      nextMonthTurnover,
+      nextMonthProfitEst,
+      nextMonthCpuTax,
+      nextMonthCalc,
+      limitCaCeiling,
+      thresholdRiskPct,
+      projectedThresholdRiskPct,
+      riskZone,
+      bracketRows,
+      activeRow,
+      nextRow,
+      currentInBracketPct,
+      projectedInBracketPct,
+      chartRows
+    };
+  }, [
+    orders,
+    cpuSettings,
+    activePreviewCalc,
+    formRetirementEnabled,
+    sortedRecordsAsc,
+    isAr
+  ]);
+
+  // Automatic Visual Toast Notification when approaching or projected to cross current bracket ceiling
+  useEffect(() => {
+    const active = projectionAndThresholdAnalysis.activeRow;
+    const next = projectionAndThresholdAnalysis.nextRow;
+    if (!active || !next || !active.maxCa) return;
+
+    const curPct = projectionAndThresholdAnalysis.currentInBracketPct;
+    const projPct = projectionAndThresholdAnalysis.projectedInBracketPct;
+    const nearingCurrent = curPct >= 85 && curPct < 100;
+    const projectedToCross = projPct >= 90;
+
+    if (!nearingCurrent && !projectedToCross) return;
+
+    const triggerKey = `${active.bracket.id}-${nearingCurrent ? 'cur' : 'proj'}-${Math.round(
+      Math.max(curPct, projPct) / 5
+    )}`;
+    if (lastThresholdToastKeyRef.current === triggerKey) return;
+    lastThresholdToastKeyRef.current = triggerKey;
+
+    const remaining = Math.max(0, Math.round(active.remainingCaToCeiling));
+    const msg = isAr
+      ? projectedToCross && projPct >= 100
+        ? `⚠️ تنبيه العتبة: التوقع السنوي (${projectionAndThresholdAnalysis.projectedAnnualTurnover.toLocaleString('en-US')} ${currencySymbol}) سيتجاوز ${active.shortName} نحو ${next.shortName} (AMO سيرتفع إلى ${next.monthlyAmo} ${currencySymbol}/شهر).`
+        : `⚠️ تنبيه العتبة: رقم الأعمال يقترب من سقف ${active.shortName} (${Math.max(curPct, projPct).toFixed(0)}%) — متبقي ${remaining.toLocaleString('en-US')} ${currencySymbol} قبل الانتقال لـ ${next.shortName}.`
+      : `⚠️ Threshold Alert: Approaching ceiling of ${active.shortName} (${Math.max(curPct, projPct).toFixed(0)}%). ${remaining.toLocaleString('en-US')} ${currencySymbol} left before AMO rises to ${next.monthlyAmo}/mo.`;
+
+    showToast(msg, false, true);
+  }, [
+    projectionAndThresholdAnalysis.activeRow,
+    projectionAndThresholdAnalysis.nextRow,
+    projectionAndThresholdAnalysis.currentInBracketPct,
+    projectionAndThresholdAnalysis.projectedInBracketPct,
+    projectionAndThresholdAnalysis.projectedAnnualTurnover,
+    currencySymbol,
+    isAr
+  ]);
 
   // Channel Attribution for selected quarter (POS vs Remote WhatsApp)
   const quarterChannelStats = useMemo(() => {
@@ -631,13 +966,22 @@ export const CpuTaxView: React.FC = () => {
       {/* Feedback Toast */}
       {toast && (
         <div
-          className={`px-4 py-2.5 rounded-xl text-xs font-bold border ${
-            toast.ok
+          className={`px-4 py-3 rounded-2xl text-xs font-bold border flex items-center gap-2.5 shadow-sm ${
+            toast.warn
+              ? 'bg-amber-50 dark:bg-amber-950/70 border-amber-300 dark:border-amber-700 text-amber-900 dark:text-amber-200'
+              : toast.ok
               ? 'bg-emerald-50 dark:bg-emerald-950/60 border-emerald-200 dark:border-emerald-800 text-emerald-800 dark:text-emerald-300'
               : 'bg-rose-50 dark:bg-rose-950/60 border-rose-200 dark:border-rose-800 text-rose-700 dark:text-rose-300'
           }`}
         >
-          {toast.text}
+          {toast.warn ? (
+            <AlertTriangle className="w-4 h-4 text-amber-600 shrink-0" />
+          ) : toast.ok ? (
+            <CheckCircle2 className="w-4 h-4 text-emerald-600 shrink-0" />
+          ) : (
+            <ShieldAlert className="w-4 h-4 text-rose-600 shrink-0" />
+          )}
+          <span>{toast.text}</span>
         </div>
       )}
 
@@ -692,95 +1036,216 @@ export const CpuTaxView: React.FC = () => {
         </div>
       )}
 
-      {/* Top 4 Live Formula KPI Cards */}
+      {/* Top 4 Organized Icon-Badged Formula Cards */}
       <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-3.5">
         {/* Card 1: CPU Tax */}
-        <div className="p-4 rounded-2xl bg-white dark:bg-slate-900 border border-blue-200 dark:border-blue-900/60 shadow-2xs">
-          <div className="flex items-center justify-between text-xs font-bold text-blue-700 dark:text-blue-300">
-            <span>{isAr ? 'الضريبة CPU (للتريمستر)' : 'CPU Tax (Quarterly)'}</span>
-            <Calculator className="w-4 h-4" />
+        <div className="p-4 rounded-2xl bg-white dark:bg-slate-900 border border-blue-200 dark:border-blue-900/60 shadow-2xs flex items-start gap-3">
+          <div className="w-11 h-11 rounded-xl bg-blue-100 dark:bg-blue-950/70 text-blue-600 dark:text-blue-400 flex items-center justify-center shrink-0">
+            <Calculator className="w-5 h-5" />
           </div>
-          <div className="text-2xl font-black text-slate-900 dark:text-white mt-1.5 font-mono tabular-nums">
-            {activePreviewCalc.quarterlyTax.toFixed(2)}{' '}
-            <span className="text-xs font-bold text-blue-600">{currencySymbol}</span>
-          </div>
-          <div className="text-[11px] text-slate-500 mt-1 font-mono tabular-nums">
-            {isAr
-              ? `CPU السنوية (أساس AMO): ${activePreviewCalc.annualizedTax.toFixed(2)} ${currencySymbol}`
-              : `Annual CPU (AMO base): ${activePreviewCalc.annualizedTax.toFixed(2)} ${currencySymbol}`}
+          <div className="min-w-0 flex-1">
+            <div className="flex items-center justify-between text-xs font-bold text-blue-700 dark:text-blue-300">
+              <span>{isAr ? 'الضريبة CPU (للتريمستر)' : 'CPU Tax (Quarterly)'}</span>
+            </div>
+            <div className="text-2xl font-black text-slate-900 dark:text-white mt-1 font-mono tabular-nums">
+              {activePreviewCalc.quarterlyTax.toFixed(2)}{' '}
+              <span className="text-xs font-bold text-blue-600">{currencySymbol}</span>
+            </div>
+            <div className="text-[11px] text-slate-500 mt-1 font-mono tabular-nums">
+              {isAr
+                ? `CPU السنوية (أساس الشطر): ${activePreviewCalc.annualizedTax.toFixed(2)} ${currencySymbol}`
+                : `Annual CPU (base): ${activePreviewCalc.annualizedTax.toFixed(2)} ${currencySymbol}`}
+            </div>
           </div>
         </div>
 
         {/* Card 2: Auto Health AMO */}
-        <div className="p-4 rounded-2xl bg-white dark:bg-slate-900 border border-amber-200 dark:border-amber-900/60 shadow-2xs">
-          <div className="flex items-center justify-between text-xs font-bold text-amber-700 dark:text-amber-300">
-            <span>{isAr ? 'الصحة AMO (×3 أشهر)' : 'AMO Health (Quarterly)'}</span>
-            <HeartPulse className="w-4 h-4" />
+        <div className="p-4 rounded-2xl bg-white dark:bg-slate-900 border border-amber-200 dark:border-amber-900/60 shadow-2xs flex items-start gap-3">
+          <div className="w-11 h-11 rounded-xl bg-amber-100 dark:bg-amber-950/70 text-amber-600 dark:text-amber-400 flex items-center justify-center shrink-0">
+            <HeartPulse className="w-5 h-5" />
           </div>
-          <div className="text-2xl font-black text-slate-900 dark:text-white mt-1.5 font-mono tabular-nums">
-            {activePreviewCalc.quarterlyAmo.toFixed(2)}{' '}
-            <span className="text-xs font-bold text-amber-600">{currencySymbol}</span>
-          </div>
-          <div className="text-[11px] text-slate-500 mt-1">
-            <span className="font-mono font-bold text-amber-700 dark:text-amber-300">
-              {activePreviewCalc.monthlyAmo.toFixed(0)} {currencySymbol}/{isAr ? 'شهر' : 'mo'} × 3
-            </span>{' '}
-            · {isAr ? 'حسب CPU السنوية' : 'By Annual CPU'}
+          <div className="min-w-0 flex-1">
+            <div className="flex items-center justify-between text-xs font-bold text-amber-700 dark:text-amber-300">
+              <span>{isAr ? 'الصحة AMO (×3 أشهر)' : 'AMO Health (Quarterly)'}</span>
+            </div>
+            <div className="text-2xl font-black text-slate-900 dark:text-white mt-1 font-mono tabular-nums">
+              {activePreviewCalc.quarterlyAmo.toFixed(2)}{' '}
+              <span className="text-xs font-bold text-amber-600">{currencySymbol}</span>
+            </div>
+            <div className="text-[11px] text-slate-500 mt-1">
+              <span className="font-mono font-bold text-amber-700 dark:text-amber-300">
+                {activePreviewCalc.monthlyAmo.toFixed(0)} {currencySymbol}/{isAr ? 'شهر' : 'mo'} × 3
+              </span>{' '}
+              · {projectionAndThresholdAnalysis.activeRow?.shortName || activePreviewCalc.matchedBracket.label.split('(')[0].trim()}
+            </div>
           </div>
         </div>
 
         {/* Card 3: Auto CNSS Retirement (with ON/OFF toggle) */}
         <div
-          className={`p-4 rounded-2xl border shadow-2xs transition-colors ${
+          className={`p-4 rounded-2xl border shadow-2xs transition-colors flex items-start gap-3 ${
             formRetirementEnabled
               ? 'bg-white dark:bg-slate-900 border-violet-200 dark:border-violet-900/60'
               : 'bg-slate-100/70 dark:bg-slate-900/40 border-slate-200 dark:border-slate-800 opacity-80'
           }`}
         >
-          <div className="flex items-center justify-between text-xs font-bold text-violet-700 dark:text-violet-300">
-            <span>{isAr ? `التقاعد (AMO × ${cpuSettings.retirementCoeff})` : 'CNSS Retirement'}</span>
-            <button
-              type="button"
-              onClick={handleGlobalRetirementToggle}
-              className={`px-2 py-0.5 rounded-lg text-[10px] font-black border ${
-                formRetirementEnabled
-                  ? 'bg-violet-600 text-white border-violet-600'
-                  : 'bg-white dark:bg-slate-800 text-slate-500 border-slate-300 dark:border-slate-700'
-              }`}
-            >
-              {formRetirementEnabled ? (isAr ? 'تشغيل ✓' : 'ON') : isAr ? 'متوقف' : 'OFF'}
-            </button>
+          <div className="w-11 h-11 rounded-xl bg-violet-100 dark:bg-violet-950/70 text-violet-600 dark:text-violet-400 flex items-center justify-center shrink-0">
+            <ShieldCheck className="w-5 h-5" />
           </div>
-          <div className="text-2xl font-black text-slate-900 dark:text-white mt-1.5 font-mono tabular-nums">
-            {activePreviewCalc.quarterlyRetirement.toFixed(2)}{' '}
-            <span className="text-xs font-bold text-violet-600">{currencySymbol}</span>
-          </div>
-          <div className="text-[11px] text-slate-500 mt-1 font-mono tabular-nums">
-            {formRetirementEnabled
-              ? `${activePreviewCalc.monthlyRetirement.toFixed(2)} ${currencySymbol}/${isAr ? 'شهر' : 'mo'} × 3`
-              : isAr
-              ? 'متوقف — غير محسوب في المجموع الكلي'
-              : 'Excluded from total'}
+          <div className="min-w-0 flex-1">
+            <div className="flex items-center justify-between gap-1 text-xs font-bold text-violet-700 dark:text-violet-300">
+              <span className="truncate">{isAr ? `التقاعد (×${cpuSettings.retirementCoeff})` : 'CNSS Retirement'}</span>
+              <button
+                type="button"
+                onClick={handleGlobalRetirementToggle}
+                className={`px-2 py-0.5 rounded-lg text-[10px] font-black border shrink-0 ${
+                  formRetirementEnabled
+                    ? 'bg-violet-600 text-white border-violet-600'
+                    : 'bg-white dark:bg-slate-800 text-slate-500 border-slate-300 dark:border-slate-700'
+                }`}
+              >
+                {formRetirementEnabled ? (isAr ? 'مفعّل ✓' : 'ON') : isAr ? 'متوقف' : 'OFF'}
+              </button>
+            </div>
+            <div className="text-2xl font-black text-slate-900 dark:text-white mt-1 font-mono tabular-nums">
+              {activePreviewCalc.quarterlyRetirement.toFixed(2)}{' '}
+              <span className="text-xs font-bold text-violet-600">{currencySymbol}</span>
+            </div>
+            <div className="text-[11px] text-slate-500 mt-1 font-mono tabular-nums">
+              {formRetirementEnabled
+                ? `${activePreviewCalc.monthlyRetirement.toFixed(2)} ${currencySymbol}/${isAr ? 'شهر' : 'mo'} × 3`
+                : isAr
+                ? 'متوقف — غير محسوب في المجموع'
+                : 'Excluded from total'}
+            </div>
           </div>
         </div>
 
         {/* Card 4: Grand Total Due (+ Optional Patente Share) */}
-        <div className="p-4 rounded-2xl bg-emerald-600 text-white shadow-sm">
-          <div className="flex items-center justify-between text-xs font-bold text-emerald-100">
-            <span>{isAr ? 'المجموع (CPU + AMO + التقاعد)' : 'Total (CPU + AMO + Ret)'}</span>
-            <ShieldCheck className="w-4 h-4" />
+        <div className="p-4 rounded-2xl bg-emerald-600 text-white shadow-sm flex items-start gap-3">
+          <div className="w-11 h-11 rounded-xl bg-white/20 text-white flex items-center justify-center shrink-0">
+            <Coins className="w-5 h-5" />
           </div>
-          <div className="text-2xl font-black mt-1.5 font-mono tabular-nums">
-            {activePreviewCalc.totalQuarterlyDue.toFixed(2)}{' '}
-            <span className="text-xs font-bold text-emerald-100">{currencySymbol}</span>
+          <div className="min-w-0 flex-1">
+            <div className="flex items-center justify-between text-xs font-bold text-emerald-100">
+              <span>{isAr ? 'المجموع (CPU + AMO + التقاعد)' : 'Total (CPU + AMO + Ret)'}</span>
+            </div>
+            <div className="text-2xl font-black mt-1 font-mono tabular-nums">
+              {activePreviewCalc.totalQuarterlyDue.toFixed(2)}{' '}
+              <span className="text-xs font-bold text-emerald-100">{currencySymbol}</span>
+            </div>
+            <div className="text-[11px] text-emerald-100 mt-1 font-mono tabular-nums">
+              {activePreviewCalc.annualPatenteTax > 0
+                ? isAr
+                  ? `مع الباتنتا (÷4): ${activePreviewCalc.combinedQuarterlyWithPatente.toFixed(2)} ${currencySymbol}`
+                  : `With Patente: ${activePreviewCalc.combinedQuarterlyWithPatente.toFixed(2)} ${currencySymbol}`
+                : `${isAr ? 'المعادل الشهري:' : 'Monthly eq.:'} ${activePreviewCalc.totalMonthlyEquivalent.toFixed(2)} ${currencySymbol}`}
+            </div>
           </div>
-          <div className="text-[11px] text-emerald-100 mt-1 font-mono tabular-nums">
-            {activePreviewCalc.annualPatenteTax > 0
-              ? isAr
-                ? `مع الباتنتا (÷4): ${activePreviewCalc.combinedQuarterlyWithPatente.toFixed(2)} ${currencySymbol}`
-                : `With Patente: ${activePreviewCalc.combinedQuarterlyWithPatente.toFixed(2)} ${currencySymbol}`
-              : `${isAr ? 'المعادل الشهري:' : 'Monthly eq.:'} ${activePreviewCalc.totalMonthlyEquivalent.toFixed(2)} ${currencySymbol}`}
+        </div>
+      </div>
+
+      {/* Annual Turnover Current vs POS 30-Day Daily Average Annual Projection Strip */}
+      <div className="grid grid-cols-1 md:grid-cols-3 gap-3.5">
+        <div className="p-3.5 rounded-2xl bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 flex items-center justify-between gap-3">
+          <div className="flex items-center gap-2.5">
+            <div className="w-9 h-9 rounded-xl bg-slate-100 dark:bg-slate-800 text-slate-700 dark:text-slate-300 flex items-center justify-center shrink-0">
+              <Landmark className="w-4 h-4" />
+            </div>
+            <div>
+              <div className="text-[11px] font-bold text-slate-500">
+                {isAr ? 'رقم الأعمال الحالي (المعدّل السنوي)' : 'Current Annualized Turnover'}
+              </div>
+              <div className="text-base font-black font-mono text-slate-900 dark:text-white tabular-nums">
+                {projectionAndThresholdAnalysis.currentAnnualTurnover.toLocaleString('en-US')} {currencySymbol}
+              </div>
+            </div>
           </div>
+          <span className="px-2 py-0.5 rounded-lg bg-slate-100 dark:bg-slate-800 text-[10px] font-black text-slate-700 dark:text-slate-300">
+            {projectionAndThresholdAnalysis.activeRow?.shortName}
+          </span>
+        </div>
+
+        <div className="p-3.5 rounded-2xl bg-white dark:bg-slate-900 border border-sky-200 dark:border-sky-900/60 flex items-center justify-between gap-3">
+          <div className="flex items-center gap-2.5">
+            <div className="w-9 h-9 rounded-xl bg-sky-100 dark:bg-sky-950/60 text-sky-600 dark:text-sky-400 flex items-center justify-center shrink-0">
+              <Activity className="w-4 h-4" />
+            </div>
+            <div>
+              <div className="text-[11px] font-bold text-sky-700 dark:text-sky-300">
+                {isAr
+                  ? `التوقع السنوي (${projectionAndThresholdAnalysis.effectiveDailyAvg.toFixed(0)} ${currencySymbol}/يوم × 365)`
+                  : `Annual Projection (${projectionAndThresholdAnalysis.effectiveDailyAvg.toFixed(0)}/day × 365)`}
+              </div>
+              <div className="text-base font-black font-mono text-slate-900 dark:text-white tabular-nums">
+                {projectionAndThresholdAnalysis.projectedAnnualTurnover.toLocaleString('en-US', {
+                  maximumFractionDigits: 0
+                })}{' '}
+                {currencySymbol}
+              </div>
+            </div>
+          </div>
+          <span
+            className={`px-2 py-0.5 rounded-lg text-[10px] font-black font-mono ${
+              projectionAndThresholdAnalysis.growthRatePct >= 0
+                ? 'bg-emerald-100 dark:bg-emerald-950 text-emerald-700 dark:text-emerald-300'
+                : 'bg-rose-100 dark:bg-rose-950 text-rose-700 dark:text-rose-300'
+            }`}
+          >
+            {projectionAndThresholdAnalysis.growthRatePct >= 0 ? '+' : ''}
+            {projectionAndThresholdAnalysis.growthRatePct}%
+          </span>
+        </div>
+
+        <div
+          className={`p-3.5 rounded-2xl border flex items-center justify-between gap-3 ${
+            projectionAndThresholdAnalysis.riskZone === 'danger'
+              ? 'bg-rose-50 dark:bg-rose-950/30 border-rose-300 dark:border-rose-800'
+              : projectionAndThresholdAnalysis.riskZone === 'warning'
+              ? 'bg-amber-50 dark:bg-amber-950/30 border-amber-300 dark:border-amber-800'
+              : 'bg-emerald-50/70 dark:bg-emerald-950/25 border-emerald-200 dark:border-emerald-800'
+          }`}
+        >
+          <div className="flex items-center gap-2.5">
+            <div
+              className={`w-9 h-9 rounded-xl flex items-center justify-center shrink-0 ${
+                projectionAndThresholdAnalysis.riskZone === 'danger'
+                  ? 'bg-rose-600 text-white'
+                  : projectionAndThresholdAnalysis.riskZone === 'warning'
+                  ? 'bg-amber-500 text-white'
+                  : 'bg-emerald-600 text-white'
+              }`}
+            >
+              <Gauge className="w-4 h-4" />
+            </div>
+            <div>
+              <div className="text-[11px] font-bold text-slate-600 dark:text-slate-300">
+                {isAr
+                  ? `العتبة القصوى (${projectionAndThresholdAnalysis.limitCaCeiling.toLocaleString('en-US')})`
+                  : `Max Ceiling (${projectionAndThresholdAnalysis.limitCaCeiling.toLocaleString('en-US')})`}
+              </div>
+              <div className="text-xs font-black text-slate-900 dark:text-white mt-0.5">
+                {projectionAndThresholdAnalysis.riskZone === 'danger'
+                  ? isAr
+                    ? '⛔ خطر عالي - تجاوز / قرب العتبة القصوى'
+                    : '⛔ High Risk — Ceiling Reached'
+                  : projectionAndThresholdAnalysis.riskZone === 'warning'
+                  ? isAr
+                    ? '⚠️ خطر متوسط - قربتي للعتبة'
+                    : '⚠️ Warning — Approaching Limit'
+                  : projectionAndThresholdAnalysis.riskZone === 'moderate'
+                  ? isAr
+                    ? '✅ خطر منخفض - نمو مزيان'
+                    : '✅ Low Risk — Healthy Growth'
+                  : isAr
+                  ? '✅ آمن 100% - بعيد عن العتبة'
+                  : '✅ 100% Safe'}
+              </div>
+            </div>
+          </div>
+          <span className="font-mono text-sm font-black text-slate-900 dark:text-white tabular-nums">
+            {projectionAndThresholdAnalysis.projectedThresholdRiskPct.toFixed(1)}%
+          </span>
         </div>
       </div>
 
@@ -882,28 +1347,76 @@ export const CpuTaxView: React.FC = () => {
               </div>
 
               <div>
-                <div className="flex items-center justify-between mb-1">
-                  <label className="text-xs font-extrabold text-slate-700 dark:text-slate-300">
-                    {isAr ? `رقم المعاملات في التريمستر (${currencySymbol}) *` : `Turnover (${currencySymbol}) *`}
-                  </label>
+                <div className="flex items-center justify-between gap-2 mb-1.5">
+                  <div className="flex items-center gap-1 p-0.5 rounded-lg bg-slate-100 dark:bg-slate-800 text-[10px] font-bold">
+                    <button
+                      type="button"
+                      onClick={() => setFormInputScope('quarterly')}
+                      className={`px-2 py-1 rounded-md transition-colors ${
+                        formInputScope === 'quarterly'
+                          ? 'bg-white dark:bg-slate-900 text-emerald-700 dark:text-emerald-400 shadow-2xs'
+                          : 'text-slate-500'
+                      }`}
+                    >
+                      {isAr ? 'تريمستر' : 'Quarterly'}
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => setFormInputScope('annual')}
+                      className={`px-2 py-1 rounded-md transition-colors ${
+                        formInputScope === 'annual'
+                          ? 'bg-white dark:bg-slate-900 text-emerald-700 dark:text-emerald-400 shadow-2xs'
+                          : 'text-slate-500'
+                      }`}
+                    >
+                      {isAr ? 'رقم الأعمال السنوي (÷4)' : 'Annual (÷4)'}
+                    </button>
+                  </div>
                   <button
                     type="button"
                     onClick={handleImportPosSalesForQuarter}
                     className="text-[11px] font-bold text-emerald-600 dark:text-emerald-400 hover:underline flex items-center gap-1"
                   >
                     <ArrowDownToLine className="w-3 h-3" />
-                    <span>{isAr ? 'استيراد مبيعات التطبيق' : 'Import POS Sales'}</span>
+                    <span>{isAr ? 'استيراد المبيعات' : 'Import POS'}</span>
                   </button>
                 </div>
+                <label className="block text-[11px] font-bold text-slate-600 dark:text-slate-400 mb-1">
+                  {formInputScope === 'annual'
+                    ? isAr
+                      ? `رقم الأعمال السنوي (${currencySymbol}) *`
+                      : `Annual Turnover (${currencySymbol}) *`
+                    : isAr
+                    ? `رقم المعاملات في التريمستر (${currencySymbol}) *`
+                    : `Quarterly Turnover (${currencySymbol}) *`}
+                </label>
                 <input
                   type="number"
                   step="any"
                   min="0"
                   required
-                  value={formTurnover}
-                  onChange={(e) => setFormTurnover(e.target.value)}
+                  value={
+                    formInputScope === 'annual'
+                      ? String(Number(((parseFloat(formTurnover) || 0) * 4).toFixed(2)))
+                      : formTurnover
+                  }
+                  onChange={(e) => {
+                    const val = e.target.value;
+                    if (formInputScope === 'annual') {
+                      const num = Math.max(0, parseFloat(val) || 0);
+                      setFormTurnover(String(Number((num / 4).toFixed(2))));
+                    } else {
+                      setFormTurnover(val);
+                    }
+                  }}
                   className="w-full px-3.5 py-2.5 text-base font-mono font-black bg-emerald-50/50 dark:bg-emerald-950/20 border border-emerald-300 dark:border-emerald-800 rounded-xl tabular-nums"
                 />
+                {formInputScope === 'annual' && (
+                  <div className="text-[11px] text-emerald-700 dark:text-emerald-400 font-mono mt-1">
+                    {isAr ? 'حصة التريمستر (÷4):' : 'Quarterly share (÷4):'}{' '}
+                    {activePreviewCalc.turnover.toLocaleString('en-US')} {currencySymbol}
+                  </div>
+                )}
               </div>
 
               {/* Optional Retirement Toggle */}
@@ -1131,6 +1644,566 @@ export const CpuTaxView: React.FC = () => {
                     <ArrowUpRight className="w-3.5 h-3.5" />
                   </button>
                 </div>
+              </div>
+            </div>
+          </div>
+
+          {/* Interactive 6-Bracket Threshold Dashboard + Recharts Chart + Next-Month Analytical Table */}
+          <div className="space-y-5">
+            {/* Row A: 6-Bracket Dynamic Progress Dashboard + Interactive Position/Projection Chart */}
+            <div className="grid grid-cols-1 xl:grid-cols-12 gap-5 items-stretch">
+              {/* Left: Dynamic 6-Bracket Progress Bars Dashboard */}
+              <div className="xl:col-span-7 p-5 rounded-3xl bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 space-y-4 shadow-xs">
+                <div className="flex flex-wrap items-center justify-between gap-2">
+                  <div>
+                    <h3 className="text-sm font-black text-slate-900 dark:text-white flex items-center gap-2">
+                      <Target className="w-4 h-4 text-emerald-600" />
+                      <span>
+                        {isAr
+                          ? 'لوحة الشطور الضريبية الستة — المسافة المتبقية وتأثير AMO والتقاعد'
+                          : '6-Bracket Thresholds Dashboard (Remaining Distance & AMO/Retirement Impact)'}
+                      </span>
+                    </h3>
+                    <p className="text-[11px] text-slate-500 mt-0.5">
+                      {isAr
+                        ? 'انقر على أي شطر لمقارنة الفارق الدقيق في AMO والتقاعد والمسافة المتبقية رقم أعمالاً وضريبةً'
+                        : 'Click any bracket to inspect exact AMO/Retirement impact & remaining CA/CPU distance'}
+                    </p>
+                  </div>
+
+                  <div className="flex flex-wrap items-center gap-1.5 text-[10px] font-bold">
+                    <span className="px-2 py-1 rounded-lg bg-emerald-50 dark:bg-emerald-950/60 text-emerald-700 dark:text-emerald-300 border border-emerald-200 dark:border-emerald-800">
+                      {isAr ? '● آمن / مكتمل' : '● Safe'}
+                    </span>
+                    <span className="px-2 py-1 rounded-lg bg-amber-50 dark:bg-amber-950/60 text-amber-700 dark:text-amber-300 border border-amber-200 dark:border-amber-800">
+                      {isAr ? '● اقتراب ≥70%' : '● ≥70%'}
+                    </span>
+                    <span className="px-2 py-1 rounded-lg bg-rose-50 dark:bg-rose-950/60 text-rose-700 dark:text-rose-300 border border-rose-200 dark:border-rose-800">
+                      {isAr ? '● حرج ≥90%' : '● ≥90%'}
+                    </span>
+                    <span className="px-2 py-1 rounded-lg bg-sky-50 dark:bg-sky-950/60 text-sky-700 dark:text-sky-300 border border-sky-200 dark:border-sky-800">
+                      {isAr ? '│ التوقع السنوي' : '│ Projected'}
+                    </span>
+                  </div>
+                </div>
+
+                {/* 6 Interactive Bracket Rows with Color-Coded Progress Bars */}
+                <div className="space-y-2.5">
+                  {projectionAndThresholdAnalysis.bracketRows.map((row) => {
+                    const isSelected =
+                      (selectedDashboardBracketId ||
+                        projectionAndThresholdAnalysis.nextRow?.bracket.id ||
+                        projectionAndThresholdAnalysis.activeRow?.bracket.id) === row.bracket.id;
+
+                    const barColor =
+                      row.statusTone === 'critical'
+                        ? 'bg-gradient-to-r from-rose-500 to-rose-600'
+                        : row.statusTone === 'approaching'
+                        ? 'bg-gradient-to-r from-amber-400 to-amber-500'
+                        : row.statusTone === 'safe'
+                        ? 'bg-gradient-to-r from-emerald-500 to-emerald-600'
+                        : row.statusTone === 'passed'
+                        ? 'bg-emerald-600/75'
+                        : 'bg-slate-400 dark:bg-slate-600';
+
+                    const pctTextTone =
+                      row.statusTone === 'critical'
+                        ? 'text-rose-600 dark:text-rose-400'
+                        : row.statusTone === 'approaching'
+                        ? 'text-amber-600 dark:text-amber-400'
+                        : row.statusTone === 'safe' || row.statusTone === 'passed'
+                        ? 'text-emerald-700 dark:text-emerald-400'
+                        : 'text-slate-500';
+
+                    return (
+                      <button
+                        type="button"
+                        key={row.bracket.id}
+                        onClick={() => setSelectedDashboardBracketId(row.bracket.id)}
+                        className={`w-full text-start p-3 rounded-2xl border transition-all ${
+                          isSelected
+                            ? 'bg-emerald-50/75 dark:bg-emerald-950/30 border-emerald-400 dark:border-emerald-600 ring-2 ring-emerald-200/80 dark:ring-emerald-900/60 shadow-xs'
+                            : row.isCurrentBracket
+                            ? 'bg-emerald-50/50 dark:bg-emerald-950/20 border-emerald-300 dark:border-emerald-700'
+                            : row.isProjectedBracket
+                            ? 'bg-sky-50/50 dark:bg-sky-950/20 border-sky-200 dark:border-sky-800 hover:border-sky-400'
+                            : 'bg-slate-50/70 dark:bg-slate-800/40 border-slate-200/80 dark:border-slate-800 hover:border-slate-300 dark:hover:border-slate-700'
+                        }`}
+                      >
+                        <div className="flex flex-wrap items-center justify-between gap-2 text-xs mb-1.5">
+                          <div className="flex flex-wrap items-center gap-1.5">
+                            <span className="font-black text-slate-900 dark:text-white">
+                              {row.shortName}
+                            </span>
+                            <span className="text-[11px] font-mono text-slate-500 dark:text-slate-400">
+                              (
+                              {row.maxCa !== null
+                                ? `${row.minCa.toLocaleString('en-US')} – ${row.maxCa.toLocaleString('en-US')} ${currencySymbol}`
+                                : `> ${row.minCa.toLocaleString('en-US')} ${currencySymbol}`}
+                              )
+                            </span>
+                            {row.isCurrentBracket && (
+                              <span className="px-2 py-0.5 rounded-md bg-emerald-600 text-white text-[10px] font-black">
+                                {isAr ? 'موقعك الحالي' : 'Current'}
+                              </span>
+                            )}
+                            {row.isProjectedBracket && (
+                              <span className="px-2 py-0.5 rounded-md bg-sky-600 text-white text-[10px] font-black">
+                                {isAr ? 'توقعك السنوي' : 'Projected'}
+                              </span>
+                            )}
+                            {!row.isCurrentBracket && row.deltaMonthlyTotal !== 0 && (
+                              <span
+                                className={`px-2 py-0.5 rounded-md text-[10px] font-mono font-black ${
+                                  row.deltaMonthlyTotal > 0
+                                    ? 'bg-rose-100 dark:bg-rose-950/70 text-rose-700 dark:text-rose-300'
+                                    : 'bg-emerald-100 dark:bg-emerald-950/70 text-emerald-700 dark:text-emerald-300'
+                                }`}
+                              >
+                                {row.deltaMonthlyTotal > 0 ? '+' : ''}
+                                {row.deltaMonthlyTotal.toFixed(0)} {currencySymbol}/{isAr ? 'ش فرق' : 'mo Δ'}
+                              </span>
+                            )}
+                          </div>
+
+                          <div className="flex items-center gap-2 font-mono text-[11px] tabular-nums">
+                            <span className="font-bold text-amber-700 dark:text-amber-400">
+                              AMO: {row.monthlyAmo.toFixed(0)}/{isAr ? 'ش' : 'mo'}
+                            </span>
+                            <span className="text-slate-300 dark:text-slate-600">|</span>
+                            <span className="font-bold text-violet-700 dark:text-violet-300">
+                              {isAr ? 'تقاعد:' : 'Ret:'} {row.monthlyRet.toFixed(2)}/{isAr ? 'ش' : 'mo'}
+                            </span>
+                            <span className={`font-black ${pctTextTone}`}>
+                              {row.pctCurrent.toFixed(0)}%
+                            </span>
+                          </div>
+                        </div>
+
+                        {/* Progress Bar Track with Current Bar + Projected Marker */}
+                        <div className="relative w-full h-3 rounded-full bg-slate-200 dark:bg-slate-800 overflow-hidden">
+                          {row.pctProjected > row.pctCurrent && (
+                            <div
+                              className="absolute inset-y-0 left-0 rounded-full bg-sky-300/60 dark:bg-sky-700/45 transition-all duration-300"
+                              style={{ width: `${row.pctProjected}%` }}
+                            />
+                          )}
+                          <div
+                            className={`relative h-full rounded-full transition-all duration-300 ${barColor}`}
+                            style={{ width: `${row.pctCurrent}%` }}
+                          />
+                          {row.pctProjected > 0 && (
+                            <div
+                              className="absolute top-0 bottom-0 w-1 bg-sky-600 dark:bg-sky-400 shadow-xs"
+                              style={{ left: `calc(${Math.min(99, row.pctProjected)}% - 2px)` }}
+                              title={
+                                isAr
+                                  ? `التوقع السنوي: ${projectionAndThresholdAnalysis.projectedAnnualTurnover.toLocaleString('en-US')} ${currencySymbol}`
+                                  : `Projected: ${projectionAndThresholdAnalysis.projectedAnnualTurnover}`
+                              }
+                            />
+                          )}
+                        </div>
+
+                        <div className="flex flex-wrap items-center justify-between gap-2 text-[10px] text-slate-500 dark:text-slate-400 mt-1.5 font-mono">
+                          <span>
+                            {row.maxCa !== null
+                              ? row.isPassed
+                                ? isAr
+                                  ? 'تم تجاوز هذا الشطر (100%)'
+                                  : 'Passed (100%)'
+                                : isAr
+                                ? `المتبقي للسقف: ${row.remainingCaToCeiling.toLocaleString('en-US')} ${currencySymbol} (${row.remainingCpuToCeiling.toFixed(0)} CPU${
+                                    row.remainingDaysToCeiling !== null ? ` · ~${row.remainingDaysToCeiling} يوم` : ''
+                                  })`
+                                : `Left: ${row.remainingCaToCeiling.toLocaleString('en-US')} ${currencySymbol} (${row.remainingCpuToCeiling.toFixed(0)} CPU${
+                                    row.remainingDaysToCeiling !== null ? ` · ~${row.remainingDaysToCeiling}d` : ''
+                                  })`
+                              : isAr
+                              ? 'الشطر الأعلى (مفتوح فوق 1,666,665)'
+                              : 'Top Bracket (> 1,666,665)'}
+                          </span>
+                          <span className="font-bold text-slate-700 dark:text-slate-300">
+                            {isAr ? 'التريمستر (AMO+تقاعد):' : 'Q (AMO+Ret):'}{' '}
+                            {row.quarterlyTotalContrib.toFixed(2)} {currencySymbol}
+                          </span>
+                        </div>
+                      </button>
+                    );
+                  })}
+                </div>
+
+                {/* Selected Bracket Direct Impact Inspector */}
+                {(() => {
+                  const inspected =
+                    projectionAndThresholdAnalysis.bracketRows.find(
+                      (r) =>
+                        r.bracket.id ===
+                        (selectedDashboardBracketId ||
+                          projectionAndThresholdAnalysis.nextRow?.bracket.id ||
+                          projectionAndThresholdAnalysis.activeRow?.bracket.id)
+                    ) || projectionAndThresholdAnalysis.activeRow;
+                  if (!inspected) return null;
+
+                  const targetAnnualCa =
+                    inspected.maxCa !== null
+                      ? inspected.minCa === 0
+                        ? Math.round(inspected.maxCa * 0.6)
+                        : Math.round((inspected.minCa + inspected.maxCa) / 2)
+                      : Math.round(inspected.minCa * 1.15);
+
+                  return (
+                    <div className="p-3.5 rounded-2xl bg-slate-900 dark:bg-slate-950 text-white border border-slate-800 space-y-2.5">
+                      <div className="flex flex-wrap items-center justify-between gap-2">
+                        <div className="text-xs font-black flex items-center gap-2">
+                          <Sparkles className="w-3.5 h-3.5 text-amber-400" />
+                          <span>
+                            {isAr
+                              ? `أثر ${inspected.shortName} المباشر على AMO والتقاعد`
+                              : `${inspected.shortName} Direct AMO & Retirement Impact`}
+                          </span>
+                        </div>
+                        <button
+                          type="button"
+                          onClick={() => {
+                            setSimInputPeriod('annual');
+                            setSimTurnover(targetAnnualCa);
+                            setSubTab('simulator');
+                            if (settings.enableSoundEffects) playSound('beep');
+                          }}
+                          className="px-2.5 py-1 rounded-lg bg-emerald-600 hover:bg-emerald-500 text-white text-[11px] font-black inline-flex items-center gap-1 transition-colors"
+                        >
+                          <Calculator className="w-3 h-3" />
+                          <span>{isAr ? 'محاكاة هذا الشطر' : 'Simulate Bracket'}</span>
+                        </button>
+                      </div>
+
+                      <div className="grid grid-cols-2 sm:grid-cols-4 gap-2 text-[11px] font-mono tabular-nums">
+                        <div className="p-2 rounded-xl bg-white/5 border border-white/10">
+                          <div className="text-[10px] font-sans text-slate-400">
+                            {isAr ? 'تأثير AMO (شهر / 3ش)' : 'AMO (Mo / 3Mo)'}
+                          </div>
+                          <div className="font-black text-amber-400 mt-0.5">
+                            {inspected.monthlyAmo.toFixed(0)} / {inspected.quarterlyAmo.toFixed(0)} {currencySymbol}
+                          </div>
+                          <div className="text-[10px] text-slate-300">
+                            {inspected.deltaMonthlyAmo === 0
+                              ? isAr
+                                ? 'نفس الشطر الحالي'
+                                : 'Same as current'
+                              : `${inspected.deltaMonthlyAmo > 0 ? '+' : ''}${inspected.deltaMonthlyAmo.toFixed(0)} ${currencySymbol}/${isAr ? 'ش' : 'mo'}`}
+                          </div>
+                        </div>
+
+                        <div className="p-2 rounded-xl bg-white/5 border border-white/10">
+                          <div className="text-[10px] font-sans text-slate-400">
+                            {isAr ? 'تأثير التقاعد (شهر / 3ش)' : 'Ret (Mo / 3Mo)'}
+                          </div>
+                          <div className="font-black text-violet-300 mt-0.5">
+                            {inspected.monthlyRet.toFixed(2)} / {inspected.quarterlyRet.toFixed(2)}
+                          </div>
+                          <div className="text-[10px] text-slate-300">
+                            {inspected.deltaMonthlyRet === 0
+                              ? isAr
+                                ? 'نفس الشطر الحالي'
+                                : 'Same as current'
+                              : `${inspected.deltaMonthlyRet > 0 ? '+' : ''}${inspected.deltaMonthlyRet.toFixed(2)} ${currencySymbol}/${isAr ? 'ش' : 'mo'}`}
+                          </div>
+                        </div>
+
+                        <div className="p-2 rounded-xl bg-white/5 border border-white/10">
+                          <div className="text-[10px] font-sans text-slate-400">
+                            {isAr ? 'فارق الالتزام الربع سنوي' : 'Quarterly Impact Δ'}
+                          </div>
+                          <div
+                            className={`font-black mt-0.5 ${
+                              inspected.deltaQuarterlyContrib > 0
+                                ? 'text-rose-400'
+                                : inspected.deltaQuarterlyContrib < 0
+                                ? 'text-emerald-400'
+                                : 'text-slate-200'
+                            }`}
+                          >
+                            {inspected.deltaQuarterlyContrib > 0 ? '+' : ''}
+                            {inspected.deltaQuarterlyContrib.toFixed(2)} {currencySymbol}
+                          </div>
+                          <div className="text-[10px] text-slate-400">
+                            {isAr
+                              ? `السنوي: ${inspected.deltaAnnualContrib > 0 ? '+' : ''}${inspected.deltaAnnualContrib.toFixed(0)} ${currencySymbol}`
+                              : `Yr: ${inspected.deltaAnnualContrib.toFixed(0)}`}
+                          </div>
+                        </div>
+
+                        <div className="p-2 rounded-xl bg-white/5 border border-white/10">
+                          <div className="text-[10px] font-sans text-slate-400">
+                            {isAr ? 'المسافة المتبقية' : 'Distance Left'}
+                          </div>
+                          <div className="font-black text-sky-300 mt-0.5">
+                            {inspected.maxCa !== null
+                              ? inspected.isPassed
+                                ? isAr
+                                  ? 'مُجتاز (100%)'
+                                  : 'Passed'
+                                : `${inspected.remainingCaToCeiling.toLocaleString('en-US')} ${currencySymbol}`
+                              : isAr
+                              ? 'مفتوح'
+                              : 'Open'}
+                          </div>
+                          <div className="text-[10px] text-slate-400">
+                            {inspected.remainingDaysToCeiling !== null
+                              ? isAr
+                                ? `~${inspected.remainingDaysToCeiling} يوم عمل متبقي`
+                                : `~${inspected.remainingDaysToCeiling}d at pace`
+                              : isAr
+                              ? `CPU: ${inspected.minCpuTax}–${inspected.maxCpuTax ?? '∞'}`
+                              : `CPU: ${inspected.minCpuTax}–${inspected.maxCpuTax ?? '∞'}`}
+                          </div>
+                        </div>
+                      </div>
+                    </div>
+                  );
+                })()}
+              </div>
+
+              {/* Right: Interactive Recharts 6-Bracket Chart + Markers */}
+              <div className="xl:col-span-5 p-5 rounded-3xl bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 space-y-4 shadow-xs flex flex-col justify-between">
+                <div>
+                  <h3 className="text-sm font-black text-slate-900 dark:text-white flex items-center gap-2">
+                    <BarChart3 className="w-4 h-4 text-violet-600" />
+                    <span>
+                      {isAr
+                        ? 'مخطط الشطور الستة وموقع التوقع السنوي'
+                        : 'Interactive 6-Bracket Position & Projection Chart'}
+                    </span>
+                  </h3>
+                  <p className="text-[11px] text-slate-500 mt-0.5">
+                    {isAr
+                      ? 'توزيع اشتراكات AMO والتقاعد الشهرية عبر الشطور الستة مع تحديد موقعك الحالي والمتوقع'
+                      : 'Monthly AMO & retirement scale across all 6 brackets with current & projected markers'}
+                  </p>
+                </div>
+
+                <div className="h-64 w-full" dir="ltr">
+                  <ResponsiveContainer width="100%" height="100%">
+                    <ComposedChart
+                      data={projectionAndThresholdAnalysis.chartRows}
+                      margin={{ top: 14, right: 12, left: 0, bottom: 4 }}
+                    >
+                      <CartesianGrid strokeDasharray="3 3" stroke={isDark ? '#1e293b' : '#e2e8f0'} opacity={isDark ? 0.85 : 0.5} />
+                      <XAxis dataKey="name" tick={{ fontSize: 11, fill: isDark ? '#b7c6db' : '#64748b' }} axisLine={{ stroke: isDark ? '#26344a' : '#cbd5e1' }} />
+                      <YAxis tick={{ fontSize: 10, fill: isDark ? '#b7c6db' : '#64748b' }} axisLine={{ stroke: isDark ? '#26344a' : '#cbd5e1' }} />
+                      <Tooltip
+                        content={({ active, payload }) => {
+                          if (!active || !payload || !payload.length) return null;
+                          const row = payload[0].payload;
+                          return (
+                            <div className="bg-slate-900 text-white p-3 rounded-xl shadow-xl text-xs space-y-1 font-mono border border-slate-700">
+                              <div className="font-sans font-bold text-slate-100">{row.fullLabel}</div>
+                              <div className="text-amber-400">AMO: {row.amoMonthly} {currencySymbol}/{isAr ? 'ش' : 'mo'}</div>
+                              <div className="text-violet-300">{isAr ? 'التقاعد:' : 'Ret:'} {row.retMonthly} {currencySymbol}/{isAr ? 'ش' : 'mo'}</div>
+                              <div className="text-emerald-400 font-black pt-1 border-t border-slate-700">
+                                {isAr ? 'المجموع الشهري:' : 'Total/mo:'} {row.totalMonthlyContrib} {currencySymbol}
+                              </div>
+                            </div>
+                          );
+                        }}
+                      />
+                      <Legend wrapperStyle={{ fontSize: '11px' }} />
+                      {projectionAndThresholdAnalysis.activeRow && (
+                        <ReferenceLine
+                          x={projectionAndThresholdAnalysis.activeRow.shortName}
+                          stroke="#10b981"
+                          strokeWidth={2.5}
+                          strokeDasharray="4 4"
+                          label={{
+                            value: isAr ? 'الحالي' : 'Now',
+                            position: 'top',
+                            fill: '#10b981',
+                            fontSize: 10,
+                            fontWeight: 700
+                          }}
+                        />
+                      )}
+                      {(() => {
+                        const projRow = projectionAndThresholdAnalysis.bracketRows.find(
+                          (r) => r.isProjectedBracket
+                        );
+                        if (!projRow) return null;
+                        return (
+                          <ReferenceLine
+                            x={projRow.shortName}
+                            stroke="#0284c7"
+                            strokeWidth={2}
+                            strokeDasharray="2 2"
+                            label={{
+                              value: isAr ? 'التوقع' : 'Proj.',
+                              position: 'insideTopRight',
+                              fill: '#0284c7',
+                              fontSize: 10,
+                              fontWeight: 700
+                            }}
+                          />
+                        );
+                      })()}
+                      <Bar dataKey="amoMonthly" stackId="cnss" name={isAr ? 'AMO / شهر' : 'AMO/mo'} radius={[0, 0, 0, 0]}>
+                        {projectionAndThresholdAnalysis.chartRows.map((entry, i) => (
+                          <Cell
+                            key={`amo-cell-${i}`}
+                            fill={entry.isCurrent ? '#d97706' : entry.isProjected ? '#0284c7' : '#f59e0b'}
+                            opacity={entry.isCurrent || entry.isProjected ? 1 : 0.65}
+                          />
+                        ))}
+                      </Bar>
+                      <Bar dataKey="retMonthly" stackId="cnss" name={isAr ? 'التقاعد / شهر' : 'Ret/mo'} radius={[6, 6, 0, 0]}>
+                        {projectionAndThresholdAnalysis.chartRows.map((entry, i) => (
+                          <Cell
+                            key={`ret-cell-${i}`}
+                            fill={entry.isCurrent ? '#6d28d9' : entry.isProjected ? '#38bdf8' : '#8b5cf6'}
+                            opacity={entry.isCurrent || entry.isProjected ? 1 : 0.65}
+                          />
+                        ))}
+                      </Bar>
+                    </ComposedChart>
+                  </ResponsiveContainer>
+                </div>
+
+                {/* Comparison Summary Strip between Current & Annual Projection */}
+                <div className="p-3.5 rounded-2xl bg-slate-50 dark:bg-slate-800/70 border border-slate-200 dark:border-slate-700 grid grid-cols-2 gap-3 text-xs">
+                  <div>
+                    <div className="text-[10px] font-bold text-slate-500">
+                      {isAr ? 'الشطر الحالي' : 'Current Bracket'}
+                    </div>
+                    <div className="font-black text-emerald-700 dark:text-emerald-400 mt-0.5">
+                      {projectionAndThresholdAnalysis.activeRow?.shortName} ·{' '}
+                      {activePreviewCalc.monthlyAmo.toFixed(0)} {currencySymbol} AMO
+                    </div>
+                    <div className="text-[10px] font-mono text-slate-500">
+                      {isAr ? 'التقاعد:' : 'Ret:'} {activePreviewCalc.monthlyRetirement.toFixed(2)} {currencySymbol}
+                    </div>
+                  </div>
+                  <div>
+                    <div className="text-[10px] font-bold text-sky-600 dark:text-sky-400">
+                      {isAr ? 'شطر التوقع السنوي' : 'Projected Bracket'}
+                    </div>
+                    <div className="font-black text-sky-700 dark:text-sky-300 mt-0.5">
+                      {projectionAndThresholdAnalysis.bracketRows.find((r) => r.isProjectedBracket)?.shortName} ·{' '}
+                      {projectionAndThresholdAnalysis.projectedCalc.monthlyAmo.toFixed(0)} {currencySymbol} AMO
+                    </div>
+                    <div className="text-[10px] font-mono text-slate-500">
+                      {isAr ? 'التقاعد:' : 'Ret:'}{' '}
+                      {projectionAndThresholdAnalysis.projectedCalc.monthlyRetirement.toFixed(2)} {currencySymbol}
+                    </div>
+                  </div>
+                </div>
+              </div>
+            </div>
+
+            {/* Row B: Analytical Forecast Table for Next Month based on Daily Growth Rate */}
+            <div className="p-5 rounded-3xl bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 space-y-3 shadow-xs">
+              <div className="flex flex-wrap items-center justify-between gap-2">
+                <div>
+                  <h3 className="text-sm font-black text-slate-900 dark:text-white flex items-center gap-2">
+                    <TrendingUp className="w-4 h-4 text-sky-600" />
+                    <span>
+                      {isAr
+                        ? 'الجدول التحليلي لتوقعات الشهر القادم (حسب معدل النمو اليومي)'
+                        : 'Next Month Analytical Forecast Table (By Daily Growth Rate)'}
+                    </span>
+                  </h3>
+                  <p className="text-[11px] text-slate-500 mt-0.5">
+                    {isAr
+                      ? `متوسط المبيعات اليومي (آخر 30 يوم): ${projectionAndThresholdAnalysis.effectiveDailyAvg.toFixed(2)} ${currencySymbol}/يوم · معدل النمو: ${projectionAndThresholdAnalysis.growthRatePct >= 0 ? '+' : ''}${projectionAndThresholdAnalysis.growthRatePct}%`
+                      : `Daily Avg (30d): ${projectionAndThresholdAnalysis.effectiveDailyAvg.toFixed(2)} ${currencySymbol}/d · Growth: ${projectionAndThresholdAnalysis.growthRatePct}%`}
+                  </p>
+                </div>
+                <span className="px-3 py-1 rounded-xl bg-sky-50 dark:bg-sky-950/60 border border-sky-200 dark:border-sky-800 text-xs font-black text-sky-700 dark:text-sky-300 font-mono">
+                  {isAr ? 'توقع الشهر القادم:' : 'Next Month:'}{' '}
+                  {projectionAndThresholdAnalysis.nextMonthTurnover.toLocaleString('en-US')} {currencySymbol}
+                </span>
+              </div>
+
+              <div className="overflow-x-auto rounded-2xl border border-slate-200 dark:border-slate-800">
+                <table className="w-full text-start border-collapse text-xs">
+                  <thead className="bg-slate-50 dark:bg-slate-800/70 text-slate-600 dark:text-slate-300 font-bold border-b border-slate-200 dark:border-slate-800">
+                    <tr>
+                      <th className="py-2.5 px-3 text-start">{isAr ? 'الفترة / المقارنة' : 'Period'}</th>
+                      <th className="py-2.5 px-3 text-end">{isAr ? 'رقم الأعمال الشهري' : 'Monthly CA'}</th>
+                      <th className="py-2.5 px-3 text-end">{isAr ? 'الربح المفترض (6%)' : 'Assumed Profit'}</th>
+                      <th className="py-2.5 px-3 text-end">{isAr ? 'الضريبة CPU (0.6%)' : 'CPU Tax'}</th>
+                      <th className="py-2.5 px-3 text-center">{isAr ? 'الشطر المتوقع' : 'Bracket'}</th>
+                      <th className="py-2.5 px-3 text-end">{isAr ? 'الصحة AMO / شهر' : 'AMO / mo'}</th>
+                      <th className="py-2.5 px-3 text-end">{isAr ? 'التقاعد / شهر' : 'Retire / mo'}</th>
+                      <th className="py-2.5 px-3 text-end">{isAr ? 'مجموع الالتزام الشهري' : 'Total Monthly'}</th>
+                    </tr>
+                  </thead>
+                  <tbody className="divide-y divide-slate-100 dark:divide-slate-800 font-mono tabular-nums">
+                    <tr>
+                      <td className="py-2.5 px-3 font-sans font-bold text-slate-700 dark:text-slate-300">
+                        {isAr ? 'الوتيرة الحالية (آخر 30 يوم)' : 'Current Pace (Last 30d)'}
+                      </td>
+                      <td className="py-2.5 px-3 text-end font-bold">
+                        {projectionAndThresholdAnalysis.currentMonthTurnoverEst.toLocaleString('en-US')} {currencySymbol}
+                      </td>
+                      <td className="py-2.5 px-3 text-end text-emerald-700 dark:text-emerald-400">
+                        {projectionAndThresholdAnalysis.currentMonthProfitEst.toFixed(2)} {currencySymbol}
+                      </td>
+                      <td className="py-2.5 px-3 text-end text-blue-600 font-bold">
+                        {projectionAndThresholdAnalysis.currentMonthCpuTax.toFixed(2)} {currencySymbol}
+                      </td>
+                      <td className="py-2.5 px-3 text-center font-sans font-bold">
+                        {projectionAndThresholdAnalysis.projectedCalc.matchedBracket.label.split('(')[0].trim()}
+                      </td>
+                      <td className="py-2.5 px-3 text-end text-amber-700 dark:text-amber-400 font-bold">
+                        {projectionAndThresholdAnalysis.projectedCalc.monthlyAmo.toFixed(0)} {currencySymbol}
+                      </td>
+                      <td className="py-2.5 px-3 text-end text-violet-700 dark:text-violet-300 font-bold">
+                        {projectionAndThresholdAnalysis.projectedCalc.monthlyRetirement.toFixed(2)} {currencySymbol}
+                      </td>
+                      <td className="py-2.5 px-3 text-end font-black text-slate-900 dark:text-white">
+                        {(
+                          projectionAndThresholdAnalysis.currentMonthCpuTax +
+                          projectionAndThresholdAnalysis.projectedCalc.monthlyAmo +
+                          projectionAndThresholdAnalysis.projectedCalc.monthlyRetirement
+                        ).toFixed(2)}{' '}
+                        {currencySymbol}
+                      </td>
+                    </tr>
+
+                    <tr className="bg-sky-50/60 dark:bg-sky-950/25 font-bold">
+                      <td className="py-2.5 px-3 font-sans font-black text-sky-800 dark:text-sky-300">
+                        {isAr ? 'توقع الشهر القادم (مع النمو)' : 'Next Month Forecast'}
+                      </td>
+                      <td className="py-2.5 px-3 text-end font-black text-slate-900 dark:text-white">
+                        {projectionAndThresholdAnalysis.nextMonthTurnover.toLocaleString('en-US')} {currencySymbol}
+                      </td>
+                      <td className="py-2.5 px-3 text-end text-emerald-700 dark:text-emerald-400">
+                        {projectionAndThresholdAnalysis.nextMonthProfitEst.toFixed(2)} {currencySymbol}
+                      </td>
+                      <td className="py-2.5 px-3 text-end text-blue-600 font-black">
+                        {projectionAndThresholdAnalysis.nextMonthCpuTax.toFixed(2)} {currencySymbol}
+                      </td>
+                      <td className="py-2.5 px-3 text-center font-sans">
+                        <span className="px-2 py-0.5 rounded-md bg-sky-600 text-white text-[10px] font-black">
+                          {projectionAndThresholdAnalysis.nextMonthCalc.matchedBracket.label.split('(')[0].trim()}
+                        </span>
+                      </td>
+                      <td className="py-2.5 px-3 text-end text-amber-700 dark:text-amber-400 font-black">
+                        {projectionAndThresholdAnalysis.nextMonthCalc.monthlyAmo.toFixed(0)} {currencySymbol}
+                      </td>
+                      <td className="py-2.5 px-3 text-end text-violet-700 dark:text-violet-300 font-black">
+                        {projectionAndThresholdAnalysis.nextMonthCalc.monthlyRetirement.toFixed(2)} {currencySymbol}
+                      </td>
+                      <td className="py-2.5 px-3 text-end font-black text-sky-700 dark:text-sky-300">
+                        {(
+                          projectionAndThresholdAnalysis.nextMonthCpuTax +
+                          projectionAndThresholdAnalysis.nextMonthCalc.monthlyAmo +
+                          projectionAndThresholdAnalysis.nextMonthCalc.monthlyRetirement
+                        ).toFixed(2)}{' '}
+                        {currencySymbol}
+                      </td>
+                    </tr>
+                  </tbody>
+                </table>
               </div>
             </div>
           </div>
@@ -2241,6 +3314,402 @@ export const CpuTaxView: React.FC = () => {
               </div>
             </div>
           </div>
+
+          {/* Risk, Threshold & Expense Ratio Simulator V9 (بيع اليوم - درهم + جدول نسبة % المصاريف) */}
+          {(() => {
+            const v9Limit = projectionAndThresholdAnalysis.limitCaCeiling || 1666665;
+            const coeffPct = Math.max(0.01, Number(cpuSettings.professionCoeffPct) || 6);
+            const taxPct = Math.max(0.01, Number(cpuSettings.taxRatePct) || 10);
+            const taxFactor = (coeffPct / 100) * (taxPct / 100);
+            const retCoeff = Math.max(0, Number(cpuSettings.retirementCoeff) || 1.57);
+
+            const v9Daily = Math.max(0, Number(v4DailySales) || 0);
+            const v9Monthly = v9Daily * 30;
+            const v9Annual = v9Monthly * 12;
+            const v9ProfitMonthly = v9Monthly * (coeffPct / 100);
+            const v9TaxMonthly = v9ProfitMonthly * (taxPct / 100);
+
+            const v9Calc = calculateCpuBreakdown(v9Annual / 4, cpuSettings, simRetirementOn);
+            const v9AmoMonthly = v9Calc.monthlyAmo;
+            const v9RetMonthly = v9Calc.monthlyRetirement;
+            const v9TotalCharges = v9TaxMonthly + v9AmoMonthly + v9RetMonthly;
+            // الصحيح: صافي = الربح - المصاريف
+            const v9NetProfit = v9ProfitMonthly - v9TotalCharges;
+
+            const v9PctLimit = v9Limit > 0 ? Number(((v9Annual / v9Limit) * 100).toFixed(1)) : 0;
+
+            const pTaxCa = v9Monthly > 0 ? (v9TaxMonthly / v9Monthly) * 100 : 0;
+            const pAmoCa = v9Monthly > 0 ? (v9AmoMonthly / v9Monthly) * 100 : 0;
+            const pRetCa = v9Monthly > 0 ? (v9RetMonthly / v9Monthly) * 100 : 0;
+            const pTotalCa = v9Monthly > 0 ? (v9TotalCharges / v9Monthly) * 100 : 0;
+            const pNetCa = v9Monthly > 0 ? (v9NetProfit / v9Monthly) * 100 : 0;
+
+            const pTaxProf = v9ProfitMonthly > 0 ? (v9TaxMonthly / v9ProfitMonthly) * 100 : 0;
+            const pAmoProf = v9ProfitMonthly > 0 ? (v9AmoMonthly / v9ProfitMonthly) * 100 : 0;
+            const pRetProf = v9ProfitMonthly > 0 ? (v9RetMonthly / v9ProfitMonthly) * 100 : 0;
+            const pTotalProf = v9ProfitMonthly > 0 ? (v9TotalCharges / v9ProfitMonthly) * 100 : 0;
+            const pNetProf = v9ProfitMonthly > 0 ? (v9NetProfit / v9ProfitMonthly) * 100 : 0;
+
+            const v9ActiveBracketIdx = Math.max(
+              1,
+              projectionAndThresholdAnalysis.bracketRows.findIndex(
+                (r) => r.bracket.id === v9Calc.matchedBracket.id
+              ) + 1
+            );
+
+            const v9BarColor =
+              v9PctLimit >= 90
+                ? 'bg-rose-500'
+                : v9PctLimit >= 70
+                ? 'bg-amber-400'
+                : 'bg-blue-600';
+
+            const ratioScheduleRows = projectionAndThresholdAnalysis.bracketRows.map((row) => {
+              const monthlyCaRef =
+                row.maxCa !== null
+                  ? Math.round(row.maxCa / 12)
+                  : Math.max(Math.round((row.minCa * 1.25) / 12), Math.round(v9Monthly));
+              const mProfit = monthlyCaRef * (coeffPct / 100);
+              const mTax = mProfit * (taxPct / 100);
+              const mAmo = row.monthlyAmo;
+              const mRet = simRetirementOn ? Number((mAmo * retCoeff).toFixed(2)) : 0;
+              const mTotal = mTax + mAmo + mRet;
+              const mNet = mProfit - mTotal;
+
+              return {
+                index: row.index,
+                bracket: row.bracket,
+                isOpenTop: row.maxCa === null,
+                monthlyCaRef,
+                mProfit,
+                taxP: monthlyCaRef > 0 ? (mTax / monthlyCaRef) * 100 : 0,
+                amoP: monthlyCaRef > 0 ? (mAmo / monthlyCaRef) * 100 : 0,
+                retP: monthlyCaRef > 0 ? (mRet / monthlyCaRef) * 100 : 0,
+                totalP: monthlyCaRef > 0 ? (mTotal / monthlyCaRef) * 100 : 0,
+                netP: mProfit > 0 ? (mNet / mProfit) * 100 : 0,
+                isActive: row.bracket.id === v9Calc.matchedBracket.id
+              };
+            });
+
+            return (
+              <div className="space-y-5">
+                {/* Card 1: Kadi POS V9 Daily Sales Calculator + Expense & Profit Ratio Table */}
+                <div className="p-6 rounded-3xl bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 space-y-5 shadow-xs">
+                  <div className="flex flex-wrap items-center justify-between gap-3">
+                    <div>
+                      <h3 className="text-base font-black text-slate-900 dark:text-white flex items-center gap-2">
+                        <ShieldAlert className="w-5 h-5 text-blue-600" />
+                        <span>
+                          {isAr
+                            ? 'حاسبة العتبة ونسب المصاريف V9 — بيع اليوم (درهم)'
+                            : 'Kadi POS V9 — Daily Sales Threshold & Expense Ratio'}
+                        </span>
+                      </h3>
+                      <p className="text-xs text-slate-500 mt-0.5">
+                        {isAr
+                          ? `الربح = CA × ${coeffPct}% | الضريبة = الربح × ${taxPct}% = CA × ${(taxFactor * 100).toFixed(1)}% | الصافي = الربح - المصاريف`
+                          : `Profit = CA × ${coeffPct}% | Tax = CA × ${(taxFactor * 100).toFixed(1)}% | Net = Profit - Charges`}
+                      </p>
+                    </div>
+
+                    <div className="flex flex-wrap items-center gap-2">
+                      <label className="text-xs font-black text-slate-700 dark:text-slate-300">
+                        {isAr ? `بيع اليوم (${currencySymbol}):` : `Daily Sales (${currencySymbol}):`}
+                      </label>
+                      <input
+                        type="number"
+                        min="0"
+                        step="100"
+                        placeholder={isAr ? 'مثال: 3600' : 'e.g. 3600'}
+                        value={v4DailySales}
+                        onChange={(e) => setV4DailySales(Math.max(0, Number(e.target.value) || 0))}
+                        className="w-36 px-3 py-2 text-lg font-mono font-black text-center bg-blue-50/70 dark:bg-blue-950/30 border-2 border-blue-500 dark:border-blue-600 rounded-xl tabular-nums"
+                      />
+                    </div>
+                  </div>
+
+                  {/* Quick Daily Presets + Sync POS Pace */}
+                  <div className="flex flex-wrap items-center gap-1.5">
+                    {[500, 1200, 2500, 3600, 4500, 5000].map((val) => (
+                      <button
+                        key={val}
+                        type="button"
+                        onClick={() => setV4DailySales(val)}
+                        className={`px-2.5 py-1 rounded-lg text-[11px] font-mono font-bold border transition-colors ${
+                          v4DailySales === val
+                            ? 'bg-blue-600 text-white border-blue-600'
+                            : 'bg-slate-50 dark:bg-slate-800 border-slate-200 dark:border-slate-700 text-slate-600 dark:text-slate-300 hover:border-blue-400'
+                        }`}
+                      >
+                        {val.toLocaleString('en-US')} {currencySymbol}/{isAr ? 'يوم' : 'd'}
+                      </button>
+                    ))}
+                    {projectionAndThresholdAnalysis.hasPosSalesLast30 && (
+                      <button
+                        type="button"
+                        onClick={() =>
+                          setV4DailySales(Math.round(projectionAndThresholdAnalysis.rawPosDailyAvg))
+                        }
+                        className="px-2.5 py-1 rounded-lg text-[11px] font-bold bg-emerald-50 dark:bg-emerald-950/50 text-emerald-700 dark:text-emerald-300 border border-emerald-200 dark:border-emerald-800 hover:bg-emerald-100"
+                      >
+                        {isAr
+                          ? `استعمال معدل المبيعات (${Math.round(projectionAndThresholdAnalysis.rawPosDailyAvg)} ${currencySymbol})`
+                          : `Use POS Avg (${Math.round(projectionAndThresholdAnalysis.rawPosDailyAvg)})`}
+                      </button>
+                    )}
+                  </div>
+
+                  {/* Progress Bar + Live V9 Summary + 4% CA Alert */}
+                  <div className="space-y-3 p-4 rounded-2xl bg-slate-50 dark:bg-slate-800/50 border border-slate-200/80 dark:border-slate-700/80">
+                    <div className="flex flex-wrap items-center justify-between gap-2 text-xs font-bold">
+                      <span className="text-slate-900 dark:text-white font-black">
+                        {v9PctLimit}% {isAr ? 'من العتبة' : 'of ceiling'} —{' '}
+                        {isAr ? `شطر ${v9ActiveBracketIdx}` : `Bracket ${v9ActiveBracketIdx}`} (
+                        {v9Calc.matchedBracket.label.split('(')[0].trim()})
+                      </span>
+                      <span className="font-mono font-black text-slate-700 dark:text-slate-200">
+                        {isAr ? 'CA سنوي:' : 'Annual CA:'} {v9Annual.toLocaleString('en-US')} /{' '}
+                        {v9Limit.toLocaleString('en-US')} {currencySymbol}
+                      </span>
+                    </div>
+
+                    <div className="w-full h-5 rounded-xl bg-slate-200 dark:bg-slate-800 overflow-hidden">
+                      <div
+                        className={`h-full rounded-xl transition-all duration-300 ${v9BarColor}`}
+                        style={{ width: `${Math.min(100, v9PctLimit)}%` }}
+                      />
+                    </div>
+
+                    <div className="flex flex-wrap items-center justify-between gap-2 text-xs">
+                      <div className="font-mono text-slate-600 dark:text-slate-300">
+                        {isAr ? 'CA شهري:' : 'Monthly CA:'}{' '}
+                        <strong className="text-slate-900 dark:text-white">
+                          {v9Monthly.toLocaleString('en-US')} {currencySymbol}
+                        </strong>{' '}
+                        | {isAr ? `ربح (${coeffPct}%):` : `Profit (${coeffPct}%):`}{' '}
+                        <strong className="text-emerald-700 dark:text-emerald-400">
+                          {v9ProfitMonthly.toFixed(0)} {currencySymbol}
+                        </strong>
+                      </div>
+
+                      <div className="text-xs font-black font-mono text-slate-900 dark:text-white">
+                        Total: {v9TotalCharges.toFixed(0)} {currencySymbol} ={' '}
+                        <span className="text-blue-600 dark:text-blue-400">{pTotalCa.toFixed(2)}%</span>{' '}
+                        {isAr ? 'من CA' : 'of CA'} ={' '}
+                        <span className="text-amber-600 dark:text-amber-400">{pTotalProf.toFixed(2)}%</span>{' '}
+                        {isAr ? 'من الربح' : 'of Profit'} |{' '}
+                        <span
+                          className={
+                            v9NetProfit >= 0
+                              ? 'text-emerald-700 dark:text-emerald-400'
+                              : 'text-rose-600 dark:text-rose-400'
+                          }
+                        >
+                          {isAr ? 'صافي:' : 'Net:'} {v9NetProfit.toFixed(0)} {currencySymbol} ({pNetProf.toFixed(2)}%)
+                        </span>
+                      </div>
+                    </div>
+
+                    {/* V9 4% CA Target Alert & Ceiling Check */}
+                    <div
+                      className={`p-3 rounded-xl border text-xs font-black text-center ${
+                        v9Monthly === 0
+                          ? 'bg-slate-100 dark:bg-slate-800 border-slate-200 dark:border-slate-700 text-slate-500'
+                          : pTotalCa >= 4 || v9PctLimit >= 100
+                          ? 'bg-rose-50 dark:bg-rose-950/40 border-rose-300 dark:border-rose-800 text-rose-700 dark:text-rose-300'
+                          : 'bg-emerald-50 dark:bg-emerald-950/40 border-emerald-300 dark:border-emerald-800 text-emerald-700 dark:text-emerald-300'
+                      }`}
+                    >
+                      {v9Monthly === 0
+                        ? isAr
+                          ? 'أدخل مبيعات اليوم لحساب النسب ومراقبة عتبة 4% من رقم الأعمال'
+                          : 'Enter daily sales to calculate expense ratios vs 4% CA target'
+                        : pTotalCa >= 4
+                        ? isAr
+                          ? `⛔ Total فات 4% من CA (${pTotalCa.toFixed(2)}%) - رد البال`
+                          : `⛔ Total exceeded 4% of CA (${pTotalCa.toFixed(2)}%)`
+                        : v9PctLimit >= 100
+                        ? isAr
+                          ? `⚠️ Total تحت 4% (${pTotalCa.toFixed(2)}%) ولكن رقم الأعمال السنوي تجاوز العتبة القصوى للشطر 5!`
+                          : `⚠️ Under 4% CA (${pTotalCa.toFixed(2)}%) but Annual CA exceeded max ceiling`
+                        : isAr
+                        ? `✅ Total ${pTotalCa.toFixed(2)}% من CA - باقي تحت 4%، مزيان`
+                        : `✅ Total ${pTotalCa.toFixed(2)}% of CA — Safely under 4% target`}
+                    </div>
+                  </div>
+
+                  {/* V9 Expense Breakdown Table (% من CA & % من الربح) */}
+                  <div className="overflow-x-auto rounded-2xl border border-slate-200 dark:border-slate-800">
+                    <table className="w-full text-xs text-start border-collapse">
+                      <thead className="bg-slate-50 dark:bg-slate-800/70 text-slate-600 dark:text-slate-300 font-bold border-b border-slate-200 dark:border-slate-800">
+                        <tr>
+                          <th className="py-2.5 px-3 text-start">{isAr ? 'المصروف' : 'Item'}</th>
+                          <th className="py-2.5 px-3 text-end">{isAr ? 'درهم / شهر' : `${currencySymbol} / mo`}</th>
+                          <th className="py-2.5 px-3 text-end">{isAr ? '% من CA' : '% of CA'}</th>
+                          <th className="py-2.5 px-3 text-end">{isAr ? '% من الربح' : '% of Profit'}</th>
+                        </tr>
+                      </thead>
+                      <tbody className="divide-y divide-slate-100 dark:divide-slate-800 font-mono tabular-nums">
+                        <tr>
+                          <td className="py-2.5 px-3 font-sans font-bold text-blue-700 dark:text-blue-400">
+                            {isAr ? `الضريبة CPU (${(taxFactor * 100).toFixed(1)}%)` : 'CPU Tax'}
+                          </td>
+                          <td className="py-2.5 px-3 text-end font-bold">{v9TaxMonthly.toFixed(0)} {currencySymbol}</td>
+                          <td className="py-2.5 px-3 text-end">{pTaxCa.toFixed(2)}%</td>
+                          <td className="py-2.5 px-3 text-end">{pTaxProf.toFixed(2)}%</td>
+                        </tr>
+                        <tr>
+                          <td className="py-2.5 px-3 font-sans font-bold text-amber-700 dark:text-amber-400">
+                            AMO
+                          </td>
+                          <td className="py-2.5 px-3 text-end font-bold">{v9AmoMonthly.toFixed(0)} {currencySymbol}</td>
+                          <td className="py-2.5 px-3 text-end">{pAmoCa.toFixed(2)}%</td>
+                          <td className="py-2.5 px-3 text-end">{pAmoProf.toFixed(2)}%</td>
+                        </tr>
+                        <tr>
+                          <td className="py-2.5 px-3 font-sans font-bold text-violet-700 dark:text-violet-300">
+                            {isAr ? 'تقاعد CNSS' : 'Retirement'}
+                          </td>
+                          <td className="py-2.5 px-3 text-end font-bold">{v9RetMonthly.toFixed(0)} {currencySymbol}</td>
+                          <td className="py-2.5 px-3 text-end">{pRetCa.toFixed(2)}%</td>
+                          <td className="py-2.5 px-3 text-end">{pRetProf.toFixed(2)}%</td>
+                        </tr>
+                        <tr className="bg-slate-50/90 dark:bg-slate-800/50 font-black">
+                          <td className="py-2.5 px-3 font-sans text-slate-900 dark:text-white">
+                            Total ({isAr ? 'مجموع المصاريف' : 'Total Charges'})
+                          </td>
+                          <td className="py-2.5 px-3 text-end text-rose-600 dark:text-rose-400">
+                            {v9TotalCharges.toFixed(0)} {currencySymbol}
+                          </td>
+                          <td
+                            className={`py-2.5 px-3 text-end ${
+                              pTotalCa >= 4 ? 'text-rose-600 dark:text-rose-400' : 'text-emerald-700 dark:text-emerald-400'
+                            }`}
+                          >
+                            {pTotalCa.toFixed(2)}%
+                          </td>
+                          <td className="py-2.5 px-3 text-end">{pTotalProf.toFixed(2)}%</td>
+                        </tr>
+                        <tr className="bg-emerald-50/75 dark:bg-emerald-950/30 font-black">
+                          <td className="py-2.5 px-3 font-sans text-emerald-800 dark:text-emerald-300">
+                            {isAr ? 'صافي الربح (الربح - المصاريف)' : 'Net Profit (Profit - Charges)'}
+                          </td>
+                          <td
+                            className={`py-2.5 px-3 text-end ${
+                              v9NetProfit >= 0 ? 'text-emerald-700 dark:text-emerald-400' : 'text-rose-600 dark:text-rose-400'
+                            }`}
+                          >
+                            {v9NetProfit.toFixed(0)} {currencySymbol}
+                          </td>
+                          <td className="py-2.5 px-3 text-end text-emerald-700 dark:text-emerald-400">
+                            {pNetCa.toFixed(2)}%
+                          </td>
+                          <td className="py-2.5 px-3 text-end text-emerald-700 dark:text-emerald-400">
+                            {pNetProf.toFixed(2)}%
+                          </td>
+                        </tr>
+                      </tbody>
+                    </table>
+                  </div>
+                </div>
+
+                {/* Card 2: جدول نسبة % المصاريف في كل رقم أعمال (Reference Scale) */}
+                <div className="p-6 rounded-3xl bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 space-y-3 shadow-xs">
+                  <div className="flex flex-wrap items-center justify-between gap-2">
+                    <div>
+                      <h3 className="text-base font-black text-slate-900 dark:text-white flex items-center gap-2">
+                        <BarChart3 className="w-5 h-5 text-blue-600" />
+                        <span>
+                          {isAr
+                            ? 'جدول نسبة % المصاريف في كل رقم أعمال'
+                            : 'Expense Ratio (%) Reference Table Across Brackets'}
+                        </span>
+                      </h3>
+                      <p className="text-xs text-slate-500 mt-0.5">
+                        {isAr
+                          ? 'السطر المضاء هو شطرك الحالي — انقر على أي شطر لمحاكاة مبيعاته اليومية مباشرة'
+                          : 'Highlighted row is your active bracket — click any row to simulate its daily pace'}
+                      </p>
+                    </div>
+                    <span className="px-2.5 py-1 rounded-xl bg-blue-50 dark:bg-blue-950/60 border border-blue-200 dark:border-blue-800 text-[11px] font-bold text-blue-700 dark:text-blue-300">
+                      {isAr ? 'الهدف: Total أقل من 4% من CA' : 'Goal: Total < 4% of CA'}
+                    </span>
+                  </div>
+
+                  <div className="overflow-x-auto rounded-2xl border border-slate-200 dark:border-slate-800">
+                    <table className="w-full text-xs text-center border-collapse">
+                      <thead className="bg-slate-50 dark:bg-slate-800/70 text-slate-600 dark:text-slate-300 font-bold border-b border-slate-200 dark:border-slate-800">
+                        <tr>
+                          <th className="py-2.5 px-3">{isAr ? 'شطر' : 'Bracket'}</th>
+                          <th className="py-2.5 px-3">{isAr ? 'CA شهري' : 'Monthly CA'}</th>
+                          <th className="py-2.5 px-3">{isAr ? 'ضريبة %' : 'Tax %'}</th>
+                          <th className="py-2.5 px-3">AMO %</th>
+                          <th className="py-2.5 px-3">{isAr ? 'تقاعد %' : 'Ret %'}</th>
+                          <th className="py-2.5 px-3">Total %</th>
+                          <th className="py-2.5 px-3">{isAr ? 'صافي % من الربح' : 'Net % of Profit'}</th>
+                        </tr>
+                      </thead>
+                      <tbody className="divide-y divide-slate-100 dark:divide-slate-800 font-mono tabular-nums">
+                        {ratioScheduleRows.map((r) => (
+                          <tr
+                            key={r.bracket.id}
+                            onClick={() => setV4DailySales(Math.max(100, Math.round(r.monthlyCaRef / 30)))}
+                            className={`cursor-pointer transition-colors ${
+                              r.isActive
+                                ? 'bg-blue-100/80 dark:bg-blue-950/60 font-black ring-2 ring-inset ring-blue-500 text-slate-900 dark:text-white'
+                                : 'hover:bg-slate-50 dark:hover:bg-slate-800/40 text-slate-700 dark:text-slate-300'
+                            }`}
+                          >
+                            <td className="py-2.5 px-3 font-sans">
+                              <span className="inline-flex items-center gap-1">
+                                <span>{r.index}</span>
+                                {r.isActive && (
+                                  <span className="px-1.5 py-0.5 rounded bg-blue-600 text-white text-[9px] font-black">
+                                    {isAr ? 'دابا' : 'Now'}
+                                  </span>
+                                )}
+                              </span>
+                            </td>
+                            <td className="py-2.5 px-3 font-bold">
+                              {r.isOpenTop ? '> ' : ''}
+                              {r.monthlyCaRef.toLocaleString('en-US')}
+                            </td>
+                            <td className="py-2.5 px-3 text-blue-700 dark:text-blue-400">
+                              {r.taxP.toFixed(2)}%
+                            </td>
+                            <td className="py-2.5 px-3 text-amber-700 dark:text-amber-400">
+                              {r.amoP.toFixed(2)}%
+                            </td>
+                            <td className="py-2.5 px-3 text-violet-700 dark:text-violet-300">
+                              {r.retP.toFixed(2)}%
+                            </td>
+                            <td
+                              className={`py-2.5 px-3 font-black ${
+                                r.totalP >= 4
+                                  ? 'text-rose-600 dark:text-rose-400'
+                                  : 'text-emerald-700 dark:text-emerald-400'
+                              }`}
+                            >
+                              {r.totalP.toFixed(2)}%
+                            </td>
+                            <td className="py-2.5 px-3 font-black text-emerald-700 dark:text-emerald-400">
+                              {r.netP.toFixed(2)}%
+                            </td>
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
+                  </div>
+
+                  <p className="text-[11px] text-slate-500 text-center pt-1">
+                    {isAr
+                      ? `القاعدة: الربح = CA × ${coeffPct}% | الضريبة = الربح × ${taxPct}% = CA × ${(taxFactor * 100).toFixed(1)}% | الهدف: Total أقل من 4% من CA`
+                      : `Rule: Profit = CA × ${coeffPct}% | Tax = CA × ${(taxFactor * 100).toFixed(1)}% | Target: Total < 4% of CA`}
+                  </p>
+                </div>
+              </div>
+            );
+          })()}
         </div>
       )}
 
@@ -2417,21 +3886,21 @@ export const CpuTaxView: React.FC = () => {
 
             return (
               <>
-                <div className="p-6 rounded-3xl bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 space-y-4 shadow-xs">
+                <div className="p-6 rounded-3xl bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 space-y-5 shadow-xs">
                   <div className="flex flex-wrap items-center justify-between gap-3">
                     <div>
                       <h3 className="text-base font-black text-slate-900 dark:text-white flex items-center gap-2">
                         <ShieldCheck className="w-5 h-5 text-violet-600" />
                         <span>
                           {isAr
-                            ? 'جدول بريمات وبرامج التقاعد CNSS حسب الشرائح'
-                            : 'CNSS Retirement & AMO Premiums Schedule'}
+                            ? 'لوحة الشطور الضريبية التفاعلية وبريمات AMO والتقاعد CNSS'
+                            : 'Interactive Tax Brackets, AMO & CNSS Retirement Dashboard'}
                         </span>
                       </h3>
                       <p className="text-xs text-slate-500 mt-0.5">
                         {isAr
-                          ? `احتساب تلقائي للبريم الشهري، الربع سنوي (3 أشهر)، والسنوي (12 شهراً) بناءً على معامل التقاعد ×${cpuSettings.retirementCoeff} — كل تريمستر مدفوع يضيف +90 يوم تقاعد.`
-                          : `Auto-computed monthly, quarterly (3mo) & annual (12mo) CNSS retirement premiums at ×${cpuSettings.retirementCoeff}.`}
+                          ? `شرائط تقدم ملونة ديناميكياً حسب القرب من حافة كل شطر، مع توضيح المسافة المتبقية وأثر كل شطر على AMO والتقاعد (×${cpuSettings.retirementCoeff} · +90 يوم/تريمستر).`
+                          : `Dynamic color-coded progress bars showing remaining threshold distance & direct AMO/Retirement impact (×${cpuSettings.retirementCoeff}).`}
                       </p>
                     </div>
 
@@ -2477,143 +3946,283 @@ export const CpuTaxView: React.FC = () => {
                     </div>
                   </div>
 
-                  <div className="overflow-x-auto">
-                    <table className="w-full text-xs">
-                      <thead>
-                        <tr className="bg-slate-50 dark:bg-slate-800/70 text-slate-500 dark:text-slate-400 border-b border-slate-200 dark:border-slate-800">
-                          <th className="py-3 px-3 text-start font-black">
-                            {isAr ? 'الشريحة / البرنامج' : 'Bracket'}
-                          </th>
-                          <th className="py-3 px-3 text-start font-black">
-                            {isAr ? 'الضريبة السنوية (CPU)' : 'Annual Tax Range'}
-                          </th>
-                          <th className="py-3 px-3 text-start font-black">
-                            {isAr ? 'رقم المعاملات الفصلي التقديري' : 'Est. Quarterly Turnover'}
-                          </th>
-                          <th className="py-3 px-3 text-start font-black">
-                            {isAr ? 'الصحة AMO (شهر / 3 أشهر)' : 'AMO (Mo / 3Mo)'}
-                          </th>
-                          <th className="py-3 px-3 text-start font-black">
-                            {isAr ? `التقاعد CNSS (×${cpuSettings.retirementCoeff})` : 'CNSS Retirement'}
-                          </th>
-                          <th className="py-3 px-3 text-start font-black">
-                            {isAr ? 'التقاعد السنوي (12 شهراً)' : 'Annual Retirement'}
-                          </th>
-                          <th className="py-3 px-3 text-start font-black">
-                            {isAr ? 'إجمالي التغطية / شهر' : 'Total Protection / Mo'}
-                          </th>
-                        </tr>
-                      </thead>
-                      <tbody className="divide-y divide-slate-100 dark:divide-slate-800">
-                        {sortedBrackets.map((b) => {
-                          const isCurrent = b.id === currentBracketId;
-                          const minTurn = toQuarterlyTurnover(b.minAnnualTax);
-                          const maxTurn =
-                            b.maxAnnualTax !== null ? toQuarterlyTurnover(b.maxAnnualTax) : null;
+                  {/* Legend & Summary KPI Bar */}
+                  <div className="p-3.5 rounded-2xl bg-slate-50 dark:bg-slate-800/60 border border-slate-200/80 dark:border-slate-700/80 flex flex-wrap items-center justify-between gap-3 text-xs">
+                    <div className="flex flex-wrap items-center gap-4 font-mono tabular-nums">
+                      <div>
+                        <span className="text-[10px] font-sans font-bold text-slate-500 block">
+                          {isAr ? 'رقم الأعمال السنوي المعتمد' : 'Annual Turnover Base'}
+                        </span>
+                        <span className="font-black text-slate-900 dark:text-white">
+                          {projectionAndThresholdAnalysis.currentAnnualTurnover.toLocaleString('en-US')} {currencySymbol}
+                        </span>
+                      </div>
+                      <div className="h-6 w-px bg-slate-200 dark:bg-slate-700 hidden sm:block" />
+                      <div>
+                        <span className="text-[10px] font-sans font-bold text-sky-600 dark:text-sky-400 block">
+                          {isAr ? 'التوقع السنوي (×365 يوم)' : 'Projected Annual (×365d)'}
+                        </span>
+                        <span className="font-black text-sky-700 dark:text-sky-300">
+                          {projectionAndThresholdAnalysis.projectedAnnualTurnover.toLocaleString('en-US')} {currencySymbol}
+                        </span>
+                      </div>
+                      <div className="h-6 w-px bg-slate-200 dark:bg-slate-700 hidden sm:block" />
+                      <div>
+                        <span className="text-[10px] font-sans font-bold text-amber-600 dark:text-amber-400 block">
+                          {isAr ? 'المتوسط اليومي للمبيعات' : 'Daily Sales Pace'}
+                        </span>
+                        <span className="font-black text-amber-700 dark:text-amber-300">
+                          {projectionAndThresholdAnalysis.effectiveDailyAvg.toLocaleString('en-US')} {currencySymbol}/{isAr ? 'يوم' : 'd'}
+                        </span>
+                      </div>
+                    </div>
 
-                          const monthlyAmo = b.monthlyAmo || 0;
-                          const quarterlyAmo = monthlyAmo * 3;
-                          const monthlyRetPreview = Number(
-                            (monthlyAmo * cpuSettings.retirementCoeff).toFixed(2)
-                          );
-                          const quarterlyRetPreview = Number((monthlyRetPreview * 3).toFixed(2));
-                          const annualRetPreview = Number((monthlyRetPreview * 12).toFixed(2));
-                          const effectiveMonthlyRet = cpuSettings.retirementEnabled
-                            ? monthlyRetPreview
-                            : 0;
-                          const totalMonthlyProtection = Number(
-                            (monthlyAmo + effectiveMonthlyRet).toFixed(2)
-                          );
+                    <div className="flex flex-wrap items-center gap-1.5 text-[10px] font-bold">
+                      <span className="px-2 py-1 rounded-lg bg-emerald-100/80 dark:bg-emerald-950/60 text-emerald-700 dark:text-emerald-300">
+                        {isAr ? '● آمن (<70%)' : '● Safe (<70%)'}
+                      </span>
+                      <span className="px-2 py-1 rounded-lg bg-amber-100/80 dark:bg-amber-950/60 text-amber-700 dark:text-amber-300">
+                        {isAr ? '● اقتراب (70–89%)' : '● Near (70–89%)'}
+                      </span>
+                      <span className="px-2 py-1 rounded-lg bg-rose-100/80 dark:bg-rose-950/60 text-rose-700 dark:text-rose-300">
+                        {isAr ? '● حافة الشطر (≥90%)' : '● Critical (≥90%)'}
+                      </span>
+                      <span className="px-2 py-1 rounded-lg bg-sky-100/80 dark:bg-sky-950/60 text-sky-700 dark:text-sky-300">
+                        {isAr ? '│ علامة التوقع' : '│ Projection'}
+                      </span>
+                    </div>
+                  </div>
 
-                          return (
-                            <tr
-                              key={b.id}
-                              className={
-                                isCurrent
-                                  ? 'bg-violet-50/80 dark:bg-violet-950/30 ring-1 ring-inset ring-violet-300 dark:ring-violet-800'
-                                  : 'hover:bg-slate-50/70 dark:hover:bg-slate-800/40'
-                              }
-                            >
-                              <td className="py-3 px-3">
-                                <div className="flex flex-wrap items-center gap-1.5">
-                                  <span className="font-black text-slate-900 dark:text-white">
-                                    {b.label.split('(')[0].trim()}
+                  {/* Interactive 6-Bracket Progress Cards Grid */}
+                  <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
+                    {projectionAndThresholdAnalysis.bracketRows.map((row) => {
+                      const b = row.bracket;
+                      const isCurrent = b.id === currentBracketId || row.isCurrentBracket;
+                      const isInspected = (estBracketId || currentBracketId) === b.id;
+
+                      const barColor =
+                        row.statusTone === 'critical'
+                          ? 'bg-gradient-to-r from-rose-500 to-rose-600'
+                          : row.statusTone === 'approaching'
+                          ? 'bg-gradient-to-r from-amber-400 to-amber-500'
+                          : row.statusTone === 'safe'
+                          ? 'bg-gradient-to-r from-emerald-500 to-emerald-600'
+                          : row.statusTone === 'passed'
+                          ? 'bg-emerald-600/75'
+                          : 'bg-slate-400 dark:bg-slate-600';
+
+                      const effectiveMonthlyRet = cpuSettings.retirementEnabled ? row.monthlyRetFull : 0;
+                      const effectiveQuarterlyRet = cpuSettings.retirementEnabled ? row.quarterlyRetFull : 0;
+                      const totalMonthlyProtection = Number((row.monthlyAmo + effectiveMonthlyRet).toFixed(2));
+
+                      const cpuRangeLabel =
+                        b.maxAnnualTax === null
+                          ? `> ${(b.minAnnualTax === 10001 ? 10000 : Math.floor(b.minAnnualTax)).toLocaleString('en-US')} ${currencySymbol}`
+                          : b.minAnnualTax === 0 && b.maxAnnualTax < 500 && b.maxAnnualTax >= 499
+                          ? `< 500 ${currencySymbol}`
+                          : `${Math.floor(b.minAnnualTax).toLocaleString('en-US')} – ${b.maxAnnualTax.toLocaleString('en-US')} ${currencySymbol}`;
+
+                      const qTurnRangeLabel =
+                        row.maxQuarterCa === null
+                          ? `> ${row.minQuarterCa.toLocaleString('en-US')} ${currencySymbol}`
+                          : `${row.minQuarterCa.toLocaleString('en-US')} – ${row.maxQuarterCa.toLocaleString('en-US')} ${currencySymbol}`;
+
+                      return (
+                        <div
+                          key={b.id}
+                          onClick={() => {
+                            setEstBracketId(b.id);
+                            setSelectedDashboardBracketId(b.id);
+                          }}
+                          className={`cursor-pointer p-4 rounded-2xl border transition-all space-y-3 ${
+                            isCurrent
+                              ? 'bg-violet-50/75 dark:bg-violet-950/25 border-violet-400 dark:border-violet-700 ring-2 ring-violet-200 dark:ring-violet-900/60 shadow-xs'
+                              : isInspected
+                              ? 'bg-emerald-50/60 dark:bg-emerald-950/20 border-emerald-400 dark:border-emerald-700 ring-1 ring-emerald-200 dark:ring-emerald-900'
+                              : row.isProjectedBracket
+                              ? 'bg-sky-50/50 dark:bg-sky-950/20 border-sky-300 dark:border-sky-800 hover:border-sky-400'
+                              : 'bg-slate-50/60 dark:bg-slate-800/40 border-slate-200 dark:border-slate-800 hover:border-slate-300 dark:hover:border-slate-700'
+                          }`}
+                        >
+                          {/* Card Header: Name + Status Badges + CPU/Quarterly CA */}
+                          <div className="flex flex-wrap items-start justify-between gap-2">
+                            <div className="space-y-1">
+                              <div className="flex flex-wrap items-center gap-1.5">
+                                <span className="text-sm font-black text-slate-900 dark:text-white">
+                                  {b.label.split('(')[0].trim()}
+                                </span>
+                                {isCurrent && (
+                                  <span className="px-2 py-0.5 rounded-md bg-violet-600 text-white text-[10px] font-black">
+                                    {isAr ? 'شريحتك الحالية' : 'Current'}
                                   </span>
-                                  {isCurrent && (
-                                    <span className="px-2 py-0.5 rounded-md bg-violet-600 text-white text-[10px] font-black">
-                                      {isAr ? 'شريحتك الحالية' : 'Current'}
-                                    </span>
-                                  )}
-                                </div>
-                              </td>
-                              <td className="py-3 px-3 font-mono font-bold text-slate-600 dark:text-slate-300 tabular-nums">
-                                {b.maxAnnualTax === null
-                                  ? `> ${(b.minAnnualTax === 10001 ? 10000 : Math.floor(b.minAnnualTax)).toLocaleString('en-US')} ${currencySymbol}`
-                                  : b.minAnnualTax === 0 && b.maxAnnualTax < 500 && b.maxAnnualTax >= 499
-                                  ? `< 500 ${currencySymbol}`
-                                  : `${Math.floor(b.minAnnualTax).toLocaleString('en-US')} – ${b.maxAnnualTax.toLocaleString('en-US')} ${currencySymbol}`}
-                              </td>
-                              <td className="py-3 px-3 font-mono text-slate-600 dark:text-slate-300 tabular-nums">
-                                {maxTurn === null
-                                  ? `> ${minTurn.toLocaleString('en-US')} ${currencySymbol}`
-                                  : `${minTurn.toLocaleString('en-US')} – ${maxTurn.toLocaleString('en-US')} ${currencySymbol}`}
-                              </td>
-                              <td className="py-3 px-3 font-mono tabular-nums">
-                                <div className="font-black text-amber-700 dark:text-amber-400">
-                                  {Number.isInteger(monthlyAmo) ? monthlyAmo.toFixed(0) : monthlyAmo.toFixed(2)} {currencySymbol}/{isAr ? 'ش' : 'mo'}
-                                </div>
-                                <div className="text-[11px] text-slate-400">
-                                  {Number.isInteger(quarterlyAmo) ? quarterlyAmo.toFixed(0) : quarterlyAmo.toFixed(2)} {currencySymbol}/{isAr ? 'تريمستر' : 'Q'}
-                                </div>
-                              </td>
-                              <td className="py-3 px-3 font-mono tabular-nums">
-                                <div
-                                  className={`font-black ${
-                                    cpuSettings.retirementEnabled
-                                      ? 'text-violet-700 dark:text-violet-300'
-                                      : 'text-slate-400 line-through'
-                                  }`}
-                                >
-                                  {monthlyRetPreview.toFixed(2)} {currencySymbol}/{isAr ? 'ش' : 'mo'}
-                                </div>
-                                <div className="text-[11px] text-slate-400">
-                                  {quarterlyRetPreview.toFixed(2)} {currencySymbol}/{isAr ? 'تريمستر' : 'Q'}
-                                </div>
-                              </td>
-                              <td className="py-3 px-3 font-mono font-bold tabular-nums">
+                                )}
+                                {row.isProjectedBracket && (
+                                  <span className="px-2 py-0.5 rounded-md bg-sky-600 text-white text-[10px] font-black">
+                                    {isAr ? 'التوقع السنوي' : 'Projected'}
+                                  </span>
+                                )}
+                                {!isCurrent && row.deltaMonthlyTotal !== 0 && (
+                                  <span
+                                    className={`px-2 py-0.5 rounded-md text-[10px] font-mono font-black ${
+                                      row.deltaMonthlyTotal > 0
+                                        ? 'bg-rose-100 dark:bg-rose-950/70 text-rose-700 dark:text-rose-300'
+                                        : 'bg-emerald-100 dark:bg-emerald-950/70 text-emerald-700 dark:text-emerald-300'
+                                    }`}
+                                  >
+                                    {row.deltaMonthlyTotal > 0 ? '+' : ''}
+                                    {row.deltaMonthlyTotal.toFixed(0)} {currencySymbol}/{isAr ? 'ش فرق' : 'mo Δ'}
+                                  </span>
+                                )}
+                              </div>
+                              <div className="text-[11px] font-mono text-slate-500 dark:text-slate-400 flex flex-wrap items-center gap-x-2">
+                                <span>
+                                  {isAr ? 'CPU سنوية:' : 'Annual CPU:'}{' '}
+                                  <strong className="text-slate-700 dark:text-slate-200">{cpuRangeLabel}</strong>
+                                </span>
+                                <span>·</span>
+                                <span>
+                                  {isAr ? 'CA فصلي:' : 'Q CA:'}{' '}
+                                  <strong className="text-slate-700 dark:text-slate-200">{qTurnRangeLabel}</strong>
+                                </span>
+                              </div>
+                            </div>
+
+                            <div className="text-end font-mono tabular-nums">
+                              <div className="text-sm font-black text-emerald-700 dark:text-emerald-400">
+                                {totalMonthlyProtection.toFixed(2)} {currencySymbol}
+                                <span className="text-[10px] font-sans font-bold text-slate-500">/{isAr ? 'ش' : 'mo'}</span>
+                              </div>
+                              <div className="text-[10px] font-bold text-slate-500">
+                                {isAr ? 'نسبة الامتلاء:' : 'Fill:'}{' '}
                                 <span
                                   className={
-                                    cpuSettings.retirementEnabled
-                                      ? 'text-indigo-700 dark:text-indigo-300'
-                                      : 'text-slate-400'
+                                    row.statusTone === 'critical'
+                                      ? 'text-rose-600 dark:text-rose-400 font-black'
+                                      : row.statusTone === 'approaching'
+                                      ? 'text-amber-600 dark:text-amber-400 font-black'
+                                      : 'text-emerald-600 dark:text-emerald-400 font-black'
                                   }
                                 >
-                                  {annualRetPreview.toLocaleString('en-US', {
-                                    minimumFractionDigits: 2,
-                                    maximumFractionDigits: 2
-                                  })}{' '}
-                                  {currencySymbol}
+                                  {row.pctCurrent.toFixed(0)}%
                                 </span>
-                              </td>
-                              <td className="py-3 px-3">
-                                <div className="font-mono font-black text-emerald-700 dark:text-emerald-400 tabular-nums">
-                                  {totalMonthlyProtection.toFixed(2)} {currencySymbol}
-                                </div>
-                                <div className="text-[10px] font-bold text-slate-500">
-                                  {cpuSettings.retirementEnabled
+                              </div>
+                            </div>
+                          </div>
+
+                          {/* Dynamic Color-Coded Progress Bar with Current & Projected Markers */}
+                          <div className="space-y-1">
+                            <div className="relative w-full h-3 rounded-full bg-slate-200 dark:bg-slate-800 overflow-hidden">
+                              {row.pctProjected > row.pctCurrent && (
+                                <div
+                                  className="absolute inset-y-0 left-0 rounded-full bg-sky-300/60 dark:bg-sky-700/45 transition-all duration-300"
+                                  style={{ width: `${row.pctProjected}%` }}
+                                />
+                              )}
+                              <div
+                                className={`relative h-full rounded-full transition-all duration-300 ${barColor}`}
+                                style={{ width: `${row.pctCurrent}%` }}
+                              />
+                              {row.pctProjected > 0 && (
+                                <div
+                                  className="absolute top-0 bottom-0 w-1 bg-sky-600 dark:bg-sky-400 shadow-xs"
+                                  style={{ left: `calc(${Math.min(99, row.pctProjected)}% - 2px)` }}
+                                />
+                              )}
+                            </div>
+
+                            <div className="flex flex-wrap items-center justify-between gap-2 text-[10px] font-mono text-slate-600 dark:text-slate-400">
+                              <span>
+                                {row.maxCa !== null
+                                  ? row.isPassed
                                     ? isAr
-                                      ? 'صحة + تقاعد (+90 يوم/تريمستر)'
-                                      : 'AMO + Pension (+90d/Q)'
+                                      ? '✓ تم تجاوز سقف هذا الشطر (100%)'
+                                      : '✓ Bracket Passed (100%)'
                                     : isAr
-                                    ? 'صحة AMO فقط (التقاعد متوقف)'
-                                    : 'AMO Only'}
-                                </div>
-                              </td>
-                            </tr>
-                          );
-                        })}
-                      </tbody>
-                    </table>
+                                    ? `المسافة المتبقية: ${row.remainingCaToCeiling.toLocaleString('en-US')} ${currencySymbol} رقم أعمال (${row.remainingCpuToCeiling.toFixed(0)} ${currencySymbol} CPU)`
+                                    : `Remaining: ${row.remainingCaToCeiling.toLocaleString('en-US')} CA (${row.remainingCpuToCeiling.toFixed(0)} CPU)`
+                                  : isAr
+                                  ? 'الشطر الأعلى (مفتوح بدون سقف)'
+                                  : 'Top Bracket (No Ceiling)'}
+                              </span>
+                              {row.remainingDaysToCeiling !== null && (
+                                <span className="font-bold text-slate-700 dark:text-slate-300">
+                                  {isAr
+                                    ? `~${row.remainingDaysToCeiling} يوم متبقي`
+                                    : `~${row.remainingDaysToCeiling}d left`}
+                                </span>
+                              )}
+                            </div>
+                          </div>
+
+                          {/* Direct Impact Metrics Grid: AMO + CNSS Retirement + Annual + Delta */}
+                          <div className="grid grid-cols-3 gap-2 pt-1 text-[11px] font-mono tabular-nums">
+                            <div className="p-2 rounded-xl bg-white dark:bg-slate-900 border border-slate-200/80 dark:border-slate-700/80">
+                              <div className="text-[10px] font-sans font-bold text-slate-500">
+                                {isAr ? 'الصحة AMO' : 'AMO Health'}
+                              </div>
+                              <div className="font-black text-amber-700 dark:text-amber-400 mt-0.5">
+                                {Number.isInteger(row.monthlyAmo) ? row.monthlyAmo.toFixed(0) : row.monthlyAmo.toFixed(2)}/{isAr ? 'ش' : 'mo'}
+                              </div>
+                              <div className="text-[10px] text-slate-400">
+                                {Number.isInteger(row.quarterlyAmo) ? row.quarterlyAmo.toFixed(0) : row.quarterlyAmo.toFixed(2)}/{isAr ? 'تريمستر' : 'Q'}
+                              </div>
+                            </div>
+
+                            <div className="p-2 rounded-xl bg-white dark:bg-slate-900 border border-slate-200/80 dark:border-slate-700/80">
+                              <div className="text-[10px] font-sans font-bold text-slate-500">
+                                {isAr ? `التقاعد (×${cpuSettings.retirementCoeff})` : 'CNSS Pension'}
+                              </div>
+                              <div
+                                className={`font-black mt-0.5 ${
+                                  cpuSettings.retirementEnabled
+                                    ? 'text-violet-700 dark:text-violet-300'
+                                    : 'text-slate-400 line-through'
+                                }`}
+                              >
+                                {row.monthlyRetFull.toFixed(2)}/{isAr ? 'ش' : 'mo'}
+                              </div>
+                              <div className="text-[10px] text-slate-400">
+                                {effectiveQuarterlyRet.toFixed(2)}/{isAr ? 'تريمستر' : 'Q'}
+                              </div>
+                            </div>
+
+                            <div className="p-2 rounded-xl bg-white dark:bg-slate-900 border border-slate-200/80 dark:border-slate-700/80">
+                              <div className="text-[10px] font-sans font-bold text-slate-500">
+                                {isAr ? 'التقاعد السنوي (12ش)' : 'Annual Ret (12m)'}
+                              </div>
+                              <div
+                                className={`font-black mt-0.5 ${
+                                  cpuSettings.retirementEnabled
+                                    ? 'text-indigo-700 dark:text-indigo-300'
+                                    : 'text-slate-400'
+                                }`}
+                              >
+                                {row.annualRetFull.toLocaleString('en-US', {
+                                  minimumFractionDigits: 0,
+                                  maximumFractionDigits: 0
+                                })}{' '}
+                                {currencySymbol}
+                              </div>
+                              <div
+                                className={`text-[10px] font-bold ${
+                                  row.deltaQuarterlyContrib > 0
+                                    ? 'text-rose-600 dark:text-rose-400'
+                                    : row.deltaQuarterlyContrib < 0
+                                    ? 'text-emerald-600 dark:text-emerald-400'
+                                    : 'text-violet-600 dark:text-violet-400'
+                                }`}
+                              >
+                                {row.deltaQuarterlyContrib === 0
+                                  ? isAr
+                                    ? 'المرجع الحالي'
+                                    : 'Current ref'
+                                  : `${row.deltaQuarterlyContrib > 0 ? '+' : ''}${row.deltaQuarterlyContrib.toFixed(0)} ${currencySymbol}/Q`}
+                              </div>
+                            </div>
+                          </div>
+                        </div>
+                      );
+                    })}
                   </div>
                 </div>
 

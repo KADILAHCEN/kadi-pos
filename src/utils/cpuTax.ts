@@ -208,8 +208,9 @@ export function calculateCpuBreakdown(
   const taxRate = Math.max(0, Number(cpuSettings.taxRatePct) || 0) / 100;
 
   // الضريبة CPU = رقم المعاملات × معامل المهنة (6%) × نسبة الضريبة (10%)
-  const quarterlyTax = Number((turnover * coeff * taxRate).toFixed(2));
-  const annualizedTax = Number((quarterlyTax * 4).toFixed(2));
+  const factor = coeff * taxRate;
+  const quarterlyTax = Number((turnover * factor).toFixed(2));
+  const annualizedTax = Number((turnover * 4 * factor).toFixed(2));
 
   return buildBreakdownFromTax(
     turnover,
