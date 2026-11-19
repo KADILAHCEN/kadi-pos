@@ -3,7 +3,8 @@ import { usePos } from '../../context/PosContext';
 import { Product } from '../../types';
 import { bluetoothScanner } from '../../utils/bluetoothScanner';
 import { playSound } from '../../utils/audio';
-import { Barcode, CheckCircle2, PackagePlus, Sparkles, X } from 'lucide-react';
+import { lookupProductByBarcode } from '../../utils/openFoodFacts';
+import { Barcode, CheckCircle2, Globe, Loader2, PackagePlus, Search, Sparkles, X } from 'lucide-react';
 
 export type QuickBarcodeSourceContext = 'pos' | 'inventory' | 'invoice' | 'global';
 
@@ -22,41 +23,124 @@ export const QuickNewBarcodeProductModal: React.FC<QuickNewBarcodeProductModalPr
   onClose,
   onProductSaved
 }) => {
-  const { categories, addProduct, currencySymbol, settings, language } = usePos();
+  const { categories, addProduct, currencySymbol, settings, language, isOnline } = usePos();
   const isAr = language === 'ar';
 
   const defaultCatId =
     categories.find((c) => c.id !== 'cat-all')?.id || categories[0]?.id || 'cat-1';
 
   const [name, setName] = useState('');
+  const [nameEn, setNameEn] = useState('');
   const [price, setPrice] = useState('');
   const [costPrice, setCostPrice] = useState('');
   const [stock, setStock] = useState('10');
   const [categoryId, setCategoryId] = useState(defaultCatId);
   const [errorMsg, setErrorMsg] = useState<string | null>(null);
+  const [foundImageUrl, setFoundImageUrl] = useState('');
+  const [isLookingUp, setIsLookingUp] = useState(false);
+  const [lookupStatus, setLookupStatus] = useState<'idle' | 'searching' | 'found' | 'not_found' | 'offline'>('idle');
+  const [lookupMessage, setLookupMessage] = useState<string | null>(null);
 
   const nameInputRef = useRef<HTMLInputElement | null>(null);
+  const userEditedNameRef = useRef(false);
+  const activeLookupAbortRef = useRef<AbortController | null>(null);
+
+  const runOpenFoodFactsLookup = async (code: string, forceOverwriteName = false) => {
+    const cleanCode = code.trim();
+    if (!cleanCode) {
+      setLookupStatus('idle');
+      setLookupMessage(isAr ? 'كتب الباركود أولا' : 'Enter barcode first');
+      return;
+    }
+
+    if (cleanCode.length < 6) {
+      setLookupStatus('not_found');
+      setLookupMessage(isAr ? 'باركود قصير بزاف، كتب الاسم يدوي' : 'Barcode too short — enter name manually');
+      return;
+    }
+
+    activeLookupAbortRef.current?.abort();
+    const controller = new AbortController();
+    activeLookupAbortRef.current = controller;
+
+    setIsLookingUp(true);
+    setLookupStatus('searching');
+    setLookupMessage(isAr ? 'كنقلب على المنتوج في OpenFoodFacts...' : 'Searching OpenFoodFacts...');
+
+    const res = await lookupProductByBarcode(cleanCode, controller.signal);
+    if (controller.signal.aborted) return;
+
+    setIsLookingUp(false);
+
+    if (res.offline) {
+      setLookupStatus('offline');
+      setLookupMessage(isAr ? 'أوفلاين — كتب الاسم وثمن البيع وحفظ عادي' : 'Offline — enter name & price manually');
+      return;
+    }
+
+    if (res.found) {
+      setLookupStatus('found');
+      setLookupMessage(isAr ? `لقيتو: ${res.name}` : `Found: ${res.name}`);
+      if (forceOverwriteName || !userEditedNameRef.current) {
+        setName(res.name);
+        setNameEn(res.nameEn || res.name);
+      }
+      if (res.imageUrl) {
+        setFoundImageUrl(res.imageUrl);
+      }
+      if (settings.bluetoothSoundFeedback !== false) {
+        playSound('click');
+      }
+    } else {
+      setLookupStatus('not_found');
+      setLookupMessage(
+        res.error
+          ? isAr
+            ? 'تعذر البحث دابا، كتب الاسم يدوي'
+            : 'Lookup unavailable — enter name manually'
+          : isAr
+          ? 'ما لقيتوش، كتب الاسم يدوي'
+          : 'Not found — enter name manually'
+      );
+    }
+  };
 
   useEffect(() => {
     if (!isOpen) {
+      activeLookupAbortRef.current?.abort();
       bluetoothScanner.popScope('new_barcode_modal');
       return;
     }
 
     bluetoothScanner.pushScope('new_barcode_modal');
+    userEditedNameRef.current = false;
     setName('');
+    setNameEn('');
     setPrice('');
     setCostPrice('');
     setStock(sourceContext === 'pos' ? '10' : '1');
     setCategoryId(defaultCatId);
     setErrorMsg(null);
+    setFoundImageUrl('');
+    setIsLookingUp(false);
+    setLookupStatus('idle');
+    setLookupMessage(null);
 
     const timer = window.setTimeout(() => {
       nameInputRef.current?.focus();
     }, 80);
 
+    const cleanCode = scannedBarcode.trim();
+    if (cleanCode.length >= 8 && isOnline) {
+      void runOpenFoodFactsLookup(cleanCode, false);
+    } else if (cleanCode.length >= 8 && !isOnline) {
+      setLookupStatus('offline');
+      setLookupMessage(isAr ? 'بلا أنترنت — كتب الاسم وحفظ عادي' : 'Offline — enter name and save normally');
+    }
+
     return () => {
       window.clearTimeout(timer);
+      activeLookupAbortRef.current?.abort();
       bluetoothScanner.popScope('new_barcode_modal');
     };
   }, [isOpen, scannedBarcode, sourceContext, defaultCatId]);
@@ -89,7 +173,7 @@ export const QuickNewBarcodeProductModal: React.FC<QuickNewBarcodeProductModalPr
 
     const result = addProduct({
       name: cleanName,
-      nameEn: cleanName,
+      nameEn: nameEn.trim() || cleanName,
       sku: cleanCode.length > 0 ? `BC-${cleanCode.slice(-6)}` : `SKU-${Date.now().toString().slice(-5)}`,
       barcode: cleanCode,
       price: Number(cleanPrice.toFixed(2)),
@@ -99,7 +183,7 @@ export const QuickNewBarcodeProductModal: React.FC<QuickNewBarcodeProductModalPr
       stock: sourceContext === 'pos' ? Math.max(1, parsedStock) : parsedStock,
       lowStockThreshold: 5,
       color: '#10B981',
-      image: '',
+      image: foundImageUrl || '',
       hasVariants: false
     });
 
@@ -155,15 +239,70 @@ export const QuickNewBarcodeProductModal: React.FC<QuickNewBarcodeProductModalPr
 
         {/* Form */}
         <form onSubmit={handleSubmit} className="p-5 space-y-4 text-xs">
-          {/* Scanned Barcode Badge */}
-          <div className="p-3 rounded-2xl bg-slate-100 dark:bg-slate-800/80 border border-slate-200 dark:border-slate-700 flex items-center justify-between gap-2">
-            <div className="flex items-center gap-2 text-slate-600 dark:text-slate-300 font-bold">
-              <Barcode className="w-4 h-4 text-blue-600 shrink-0" />
-              <span>{isAr ? 'الباركود المقروء:' : 'Scanned Barcode:'}</span>
+          {/* Scanned Barcode Badge + OpenFoodFacts Lookup */}
+          <div className="p-3 rounded-2xl bg-slate-100 dark:bg-slate-800/80 border border-slate-200 dark:border-slate-700 space-y-2">
+            <div className="flex items-center justify-between gap-2 flex-wrap">
+              <div className="flex items-center gap-2 text-slate-600 dark:text-slate-300 font-bold">
+                <Barcode className="w-4 h-4 text-blue-600 shrink-0" />
+                <span>{isAr ? 'الباركود المقروء:' : 'Scanned Barcode:'}</span>
+              </div>
+              <div className="flex items-center gap-1.5">
+                <span className="font-mono font-black text-sm text-slate-900 dark:text-white bg-white dark:bg-slate-900 px-3 py-1 rounded-xl border border-slate-300 dark:border-slate-600 select-all">
+                  {scannedBarcode}
+                </span>
+                <button
+                  type="button"
+                  disabled={isLookingUp}
+                  onClick={() => void runOpenFoodFactsLookup(scannedBarcode, true)}
+                  className="px-2.5 py-1.5 rounded-xl bg-blue-600 hover:bg-blue-700 disabled:opacity-60 text-white font-bold text-[11px] flex items-center gap-1 shadow-2xs transition-colors"
+                  title={isAr ? 'جلب اسم وصورة المنتوج من OpenFoodFacts' : 'Lookup product on OpenFoodFacts'}
+                >
+                  {isLookingUp ? (
+                    <Loader2 className="w-3.5 h-3.5 animate-spin shrink-0" />
+                  ) : (
+                    <Search className="w-3.5 h-3.5 shrink-0" />
+                  )}
+                  <span>{isAr ? 'قلب' : 'Lookup'}</span>
+                </button>
+              </div>
             </div>
-            <span className="font-mono font-black text-sm text-slate-900 dark:text-white bg-white dark:bg-slate-900 px-3 py-1 rounded-xl border border-slate-300 dark:border-slate-600 select-all">
-              {scannedBarcode}
-            </span>
+
+            {lookupMessage && (
+              <div
+                className={`flex items-center justify-between gap-2 px-2.5 py-1.5 rounded-xl text-[11px] font-bold border ${
+                  lookupStatus === 'found'
+                    ? 'bg-emerald-50 dark:bg-emerald-950/50 border-emerald-300 dark:border-emerald-700 text-emerald-800 dark:text-emerald-300'
+                    : lookupStatus === 'searching'
+                    ? 'bg-blue-50 dark:bg-blue-950/50 border-blue-200 dark:border-blue-800 text-blue-700 dark:text-blue-300'
+                    : 'bg-slate-200/70 dark:bg-slate-700/60 border-slate-300 dark:border-slate-600 text-slate-700 dark:text-slate-300'
+                }`}
+              >
+                <div className="flex items-center gap-2 min-w-0">
+                  {foundImageUrl ? (
+                    <img
+                      src={foundImageUrl}
+                      alt={name || scannedBarcode}
+                      className="w-7 h-7 rounded-lg object-cover border border-emerald-300 shrink-0 bg-white"
+                    />
+                  ) : lookupStatus === 'searching' ? (
+                    <Loader2 className="w-3.5 h-3.5 animate-spin shrink-0" />
+                  ) : (
+                    <Globe className="w-3.5 h-3.5 shrink-0 opacity-80" />
+                  )}
+                  <span className="truncate">{lookupMessage}</span>
+                </div>
+                {foundImageUrl && (
+                  <button
+                    type="button"
+                    onClick={() => setFoundImageUrl('')}
+                    className="p-0.5 rounded-md hover:bg-emerald-200/60 dark:hover:bg-emerald-900/60 shrink-0"
+                    title={isAr ? 'إزالة الصورة' : 'Remove image'}
+                  >
+                    <X className="w-3.5 h-3.5" />
+                  </button>
+                )}
+              </div>
+            )}
           </div>
 
           {errorMsg && (
@@ -184,6 +323,7 @@ export const QuickNewBarcodeProductModal: React.FC<QuickNewBarcodeProductModalPr
               data-barcode-allow-input="true"
               value={name}
               onChange={(e) => {
+                userEditedNameRef.current = true;
                 setName(e.target.value);
                 if (errorMsg) setErrorMsg(null);
               }}

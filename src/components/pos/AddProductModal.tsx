@@ -23,12 +23,15 @@ import {
   RefreshCw,
   Calendar,
   Loader2,
-  Smartphone
+  Smartphone,
+  Search,
+  Globe
 } from 'lucide-react';
 import { playSound } from '../../utils/audio';
 import { ProductCameraModal } from './ProductCameraModal';
 import { BarcodeScannerModal } from './BarcodeScannerModal';
 import { compressImageFile } from '../../utils/imageUtils';
+import { lookupProductByBarcode } from '../../utils/openFoodFacts';
 
 interface AddProductModalProps {
   isOpen: boolean;
@@ -45,12 +48,18 @@ export const AddProductModal: React.FC<AddProductModalProps> = ({
   onAddedAndAddToCart,
   onProductAdded
 }) => {
-  const { products, categories, addCategory, addProduct, currencySymbol, language, settings } = usePos();
+  const { products, categories, addCategory, addProduct, currencySymbol, language, settings, isOnline } = usePos();
   const t = getT(language);
   const isAr = language === 'ar';
   const isFr = language === 'fr';
 
   const [barcodeErrorAlert, setBarcodeErrorAlert] = useState<string | null>(null);
+  const [isLookingUpBarcode, setIsLookingUpBarcode] = useState(false);
+  const [barcodeLookupNote, setBarcodeLookupNote] = useState<{
+    type: 'searching' | 'found' | 'not_found' | 'offline';
+    text: string;
+    imageUrl?: string;
+  } | null>(null);
 
   // Loyverse Palette Colors
   const loyverseColors = [
@@ -129,6 +138,8 @@ export const AddProductModal: React.FC<AddProductModalProps> = ({
       setSku('');
       setHasVariants(false);
       setBarcodeErrorAlert(null);
+      setIsLookingUpBarcode(false);
+      setBarcodeLookupNote(null);
       setCustomCapturedImage(null);
       setSelectedImage(sampleImages[0].url);
       setRepType('image');
@@ -209,6 +220,62 @@ export const AddProductModal: React.FC<AddProductModalProps> = ({
     setBarcode(code);
     if (!sku) {
       setSku('SKU-' + code.slice(-4));
+    }
+    setBarcodeLookupNote(null);
+  };
+
+  const handleLookupBarcode = async (targetCode?: string, forceFillName = true) => {
+    if (isLookingUpBarcode) return;
+    const code = (targetCode ?? barcode).trim();
+    if (!code) {
+      setBarcodeLookupNote({
+        type: 'not_found',
+        text: isAr ? 'كتب الباركود أولا' : 'Enter a barcode first'
+      });
+      return;
+    }
+
+    setIsLookingUpBarcode(true);
+    setBarcodeLookupNote({
+      type: 'searching',
+      text: isAr ? 'كنقلب على المنتوج...' : 'Searching OpenFoodFacts...'
+    });
+
+    const res = await lookupProductByBarcode(code);
+    setIsLookingUpBarcode(false);
+
+    if (res.offline) {
+      setBarcodeLookupNote({
+        type: 'offline',
+        text: isAr ? 'ما كاينش أنترنت — كتب اسم المنتوج يدوي' : 'Offline — enter product name manually'
+      });
+      return;
+    }
+
+    if (res.found) {
+      if (forceFillName || !name.trim()) {
+        setName(res.name);
+      }
+      if (forceFillName || !nameEn.trim()) {
+        setNameEn(res.nameEn || res.name);
+      }
+      setBarcodeLookupNote({
+        type: 'found',
+        text: isAr ? `لقيتو: ${res.name}` : `Found: ${res.name}`,
+        imageUrl: res.imageUrl || undefined
+      });
+      if (settings.enableSoundEffects) playSound('beep');
+    } else {
+      setBarcodeLookupNote({
+        type: 'not_found',
+        text: res.error
+          ? isAr
+            ? 'تعذر الاتصال بـ OpenFoodFacts، كتب الاسم يدوي'
+            : 'Lookup failed — enter name manually'
+          : isAr
+          ? 'ما لقيتوش، كتب الاسم يدوي'
+          : 'Not found — enter name manually'
+      });
     }
   };
 
@@ -977,7 +1044,21 @@ export const AddProductModal: React.FC<AddProductModalProps> = ({
                   <label className="block text-xs font-semibold text-slate-700 dark:text-slate-300">
                     {t.barcode}
                   </label>
-                  <div className="flex items-center gap-2">
+                  <div className="flex items-center gap-1.5 flex-wrap">
+                    <button
+                      type="button"
+                      disabled={isLookingUpBarcode}
+                      onClick={() => void handleLookupBarcode()}
+                      className="px-2 py-0.5 rounded-lg bg-blue-600 hover:bg-blue-700 disabled:opacity-60 text-white text-[10px] font-bold flex items-center gap-1 transition-colors"
+                      title={isAr ? 'جلب اسم المنتوج بالباركود من OpenFoodFacts' : 'Lookup product name from OpenFoodFacts'}
+                    >
+                      {isLookingUpBarcode ? (
+                        <Loader2 className="w-3 h-3 animate-spin" />
+                      ) : (
+                        <Search className="w-3 h-3" />
+                      )}
+                      <span>{isAr ? 'قلب بالباركود' : 'Lookup'}</span>
+                    </button>
                     <button
                       type="button"
                       onClick={() => setShowBarcodeScanner(true)}
@@ -1003,6 +1084,7 @@ export const AddProductModal: React.FC<AddProductModalProps> = ({
                   onChange={(e) => {
                     setBarcode(e.target.value);
                     if (barcodeErrorAlert) setBarcodeErrorAlert(null);
+                    if (barcodeLookupNote) setBarcodeLookupNote(null);
                   }}
                   placeholder="628100000000"
                   className={`w-full px-3 py-2 bg-white dark:bg-slate-800 border rounded-xl font-mono text-slate-900 dark:text-white transition-colors ${
@@ -1011,6 +1093,46 @@ export const AddProductModal: React.FC<AddProductModalProps> = ({
                       : 'border-slate-300 dark:border-slate-700 focus:border-emerald-500'
                   }`}
                 />
+                {barcodeLookupNote && (
+                  <div
+                    className={`mt-2 px-3 py-2 rounded-xl border text-[11px] font-bold flex items-center justify-between gap-2 ${
+                      barcodeLookupNote.type === 'found'
+                        ? 'bg-emerald-50 dark:bg-emerald-950/50 border-emerald-300 dark:border-emerald-700 text-emerald-800 dark:text-emerald-300'
+                        : barcodeLookupNote.type === 'searching'
+                        ? 'bg-blue-50 dark:bg-blue-950/50 border-blue-200 dark:border-blue-800 text-blue-700 dark:text-blue-300'
+                        : 'bg-slate-100 dark:bg-slate-800 border-slate-300 dark:border-slate-700 text-slate-600 dark:text-slate-300'
+                    }`}
+                  >
+                    <div className="flex items-center gap-2 min-w-0">
+                      {barcodeLookupNote.imageUrl ? (
+                        <img
+                          src={barcodeLookupNote.imageUrl}
+                          alt={name || barcode}
+                          className="w-7 h-7 rounded-lg object-cover border border-emerald-300 shrink-0 bg-white"
+                        />
+                      ) : barcodeLookupNote.type === 'searching' ? (
+                        <Loader2 className="w-3.5 h-3.5 animate-spin shrink-0" />
+                      ) : (
+                        <Globe className="w-3.5 h-3.5 shrink-0" />
+                      )}
+                      <span className="truncate">{barcodeLookupNote.text}</span>
+                    </div>
+                    {barcodeLookupNote.imageUrl && (
+                      <button
+                        type="button"
+                        onClick={() => {
+                          if (!barcodeLookupNote.imageUrl) return;
+                          setCustomCapturedImage(barcodeLookupNote.imageUrl);
+                          setSelectedImage(barcodeLookupNote.imageUrl);
+                          setRepType('image');
+                        }}
+                        className="px-2 py-1 rounded-lg bg-emerald-600 hover:bg-emerald-700 text-white text-[10px] font-black shrink-0"
+                      >
+                        {isAr ? 'استعمال الصورة' : 'Use Photo'}
+                      </button>
+                    )}
+                  </div>
+                )}
                 {duplicateProduct && (
                   <div className="mt-2.5 p-3 rounded-xl bg-amber-500/15 border-2 border-amber-500 text-amber-950 dark:text-amber-200 text-xs font-bold animate-pulse shadow-sm flex items-start gap-2.5">
                     <ShieldAlert className="w-5 h-5 text-amber-600 dark:text-amber-400 shrink-0 mt-0.5" />
@@ -1186,6 +1308,9 @@ export const AddProductModal: React.FC<AddProductModalProps> = ({
               setSku('SKU-' + code.slice(-4));
             }
             setBarcodeErrorAlert(null);
+            if (isOnline && code.trim().length >= 8) {
+              void handleLookupBarcode(code, !name.trim());
+            }
           }}
         />
       )}
