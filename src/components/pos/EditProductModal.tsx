@@ -62,7 +62,7 @@ export const EditProductModal: React.FC<EditProductModalProps> = ({
   const [costPrice, setCostPrice] = useState<number>(0);
   const [categoryId, setCategoryId] = useState('');
   const [unitType, setUnitType] = useState<UnitType>('piece');
-  const [stock, setStock] = useState<number>(0);
+  const [stockInput, setStockInput] = useState<string>('0');
   const [barcode, setBarcode] = useState('');
   const [sku, setSku] = useState('');
   const [expiryDate, setExpiryDate] = useState<string>('');
@@ -91,7 +91,7 @@ export const EditProductModal: React.FC<EditProductModalProps> = ({
       setCostPrice(product.costPrice || 0);
       setCategoryId(product.categoryId || categories[0]?.id || 'cat-all');
       setUnitType(product.unitType || 'piece');
-      setStock(product.stock || 0);
+      setStockInput(String(product.stock ?? 0));
       setBarcode(product.barcode || '');
       setSku(product.sku || '');
       setExpiryDate(product.expiryDate || '');
@@ -236,6 +236,9 @@ export const EditProductModal: React.FC<EditProductModalProps> = ({
       return;
     }
 
+    const parsedStock = parseFloat(stockInput.replace(',', '.'));
+    const safeStock = Number.isFinite(parsedStock) && parsedStock >= 0 ? parsedStock : 0;
+
     updateProduct(product.id, {
       name: name.trim(),
       nameEn: nameEn.trim() || name.trim(),
@@ -243,7 +246,7 @@ export const EditProductModal: React.FC<EditProductModalProps> = ({
       costPrice: Math.max(0, Number(costPrice)),
       categoryId,
       unitType,
-      stock: Math.max(0, Number(stock)),
+      stock: safeStock,
       barcode: barcode.trim(),
       sku: sku.trim(),
       image: repType === 'image' ? image : undefined,
@@ -555,14 +558,29 @@ export const EditProductModal: React.FC<EditProductModalProps> = ({
                 </select>
 
                 <div className="mt-3">
-                  <label className="block text-xs font-semibold text-slate-700 dark:text-slate-300 mb-1">
-                    {isAr ? 'الكمية في المخزون' : 'Current Stock'}
-                  </label>
+                  <div className="flex items-center justify-between mb-1">
+                    <label className="block text-xs font-semibold text-slate-700 dark:text-slate-300">
+                      {isAr ? 'الكمية في المخزون' : 'Current Stock'}
+                    </label>
+                    <button
+                      type="button"
+                      onClick={() => setStockInput('0')}
+                      className="px-2 py-0.5 rounded-md bg-slate-200 dark:bg-slate-700 hover:bg-rose-100 dark:hover:bg-rose-950/60 text-[10px] font-extrabold text-slate-700 dark:text-slate-200"
+                    >
+                      0
+                    </button>
+                  </div>
                   <input
                     type="number"
+                    step="any"
                     min="0"
-                    value={stock}
-                    onChange={(e) => setStock(parseFloat(e.target.value) || 0)}
+                    placeholder="0"
+                    value={stockInput}
+                    onFocus={(e) => e.target.select()}
+                    onChange={(e) => setStockInput(e.target.value)}
+                    onBlur={() => {
+                      if (stockInput.trim() === '') setStockInput('0');
+                    }}
                     className="w-full px-3 py-2 bg-white dark:bg-slate-800 border border-slate-300 dark:border-slate-700 rounded-xl text-slate-900 dark:text-white font-mono font-bold"
                   />
                 </div>

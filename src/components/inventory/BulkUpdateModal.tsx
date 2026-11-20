@@ -47,7 +47,9 @@ export const BulkUpdateModal: React.FC<BulkUpdateModalProps> = ({
 
   // Stock adjustment controls
   const [stockAction, setStockAction] = useState<'add' | 'subtract' | 'set_fixed'>('add');
-  const [stockValue, setStockValue] = useState<number>(10);
+  const [stockValueInput, setStockValueInput] = useState<string>('10');
+  const parsedStockVal = parseFloat(stockValueInput.replace(',', '.'));
+  const stockValue = Number.isFinite(parsedStockVal) && parsedStockVal >= 0 ? parsedStockVal : 0;
   const [stockReason, setStockReason] = useState<string>('');
 
   if (!isOpen || selectedProducts.length === 0) return null;
@@ -404,16 +406,30 @@ export const BulkUpdateModal: React.FC<BulkUpdateModalProps> = ({
 
                 {/* Stock Quantity Value */}
                 <div>
-                  <label className="block text-xs font-semibold text-slate-600 dark:text-slate-400 mb-1">
-                    {isAr ? 'الكمية المراد تطبيقها على كل صنف' : 'Quantity Per Product'}
-                  </label>
+                  <div className="flex items-center justify-between mb-1">
+                    <label className="block text-xs font-semibold text-slate-600 dark:text-slate-400">
+                      {isAr ? 'الكمية المراد تطبيقها على كل صنف' : 'Quantity Per Product'}
+                    </label>
+                    <button
+                      type="button"
+                      onClick={() => setStockValueInput('0')}
+                      className="px-2 py-0.5 rounded-md bg-slate-200 dark:bg-slate-700 hover:bg-rose-100 dark:hover:bg-rose-950/60 text-[10px] font-extrabold text-slate-700 dark:text-slate-200"
+                    >
+                      0
+                    </button>
+                  </div>
                   <input
                     type="number"
                     step="any"
                     min="0"
                     required={applyStockUpdate}
-                    value={stockValue}
-                    onChange={(e) => setStockValue(parseFloat(e.target.value) || 0)}
+                    value={stockValueInput}
+                    placeholder="0"
+                    onFocus={(e) => e.target.select()}
+                    onChange={(e) => setStockValueInput(e.target.value)}
+                    onBlur={() => {
+                      if (stockValueInput.trim() === '') setStockValueInput('0');
+                    }}
                     className="w-full py-2.5 px-4 font-mono font-bold text-base bg-slate-50 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 rounded-xl text-slate-900 dark:text-white"
                   />
                 </div>

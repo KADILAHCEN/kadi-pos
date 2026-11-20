@@ -24,7 +24,7 @@ import { bluetoothScanner } from '../../utils/bluetoothScanner';
 import { playSound } from '../../utils/audio';
 
 export const PriceCheckerModal: React.FC = () => {
-  const { products, categories, addToCart, settings, currencySymbol, language } = usePos();
+  const { products, categories, cart, addToCart, settings, currencySymbol, language } = usePos();
   const isAr = language === 'ar';
 
   const [isOpen, setIsOpen] = useState(false);
@@ -644,47 +644,56 @@ export const PriceCheckerModal: React.FC = () => {
 
               {/* Action Buttons */}
               <div className="flex flex-wrap items-center gap-2">
-                <button
-                  type="button"
-                  onClick={() => {
-                    if (foundProduct.stock <= 0) {
-                      playSound('error');
-                      setOutOfStockError(
-                        isAr ? `❌ ${foundProduct.name} تسالات` : `❌ ${foundProduct.name} Out of stock`
-                      );
-                      return;
-                    }
-                    setOutOfStockError(null);
-                    addToCart(foundProduct);
-                    setAddedToast(true);
-                    if (settings.enableSoundEffects) playSound('beep');
-                  }}
-                  className={`flex-1 py-2.5 px-4 rounded-xl text-white text-xs font-black flex items-center justify-center gap-2 ${
-                    foundProduct.stock <= 0
-                      ? 'bg-red-600 hover:bg-red-700'
-                      : 'bg-emerald-600 hover:bg-emerald-700'
-                  }`}
-                >
-                  {addedToast ? (
-                    <>
-                      <CheckCircle2 className="w-4 h-4" />
-                      <span>{isAr ? 'تزادت للسلة!' : 'Added to Cart!'}</span>
-                    </>
-                  ) : (
-                    <>
-                      <ShoppingCart className="w-4 h-4" />
-                      <span>
-                        {foundProduct.stock <= 0
-                          ? isAr
-                            ? 'تسالات — غير متوفر'
-                            : 'Out of Stock'
-                          : isAr
-                          ? 'أضف للسلة'
-                          : 'Add to Cart'}
-                      </span>
-                    </>
-                  )}
-                </button>
+                {(() => {
+                  const inCartQty = cart
+                    .filter((ci) => ci.productId === foundProduct.id)
+                    .reduce((sum, ci) => sum + ci.quantity, 0);
+                  const remainingStock = Math.max(0, Number((foundProduct.stock - inCartQty).toFixed(2)));
+                  const isNafed = remainingStock <= 0;
+                  return (
+                    <button
+                      type="button"
+                      onClick={() => {
+                        if (isNafed) {
+                          playSound('error');
+                          setOutOfStockError(
+                            isAr ? `نفذ - ${foundProduct.name} ما بقاش` : `Out of stock - ${foundProduct.name}`
+                          );
+                          return;
+                        }
+                        setOutOfStockError(null);
+                        addToCart(foundProduct);
+                        setAddedToast(true);
+                        if (settings.enableSoundEffects) playSound('beep');
+                      }}
+                      className={`flex-1 py-2.5 px-4 rounded-xl text-white text-xs font-black flex items-center justify-center gap-2 ${
+                        isNafed
+                          ? 'bg-red-600 hover:bg-red-700'
+                          : 'bg-emerald-600 hover:bg-emerald-700'
+                      }`}
+                    >
+                      {addedToast ? (
+                        <>
+                          <CheckCircle2 className="w-4 h-4" />
+                          <span>{isAr ? 'تزادت للسلة!' : 'Added to Cart!'}</span>
+                        </>
+                      ) : (
+                        <>
+                          <ShoppingCart className="w-4 h-4" />
+                          <span>
+                            {isNafed
+                              ? isAr
+                                ? 'نفذ — ما بقاش'
+                                : 'Out of Stock'
+                              : isAr
+                              ? 'أضف للسلة'
+                              : 'Add to Cart'}
+                          </span>
+                        </>
+                      )}
+                    </button>
+                  );
+                })()}
                 <button
                   type="button"
                   onClick={() => {

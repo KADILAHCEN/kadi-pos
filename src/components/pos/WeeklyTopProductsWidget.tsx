@@ -28,7 +28,7 @@ function getCurrentWeekStart(): Date {
 export const WeeklyTopProductsWidget: React.FC<WeeklyTopProductsWidgetProps> = ({
   onQuickAddProduct
 }) => {
-  const { orders, products, currencySymbol, language, setCurrentTab } = usePos();
+  const { orders, products, cart, currencySymbol, language, setCurrentTab } = usePos();
   const isAr = language === 'ar';
   const isFr = language === 'fr';
 
@@ -137,7 +137,10 @@ export const WeeklyTopProductsWidget: React.FC<WeeklyTopProductsWidgetProps> = (
             </span>
           ) : (
             topFive.map((item, idx) => {
-              const canAdd = Boolean(item.product && item.product.stock > 0);
+              const inCart = item.product
+                ? cart.filter((ci) => ci.productId === item.product!.id).reduce((s, ci) => s + ci.quantity, 0)
+                : 0;
+              const canAdd = Boolean(item.product && item.product.stock - inCart > 0);
               return (
                 <button
                   key={item.productId}

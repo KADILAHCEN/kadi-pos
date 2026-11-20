@@ -41,8 +41,10 @@ export const ProductGrid: React.FC<ProductGridProps> = ({ onOpenBarcodeScanner }
   const {
     products,
     categories,
+    cart,
     deleteCategory,
     addToCart,
+    adjustStock,
     deleteProduct,
     currencySymbol,
     language,
@@ -51,6 +53,19 @@ export const ProductGrid: React.FC<ProductGridProps> = ({ onOpenBarcodeScanner }
     customers,
     shopEarRequests
   } = usePos();
+
+  const cartQtyByProductId = useMemo(() => {
+    const map = new Map<string, number>();
+    for (const item of cart) {
+      map.set(item.productId, Number(((map.get(item.productId) ?? 0) + item.quantity).toFixed(2)));
+    }
+    return map;
+  }, [cart]);
+
+  const getRemainingStock = (prod: Product) => {
+    const inCart = cartQtyByProductId.get(prod.id) ?? 0;
+    return Math.max(0, Number((prod.stock - inCart).toFixed(2)));
+  };
 
   const activeShopEarCount = useMemo(
     () => shopEarRequests.filter((r) => r.status !== 'notified').length,
@@ -85,6 +100,11 @@ export const ProductGrid: React.FC<ProductGridProps> = ({ onOpenBarcodeScanner }
 
   // High-capacity pagination state (handles 2,000+ to 10,000+ items smoothly at 60fps)
   const [visibleCount, setVisibleCount] = useState<number>(36);
+
+  // Quick Restock ("شريت +") modal state
+  const [buyModalProduct, setBuyModalProduct] = useState<Product | null>(null);
+  const [buyQtyInput, setBuyQtyInput] = useState<string>('');
+  const buyInputRef = useRef<HTMLInputElement | null>(null);
 
   // Out-of-stock snackbar toast state
   const [outOfStockToast, setOutOfStockToast] = useState<string | null>(null);
@@ -166,7 +186,60 @@ export const ProductGrid: React.FC<ProductGridProps> = ({ onOpenBarcodeScanner }
     return () => {
       unsubscribe();
     };
-  }, [products, settings.bluetoothScannerEnabled, settings.bluetoothSoundFeedback, settings.bluetoothAutoAddToCart]);
+  }, [products, cartQtyByProductId, settings.bluetoothScannerEnabled, settings.bluetoothSoundFeedback, settings.bluetoothAutoAddToCart]);
+
+  const showNafedSnackBar = (productName: string) => {
+    if (typeof navigator !== 'undefined' && typeof navigator.vibrate === 'function') {
+      navigator.vibrate([30, 40, 30]);
+    }
+    playSound('error');
+    setOutOfStockToast(
+      isAr
+        ? `نفذ - ${productName} ما بقاش`
+        : isFr
+        ? `Rupture de stock - ${productName}`
+        : `Out of stock - ${productName}`
+    );
+    if (outOfStockTimerRef.current) window.clearTimeout(outOfStockTimerRef.current);
+    outOfStockTimerRef.current = window.setTimeout(() => {
+      setOutOfStockToast(null);
+    }, 2800);
+  };
+
+  const openBuyProductDialog = (prod: Product) => {
+    setBuyModalProduct(prod);
+    setBuyQtyInput('');
+    window.setTimeout(() => {
+      buyInputRef.current?.focus();
+    }, 60);
+  };
+
+  const handleConfirmBuyProduct = (e?: React.FormEvent) => {
+    if (e) e.preventDefault();
+    if (!buyModalProduct) return;
+    const rawQty = parseFloat(buyQtyInput.replace(',', '.'));
+    if (!Number.isFinite(rawQty) || rawQty <= 0) return;
+
+    const cleanQty = Number(rawQty.toFixed(2));
+    adjustStock(
+      buyModalProduct.id,
+      cleanQty,
+      isAr ? 'شراء سريع من شاشة البيع (شريت +)' : 'Quick restock from POS',
+      'restock'
+    );
+    if (settings.enableSoundEffects !== false) {
+      playSound('success');
+    }
+    const updatedName = isAr ? buyModalProduct.name : buyModalProduct.nameEn || buyModalProduct.name;
+    setBarcodeToast(
+      isAr
+        ? `✅ تزادت +${cleanQty} لـ ${updatedName}`
+        : `✅ +${cleanQty} added to ${updatedName}`
+    );
+    setTimeout(() => setBarcodeToast(null), 2600);
+    setBuyModalProduct(null);
+    setBuyQtyInput('');
+  };
 
   const handleScannedBarcode = (code: string, _speedMs?: number) => {
     const clean = code.trim();
@@ -175,7 +248,7 @@ export const ProductGrid: React.FC<ProductGridProps> = ({ onOpenBarcodeScanner }
     );
     if (matched) {
       if (settings.bluetoothAutoAddToCart !== false) {
-        if (matched.stock <= 0) {
+        if (getRemainingStock(matched) <= 0) {
           handleProductClick(matched);
           return;
         }
@@ -208,22 +281,9 @@ export const ProductGrid: React.FC<ProductGridProps> = ({ onOpenBarcodeScanner }
   };
 
   const handleProductClick = (product: Product) => {
-    if (product.stock <= 0) {
-      if (typeof navigator !== 'undefined' && typeof navigator.vibrate === 'function') {
-        navigator.vibrate([30, 40, 30]);
-      }
-      playSound('error');
-      setOutOfStockToast(
-        isAr
-          ? `❌ ${product.name} تسالات`
-          : isFr
-          ? `❌ ${product.nameEn || product.name} : Rupture de stock`
-          : `❌ ${product.nameEn || product.name} Out of stock`
-      );
-      if (outOfStockTimerRef.current) window.clearTimeout(outOfStockTimerRef.current);
-      outOfStockTimerRef.current = window.setTimeout(() => {
-        setOutOfStockToast(null);
-      }, 2800);
+    const remaining = getRemainingStock(product);
+    if (remaining <= 0) {
+      showNafedSnackBar(isAr ? product.name : product.nameEn || product.name);
       return;
     }
 
@@ -500,8 +560,9 @@ export const ProductGrid: React.FC<ProductGridProps> = ({ onOpenBarcodeScanner }
             {displayedProducts.map((prod) => {
               const profit = prod.price - prod.costPrice;
               const profitMargin = prod.price > 0 ? ((profit / prod.price) * 100).toFixed(0) : '0';
-              const isLowStock = prod.stock > 0 && prod.stock <= prod.lowStockThreshold;
-              const isOutOfStock = prod.stock <= 0;
+              const remainingStock = getRemainingStock(prod);
+              const isLowStock = remainingStock > 0 && remainingStock <= prod.lowStockThreshold;
+              const isOutOfStock = remainingStock <= 0;
               const isWeighted = prod.unitType === 'kg' || prod.unitType === 'liter';
 
               // Expiry calculation
@@ -590,16 +651,16 @@ export const ProductGrid: React.FC<ProductGridProps> = ({ onOpenBarcodeScanner }
                     {/* Stock status tag top-right */}
                     <div className="absolute top-2 right-2 rtl:right-auto rtl:left-2">
                       {isOutOfStock ? (
-                        <span className="px-1.5 py-0.5 text-[10px] font-extrabold bg-red-600 text-white rounded-md shadow-xs">
-                          {isAr ? 'تسالات' : t.stock_out}
+                        <span className="px-2 py-0.5 text-[11px] font-extrabold bg-red-600 text-white rounded-lg shadow-xs">
+                          {isAr ? 'نفذ' : t.stock_out}
                         </span>
                       ) : isLowStock ? (
-                        <span className="px-1.5 py-0.5 text-[10px] font-bold bg-amber-500 text-white rounded-md shadow-xs">
-                          {prod.stock} {getUnitBadge(prod.unitType)}
+                        <span className="px-2 py-0.5 text-[11px] font-bold bg-amber-500 text-white rounded-lg shadow-xs tabular-nums">
+                          {remainingStock} {getUnitBadge(prod.unitType)}
                         </span>
                       ) : (
-                        <span className="px-1.5 py-0.5 text-[10px] font-semibold bg-emerald-600/90 text-white rounded-md shadow-xs">
-                          {prod.stock}
+                        <span className="px-2 py-0.5 text-[11px] font-bold bg-emerald-600 text-white rounded-lg shadow-xs tabular-nums">
+                          {remainingStock}
                         </span>
                       )}
                     </div>
@@ -668,11 +729,11 @@ export const ProductGrid: React.FC<ProductGridProps> = ({ onOpenBarcodeScanner }
                               : 'text-emerald-600 dark:text-emerald-400'
                           }`}
                         >
-                          {isAr ? `المخزون: ${prod.stock}` : `Stock: ${prod.stock}`}
+                          {isAr ? `المخزون: ${remainingStock}` : `Stock: ${remainingStock}`}
                         </span>
                         {isOutOfStock && (
                           <span className="text-red-600 dark:text-red-400 font-extrabold text-xs sm:text-sm">
-                            {isAr ? 'تسالات' : isFr ? 'Épuisé' : 'Out'}
+                            {isAr ? 'نفذ' : isFr ? 'Épuisé' : 'Out'}
                           </span>
                         )}
                       </div>
@@ -696,6 +757,23 @@ export const ProductGrid: React.FC<ProductGridProps> = ({ onOpenBarcodeScanner }
                         </span>
                       </div>
                     </div>
+
+                    {/* Quick Restock Button ("شريت +") */}
+                    <button
+                      type="button"
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        openBuyProductDialog(prod);
+                      }}
+                      className={`mt-2 w-full py-1.5 px-2.5 rounded-xl border text-xs font-extrabold flex items-center justify-center gap-1 transition-all active:scale-95 ${
+                        isOutOfStock
+                          ? 'border-red-500 text-red-600 dark:text-red-400 bg-red-50/70 dark:bg-red-950/30 hover:bg-red-100 dark:hover:bg-red-950/50'
+                          : 'border-slate-300 dark:border-slate-700 text-slate-700 dark:text-slate-200 bg-slate-50/80 dark:bg-slate-800/60 hover:border-emerald-500 hover:text-emerald-700 dark:hover:text-emerald-400'
+                      }`}
+                    >
+                      <PackagePlus className="w-3.5 h-3.5 shrink-0" />
+                      <span>{isAr ? 'شريت +' : isFr ? 'Achat +' : 'Buy +'}</span>
+                    </button>
                   </div>
                 </div>
               );
@@ -728,6 +806,11 @@ export const ProductGrid: React.FC<ProductGridProps> = ({ onOpenBarcodeScanner }
           product={scaleProduct}
           onClose={() => setScaleProduct(null)}
           onConfirm={(qty) => {
+            const remaining = getRemainingStock(scaleProduct);
+            if (remaining <= 0 || qty > remaining) {
+              showNafedSnackBar(isAr ? scaleProduct.name : scaleProduct.nameEn || scaleProduct.name);
+              return;
+            }
             addToCart(scaleProduct, undefined, undefined, qty);
           }}
         />
@@ -739,9 +822,97 @@ export const ProductGrid: React.FC<ProductGridProps> = ({ onOpenBarcodeScanner }
           product={variantProduct}
           onClose={() => setVariantProduct(null)}
           onConfirm={(varId, mods) => {
+            if (getRemainingStock(variantProduct) <= 0) {
+              showNafedSnackBar(isAr ? variantProduct.name : variantProduct.nameEn || variantProduct.name);
+              return;
+            }
             addToCart(variantProduct, varId, mods);
           }}
         />
+      )}
+
+      {/* Quick Purchase / Restock Modal ("شريت +") */}
+      {buyModalProduct && (
+        <div
+          className="fixed inset-0 z-50 bg-slate-950/60 backdrop-blur-xs flex items-center justify-center p-4"
+          onClick={() => setBuyModalProduct(null)}
+        >
+          <form
+            onSubmit={handleConfirmBuyProduct}
+            onClick={(e) => e.stopPropagation()}
+            className="w-full max-w-sm bg-white dark:bg-slate-900 rounded-2xl border border-slate-200 dark:border-slate-800 shadow-2xl p-5 space-y-4 animate-in fade-in zoom-in-95 duration-150"
+          >
+            <div className="flex items-start justify-between gap-2">
+              <div>
+                <h3 className="text-base font-extrabold text-slate-900 dark:text-white">
+                  {isAr
+                    ? `شريت ${buyModalProduct.name}`
+                    : isFr
+                    ? `Achat : ${buyModalProduct.nameEn || buyModalProduct.name}`
+                    : `Restock ${buyModalProduct.nameEn || buyModalProduct.name}`}
+                </h3>
+                <p className="text-xs text-slate-500 dark:text-slate-400 mt-0.5 tabular-nums">
+                  {isAr ? `المخزون الحالي: ${buyModalProduct.stock}` : `Current stock: ${buyModalProduct.stock}`}
+                </p>
+              </div>
+              <button
+                type="button"
+                onClick={() => setBuyModalProduct(null)}
+                className="p-1 rounded-lg text-slate-400 hover:text-slate-600 dark:hover:text-slate-200"
+              >
+                <XCircle className="w-5 h-5" />
+              </button>
+            </div>
+
+            <div>
+              <label className="block text-xs font-bold text-slate-700 dark:text-slate-300 mb-1.5">
+                {isAr ? 'شحال شريتي؟' : isFr ? 'Quantité achetée ?' : 'Quantity purchased?'}
+              </label>
+              <input
+                ref={buyInputRef}
+                type="number"
+                step={buyModalProduct.unitType === 'kg' || buyModalProduct.unitType === 'liter' ? '0.1' : '1'}
+                min="0.01"
+                value={buyQtyInput}
+                onChange={(e) => setBuyQtyInput(e.target.value)}
+                placeholder={isAr ? 'مثلاً: 10' : 'e.g. 10'}
+                className="w-full px-3.5 py-2.5 text-base font-bold rounded-xl border border-slate-300 dark:border-slate-700 bg-slate-50 dark:bg-slate-800 text-slate-900 dark:text-white focus:outline-none focus:ring-2 focus:ring-emerald-500 tabular-nums"
+              />
+              <div className="flex items-center gap-1.5 mt-2">
+                {[5, 10, 20, 50].map((preset) => (
+                  <button
+                    key={preset}
+                    type="button"
+                    onClick={() => {
+                      const curr = parseFloat(buyQtyInput) || 0;
+                      setBuyQtyInput(String(curr + preset));
+                    }}
+                    className="flex-1 py-1.5 rounded-lg bg-slate-100 dark:bg-slate-800 hover:bg-emerald-50 dark:hover:bg-emerald-950/50 border border-slate-200 dark:border-slate-700 text-xs font-extrabold text-slate-700 dark:text-slate-200 tabular-nums"
+                  >
+                    +{preset}
+                  </button>
+                ))}
+              </div>
+            </div>
+
+            <div className="flex items-center justify-end gap-2 pt-1">
+              <button
+                type="button"
+                onClick={() => setBuyModalProduct(null)}
+                className="px-4 py-2 rounded-xl border border-slate-200 dark:border-slate-700 text-xs font-bold text-slate-600 dark:text-slate-300 hover:bg-slate-100 dark:hover:bg-slate-800"
+              >
+                {isAr ? 'إلغاء' : isFr ? 'Annuler' : 'Cancel'}
+              </button>
+              <button
+                type="submit"
+                disabled={!buyQtyInput || parseFloat(buyQtyInput) <= 0}
+                className="px-5 py-2 rounded-xl bg-emerald-600 hover:bg-emerald-700 disabled:opacity-45 text-white text-xs font-extrabold shadow-sm transition-all active:scale-95"
+              >
+                {isAr ? 'زيد' : isFr ? 'Ajouter' : 'Add'}
+              </button>
+            </div>
+          </form>
+        </div>
       )}
 
       {/* Add Item / Product Modal */}

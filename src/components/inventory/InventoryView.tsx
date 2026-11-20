@@ -30,7 +30,8 @@ import {
   CheckSquare,
   Pencil,
   Clock,
-  Send
+  Send,
+  PackageX
 } from 'lucide-react';
 import { AddCategoryModal } from './AddCategoryModal';
 import { BulkUpdateModal } from './BulkUpdateModal';
@@ -183,6 +184,7 @@ export const InventoryView: React.FC = () => {
   const [selectedCat, setSelectedCat] = useState('all');
   const [selectedUnit, setSelectedUnit] = useState<string>('all');
   const [onlyLowStock, setOnlyLowStock] = useState(false);
+  const [onlyOutOfStock, setOnlyOutOfStock] = useState(false);
   const [onlyExpiring, setOnlyExpiring] = useState(false);
   const [onlyStagnant, setOnlyStagnant] = useState(false);
   const [sortField, setSortField] = useState<SortField>('stock');
@@ -223,6 +225,7 @@ export const InventoryView: React.FC = () => {
         setSelectedCat('all');
         setSelectedUnit('all');
         setOnlyLowStock(false);
+        setOnlyOutOfStock(false);
         setOnlyExpiring(false);
         setOnlyStagnant(false);
         setSearchQuery(matched.barcode || matched.name);
@@ -255,6 +258,7 @@ export const InventoryView: React.FC = () => {
       setSelectedCat('all');
       setSelectedUnit('all');
       setOnlyLowStock(false);
+      setOnlyOutOfStock(false);
       setOnlyExpiring(false);
       setOnlyStagnant(false);
       setSearchQuery(created.barcode || created.name);
@@ -287,10 +291,14 @@ export const InventoryView: React.FC = () => {
     let totalCostVal = 0;
     let totalRetailVal = 0;
     let lowStockCount = 0;
+    let outOfStockCount = 0;
 
     products.forEach((p) => {
       totalCostVal += p.costPrice * p.stock;
       totalRetailVal += p.price * p.stock;
+      if (p.stock <= 0) {
+        outOfStockCount++;
+      }
       if (p.stock <= p.lowStockThreshold) {
         lowStockCount++;
       }
@@ -305,7 +313,8 @@ export const InventoryView: React.FC = () => {
       totalRetailVal: Number(totalRetailVal.toFixed(2)),
       expectedGrossProfit: Number(expectedGrossProfit.toFixed(2)),
       avgMarginPercent: Number(avgMarginPercent.toFixed(1)),
-      lowStockCount
+      lowStockCount,
+      outOfStockCount
     };
   }, [products]);
 
@@ -426,7 +435,7 @@ export const InventoryView: React.FC = () => {
   // Reset page when filters or sorting change
   React.useEffect(() => {
     setTablePage(1);
-  }, [searchQuery, selectedCat, selectedUnit, onlyLowStock, onlyExpiring, onlyStagnant, sortField, sortOrder]);
+  }, [searchQuery, selectedCat, selectedUnit, onlyLowStock, onlyOutOfStock, onlyExpiring, onlyStagnant, sortField, sortOrder]);
 
   // Handle header sort click
   const handleSortClick = (field: SortField) => {
@@ -461,6 +470,7 @@ export const InventoryView: React.FC = () => {
       const matchesCat = selectedCat === 'all' || p.categoryId === selectedCat;
       const matchesUnit = selectedUnit === 'all' || p.unitType === selectedUnit;
       const matchesLow = !onlyLowStock || p.stock <= p.lowStockThreshold;
+      const matchesOutOfStock = !onlyOutOfStock || p.stock <= 0;
       const matchesStagnant = !onlyStagnant || stagnantProductIds.has(p.id);
 
       let matchesExpiring = true;
@@ -473,7 +483,7 @@ export const InventoryView: React.FC = () => {
         }
       }
 
-      if (!matchesCat || !matchesUnit || !matchesLow || !matchesExpiring || !matchesStagnant) return false;
+      if (!matchesCat || !matchesUnit || !matchesLow || !matchesOutOfStock || !matchesExpiring || !matchesStagnant) return false;
       if (!query) return true;
 
       return (
@@ -504,7 +514,7 @@ export const InventoryView: React.FC = () => {
       }
       return sortOrder === 'asc' ? comparison : -comparison;
     });
-  }, [products, selectedCat, selectedUnit, onlyLowStock, onlyExpiring, onlyStagnant, stagnantProductIds, searchQuery, sortField, sortOrder, isAr]);
+  }, [products, selectedCat, selectedUnit, onlyLowStock, onlyOutOfStock, onlyExpiring, onlyStagnant, stagnantProductIds, searchQuery, sortField, sortOrder, isAr]);
 
   const totalPages = Math.ceil(filteredProducts.length / pageSize) || 1;
   const paginatedProducts = React.useMemo(() => {
@@ -711,8 +721,25 @@ export const InventoryView: React.FC = () => {
           >
             {inventoryMetrics.lowStockCount}
           </div>
-          <div className="text-[11px] text-slate-600 dark:text-slate-300 mt-1">
-            {inventoryMetrics.lowStockCount > 0 ? (isAr ? 'أصناف تحتاج إعادة طلب' : 'Reorder needed') : (isAr ? 'المخزون متوازن' : 'Stock healthy')}
+          <div className="text-[11px] text-slate-600 dark:text-slate-300 mt-1 flex items-center justify-between gap-2">
+            <span>
+              {inventoryMetrics.lowStockCount > 0 ? (isAr ? 'أصناف تحتاج إعادة طلب' : 'Reorder needed') : (isAr ? 'المخزون متوازن' : 'Stock healthy')}
+            </span>
+            {inventoryMetrics.outOfStockCount > 0 && (
+              <button
+                type="button"
+                onClick={() => {
+                  setActiveTab('catalog');
+                  setOnlyOutOfStock((prev) => !prev);
+                  setOnlyLowStock(false);
+                  setOnlyStagnant(false);
+                }}
+                className="px-2 py-0.5 rounded-full bg-red-600 text-white text-[10px] font-black hover:bg-red-700 transition-colors"
+                title={isAr ? 'اضغط لعرض المنتجات النافدة (0)' : 'Show out-of-stock (0)'}
+              >
+                {isAr ? `${inventoryMetrics.outOfStockCount} نفذت (0)` : `${inventoryMetrics.outOfStockCount} out (0)`}
+              </button>
+            )}
           </div>
         </div>
 
@@ -1017,7 +1044,11 @@ export const InventoryView: React.FC = () => {
               {/* Only Low Stock Toggle */}
               <button
                 type="button"
-                onClick={() => setOnlyLowStock(!onlyLowStock)}
+                onClick={() => {
+                  const next = !onlyLowStock;
+                  setOnlyLowStock(next);
+                  if (next) setOnlyOutOfStock(false);
+                }}
                 className={`py-2 px-3 text-xs font-bold rounded-xl border transition-colors flex items-center gap-1.5 ${
                   onlyLowStock
                     ? 'bg-amber-500 border-amber-500 text-white'
@@ -1026,6 +1057,43 @@ export const InventoryView: React.FC = () => {
               >
                 <AlertTriangle className="w-3.5 h-3.5" />
                 <span>{isAr ? 'المخزون المنخفض فقط' : 'Low stock only'}</span>
+              </button>
+
+              {/* Only Out of Stock (Quantity = 0) Toggle for Restocking */}
+              <button
+                type="button"
+                onClick={() => {
+                  const next = !onlyOutOfStock;
+                  setOnlyOutOfStock(next);
+                  if (next) {
+                    setOnlyLowStock(false);
+                    setOnlyStagnant(false);
+                  }
+                }}
+                className={`py-2 px-3 text-xs font-bold rounded-xl border transition-colors flex items-center gap-1.5 ${
+                  onlyOutOfStock
+                    ? 'bg-red-600 border-red-600 text-white shadow-2xs'
+                    : 'bg-white dark:bg-slate-800 border-slate-200 dark:border-slate-700 text-slate-700 dark:text-slate-300 hover:border-red-300'
+                }`}
+                title={
+                  isAr
+                    ? 'عرض المنتجات التي نفذت تماماً (الكمية = 0) لتسهيل إعادة الطلب'
+                    : 'Show completely out-of-stock products (Quantity = 0) for restocking'
+                }
+              >
+                <PackageX className="w-3.5 h-3.5" />
+                <span>{isAr ? 'نفذت تماماً (0)' : isFr ? 'Rupture totale (0)' : 'Out of stock (0)'}</span>
+                {inventoryMetrics.outOfStockCount > 0 && (
+                  <span
+                    className={`px-1.5 py-0.2 rounded-full text-[10px] font-black tabular-nums ${
+                      onlyOutOfStock
+                        ? 'bg-white text-red-600'
+                        : 'bg-red-100 text-red-700 dark:bg-red-950 dark:text-red-300'
+                    }`}
+                  >
+                    {inventoryMetrics.outOfStockCount}
+                  </span>
+                )}
               </button>
 
               {/* Only Expiring Toggle */}
@@ -1050,7 +1118,11 @@ export const InventoryView: React.FC = () => {
               {/* Stagnant Products (+30 days unsold) Toggle */}
               <button
                 type="button"
-                onClick={() => setOnlyStagnant(!onlyStagnant)}
+                onClick={() => {
+                  const next = !onlyStagnant;
+                  setOnlyStagnant(next);
+                  if (next) setOnlyOutOfStock(false);
+                }}
                 className={`py-2 px-3 text-xs font-bold rounded-xl border transition-colors flex items-center gap-1.5 ${
                   onlyStagnant
                     ? 'bg-violet-600 border-violet-600 text-white shadow-2xs'
@@ -2283,14 +2355,30 @@ export const InventoryView: React.FC = () => {
             </div>
 
             <div>
-              <label className="block text-xs font-semibold text-slate-600 dark:text-slate-400 mb-1">
-                {isAr ? 'الكمية المراد تعديلها' : 'Quantity'} ({getUnitName(selectedProductForAdjust.unitType)})
-              </label>
+              <div className="flex items-center justify-between mb-1">
+                <label className="block text-xs font-semibold text-slate-600 dark:text-slate-400">
+                  {isAr ? 'الكمية المراد تعديلها' : 'Quantity'} ({getUnitName(selectedProductForAdjust.unitType)})
+                </label>
+                {selectedProductForAdjust.stock > 0 && (
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setAdjustType('waste');
+                      setAdjustQty(selectedProductForAdjust.stock);
+                    }}
+                    className="px-2 py-0.5 rounded-md bg-rose-100 dark:bg-rose-950/60 text-[10px] font-extrabold text-rose-700 dark:text-rose-300 hover:bg-rose-200"
+                  >
+                    {isAr ? 'تصفير المخزون (0)' : 'Set to 0'}
+                  </button>
+                )}
+              </div>
               <input
                 type="number"
                 step="any"
+                min="0"
                 required
                 value={adjustQty}
+                onFocus={(e) => e.target.select()}
                 onChange={(e) => setAdjustQty(parseFloat(e.target.value) || 0)}
                 className="w-full px-3 py-2 text-lg font-mono font-bold bg-slate-50 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 rounded-xl"
               />

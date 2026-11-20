@@ -32,6 +32,7 @@ export const CartRegister: React.FC<CartRegisterProps> = ({
 }) => {
   const {
     cart,
+    products,
     updateCartItemQuantity,
     setCartItemQuantity,
     removeCartItem,
@@ -66,6 +67,8 @@ export const CartRegister: React.FC<CartRegisterProps> = ({
   const [showPriceOverrideModal, setShowPriceOverrideModal] = useState(false);
   const [pressingItemId, setPressingItemId] = useState<string | null>(null);
   const longPressTimerRef = useRef<NodeJS.Timeout | null>(null);
+  const [stockLimitNotice, setStockLimitNotice] = useState<string | null>(null);
+  const stockNoticeTimerRef = useRef<number | null>(null);
 
   const handleStartLongPress = (item: CartItem) => {
     setPressingItemId(item.id);
@@ -255,6 +258,16 @@ export const CartRegister: React.FC<CartRegisterProps> = ({
           </div>
         ) : (
           <>
+            {/* Stock limit alert if user tries to exceed stock */}
+            {stockLimitNotice && (
+              <div
+                role="alert"
+                className="px-3 py-2 rounded-xl bg-red-600 text-white text-xs font-extrabold text-center shadow-md animate-in fade-in duration-150"
+              >
+                {stockLimitNotice}
+              </div>
+            )}
+
             {/* Visual hint for staff on long-press */}
             <div className="flex items-center justify-between px-1 pb-1 text-[11px] text-slate-500 dark:text-slate-400">
               <span className="font-semibold">{isAr ? 'العناصر المضافة' : 'Cart Items'} ({cart.length})</span>
@@ -422,6 +435,25 @@ export const CartRegister: React.FC<CartRegisterProps> = ({
                         type="button"
                         onClick={(e) => {
                           e.stopPropagation();
+                          const targetProd = products.find((p) => p.id === item.productId);
+                          if (targetProd) {
+                            const totalInCart = cart
+                              .filter((ci) => ci.productId === item.productId)
+                              .reduce((sum, ci) => sum + ci.quantity, 0);
+                            if (totalInCart + step > targetProd.stock) {
+                              playSound('error');
+                              setStockLimitNotice(
+                                isAr
+                                  ? `نفذ - ${item.productName} ما بقاش`
+                                  : isFr
+                                  ? `Rupture de stock - ${item.productNameEn || item.productName}`
+                                  : `Out of stock - ${item.productNameEn || item.productName}`
+                              );
+                              if (stockNoticeTimerRef.current) window.clearTimeout(stockNoticeTimerRef.current);
+                              stockNoticeTimerRef.current = window.setTimeout(() => setStockLimitNotice(null), 2600);
+                              return;
+                            }
+                          }
                           updateCartItemQuantity(item.id, step);
                         }}
                         className="w-6 h-6 rounded-md bg-white dark:bg-slate-700 text-slate-700 dark:text-slate-200 font-bold flex items-center justify-center hover:bg-slate-200 shadow-2xs text-xs"

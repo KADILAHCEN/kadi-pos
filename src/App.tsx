@@ -203,11 +203,15 @@ const PosMainContent: React.FC = () => {
         (p) => p.barcode === clean || p.sku.toLowerCase() === clean.toLowerCase()
       );
       if (matched) {
+        const inCartQty = cart
+          .filter((ci) => ci.productId === matched.id)
+          .reduce((sum, ci) => sum + ci.quantity, 0);
+        const remainingStock = Math.max(0, Number((matched.stock - inCartQty).toFixed(2)));
         if (settings.bluetoothAutoAddToCart !== false) {
-          if (matched.stock <= 0) {
+          if (remainingStock <= 0) {
             playSound('error');
             setScanFeedbackToast({
-              text: isAr ? `❌ ${matched.name} تسالات` : `❌ ${matched.name} Out of stock`,
+              text: isAr ? `نفذ - ${matched.name} ما بقاش` : `Out of stock - ${matched.name}`,
               isError: true
             });
             setTimeout(() => setScanFeedbackToast(null), 2800);
@@ -236,7 +240,7 @@ const PosMainContent: React.FC = () => {
       }
     });
     return () => unsub();
-  }, [currentTab, products, addToCart, settings.bluetoothSoundFeedback, settings.bluetoothAutoAddToCart, isAr]);
+  }, [currentTab, products, cart, addToCart, settings.bluetoothSoundFeedback, settings.bluetoothAutoAddToCart, isAr, currencySymbol]);
 
   // Preload custom Store Logo for canvas PDFs & Thermal receipts
   useEffect(() => {
@@ -396,10 +400,14 @@ const PosMainContent: React.FC = () => {
       (p) => p.barcode === clean || p.sku.toLowerCase() === clean.toLowerCase()
     );
     if (matched) {
-      if (matched.stock <= 0) {
+      const inCartQty = cart
+        .filter((ci) => ci.productId === matched.id)
+        .reduce((sum, ci) => sum + ci.quantity, 0);
+      const remainingStock = Math.max(0, Number((matched.stock - inCartQty).toFixed(2)));
+      if (remainingStock <= 0) {
         playSound('error');
         setScanFeedbackToast({
-          text: isAr ? `❌ ${matched.name} تسالات` : `❌ ${matched.name} Out of stock`,
+          text: isAr ? `نفذ - ${matched.name} ما بقاش` : `Out of stock - ${matched.name}`,
           isError: true
         });
         setTimeout(() => setScanFeedbackToast(null), 2800);
@@ -755,12 +763,20 @@ const PosMainContent: React.FC = () => {
         onProductSaved={(created: Product) => {
           const ctx = quickNewBarcodeReq?.sourceContext || 'pos';
           if (ctx === 'pos' || ctx === 'global') {
-            addToCart(created);
-            setScanFeedbackToast({
-              text: isAr
-                ? `🔊 بيب! تسجلات "${created.name}" + تحفظ الباركود وتزادت للسلة`
-                : `🔊 Saved "${created.name}" & added to cart`
-            });
+            if (created.stock > 0) {
+              addToCart(created);
+              setScanFeedbackToast({
+                text: isAr
+                  ? `🔊 بيب! تسجلات "${created.name}" + تحفظ الباركود وتزادت للسلة`
+                  : `🔊 Saved "${created.name}" & added to cart`
+              });
+            } else {
+              setScanFeedbackToast({
+                text: isAr
+                  ? `✅ تسجلات "${created.name}" بمخزون 0 (نفذ)`
+                  : `✅ Saved "${created.name}" with 0 stock`
+              });
+            }
             setTimeout(() => setScanFeedbackToast(null), 3200);
           }
           window.dispatchEvent(

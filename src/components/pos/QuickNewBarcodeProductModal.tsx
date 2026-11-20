@@ -179,7 +179,8 @@ export const QuickNewBarcodeProductModal: React.FC<QuickNewBarcodeProductModalPr
       !isNaN(parsedCost) && parsedCost >= 0
         ? parsedCost
         : Number((cleanPrice * 0.78).toFixed(2));
-    const parsedStock = Math.max(0, parseFloat(stock) || 0);
+    const rawStockNum = parseFloat(stock.replace(',', '.'));
+    const parsedStock = Number.isFinite(rawStockNum) && rawStockNum >= 0 ? rawStockNum : 0;
     const cleanCode = scannedBarcode.trim();
 
     const result = addProduct({
@@ -191,7 +192,7 @@ export const QuickNewBarcodeProductModal: React.FC<QuickNewBarcodeProductModalPr
       costPrice: finalCost,
       categoryId,
       unitType: 'piece',
-      stock: sourceContext === 'pos' ? Math.max(1, parsedStock) : parsedStock,
+      stock: parsedStock,
       lowStockThreshold: 5,
       color: '#10B981',
       image: foundImageUrl || '',
@@ -385,15 +386,26 @@ export const QuickNewBarcodeProductModal: React.FC<QuickNewBarcodeProductModalPr
           {/* Stock & Category */}
           <div className="grid grid-cols-2 gap-3">
             <div>
-              <label className="block font-bold text-slate-600 dark:text-slate-400 mb-1.5">
-                {isAr ? 'الكمية فـ المخزون' : 'Initial Stock'}
-              </label>
+              <div className="flex items-center justify-between mb-1.5">
+                <label className="block font-bold text-slate-600 dark:text-slate-400">
+                  {isAr ? 'الكمية فـ المخزون' : 'Initial Stock'}
+                </label>
+                <button
+                  type="button"
+                  onClick={() => setStock('0')}
+                  className="px-1.5 py-0.5 rounded bg-slate-200 dark:bg-slate-700 hover:bg-rose-100 dark:hover:bg-rose-950/60 text-[10px] font-extrabold text-slate-700 dark:text-slate-200"
+                >
+                  0
+                </button>
+              </div>
               <input
                 type="number"
                 step="any"
                 min="0"
                 data-barcode-allow-input="true"
                 value={stock}
+                placeholder="0"
+                onFocus={(e) => e.target.select()}
                 onChange={(e) => setStock(e.target.value)}
                 className="w-full px-3.5 py-2 text-sm font-mono font-bold rounded-xl bg-slate-50 dark:bg-slate-800 border border-slate-300 dark:border-slate-700 text-slate-900 dark:text-white"
               />

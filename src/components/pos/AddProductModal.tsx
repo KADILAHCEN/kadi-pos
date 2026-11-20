@@ -102,7 +102,7 @@ export const AddProductModal: React.FC<AddProductModalProps> = ({
 
   // Inventory Tracking
   const [trackStock, setTrackStock] = useState<boolean>(true);
-  const [stock, setStock] = useState<number>(20);
+  const [stockInput, setStockInput] = useState<string>('20');
   const [lowStockThreshold, setLowStockThreshold] = useState<number>(5);
   const [expiryDate, setExpiryDate] = useState<string>('');
 
@@ -132,7 +132,7 @@ export const AddProductModal: React.FC<AddProductModalProps> = ({
       setPrice(0);
       setCostPrice(0);
       setTrackStock(true);
-      setStock(20);
+      setStockInput('20');
       setLowStockThreshold(5);
       setExpiryDate('');
       setBarcode('');
@@ -405,9 +405,13 @@ export const AddProductModal: React.FC<AddProductModalProps> = ({
         }))
       : undefined;
 
+    const parsedSingleStock = parseFloat(stockInput.replace(',', '.'));
+    const safeSingleStock =
+      Number.isFinite(parsedSingleStock) && parsedSingleStock >= 0 ? parsedSingleStock : 0;
+
     const totalStock = hasVariants && parsedVariants
       ? parsedVariants.reduce((sum, v) => sum + v.stock, 0)
-      : Math.max(0, Number(stock));
+      : safeSingleStock;
 
     const finalCategoryId =
       categoryId && categoryId !== 'cat-all'
@@ -948,14 +952,29 @@ export const AddProductModal: React.FC<AddProductModalProps> = ({
             {trackStock && (
               <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 pt-1 animate-in fade-in">
                 <div>
-                  <label className="block text-xs font-semibold text-slate-700 dark:text-slate-300 mb-1">
-                    {t.stock_available} ({isAr ? 'الكمية الحالية في المتجر' : 'Current Stock'})
-                  </label>
+                  <div className="flex items-center justify-between mb-1">
+                    <label className="block text-xs font-semibold text-slate-700 dark:text-slate-300">
+                      {t.stock_available} ({isAr ? 'الكمية الحالية في المتجر' : 'Current Stock'})
+                    </label>
+                    <button
+                      type="button"
+                      onClick={() => setStockInput('0')}
+                      className="px-2 py-0.5 rounded-md bg-slate-200 dark:bg-slate-700 hover:bg-rose-100 dark:hover:bg-rose-950/60 text-[10px] font-extrabold text-slate-700 dark:text-slate-200"
+                    >
+                      0
+                    </button>
+                  </div>
                   <input
                     type="number"
+                    step="any"
                     min="0"
-                    value={stock}
-                    onChange={(e) => setStock(parseFloat(e.target.value) || 0)}
+                    placeholder="0"
+                    value={stockInput}
+                    onFocus={(e) => e.target.select()}
+                    onChange={(e) => setStockInput(e.target.value)}
+                    onBlur={() => {
+                      if (stockInput.trim() === '') setStockInput('0');
+                    }}
                     className="w-full px-3 py-2 bg-white dark:bg-slate-800 border border-slate-300 dark:border-slate-700 rounded-xl text-slate-900 dark:text-white font-mono font-bold tabular-nums"
                   />
                 </div>
@@ -1279,10 +1298,15 @@ export const AddProductModal: React.FC<AddProductModalProps> = ({
                     <div className="col-span-3">
                       <input
                         type="number"
+                        step="any"
                         min="0"
                         value={variant.stock}
-                        onChange={(e) => updateVariantRow(index, 'stock', parseFloat(e.target.value) || 0)}
-                        placeholder="المخزون"
+                        onFocus={(e) => e.target.select()}
+                        onChange={(e) => {
+                          const n = parseFloat(e.target.value);
+                          updateVariantRow(index, 'stock', Number.isFinite(n) && n >= 0 ? n : 0);
+                        }}
+                        placeholder="0"
                         className="w-full px-2 py-1 bg-slate-50 dark:bg-slate-700 border border-slate-300 dark:border-slate-600 rounded-lg text-xs font-mono tabular-nums"
                       />
                     </div>
