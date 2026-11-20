@@ -86,13 +86,13 @@ const normalizeUnitType = (nameOrUnit?: string): UnitType => {
  * Prepares any camera or gallery invoice photo for Gemini Vision:
  * - Respects EXIF orientation (`imageOrientation: 'from-image'`)
  * - Supports optional manual rotation (0/90/180/270)
- * - Compresses cleanly up to 1600px JPEG so fine thermal receipt text stays sharp without memory overflow
+ * - Compresses cleanly up to 2200px JPEG @ 0.90 with light contrast/brightness boost so faint thermal receipt digits stay crystal clear
  * - Gently brightens severely underexposed photos (e.g. dim room / dark carpet background)
  */
 const prepareInvoiceImageForVision = async (
   fileOrBlob: Blob,
-  maxDim = 1600,
-  quality = 0.86,
+  maxDim = 2200,
+  quality = 0.9,
   rotationDeg: 0 | 90 | 180 | 270 = 0
 ): Promise<{ base64: string; dataUrl: string }> => {
   let source: CanvasImageSource;
@@ -149,6 +149,9 @@ const prepareInvoiceImageForVision = async (
     ctx.translate(outW / 2, outH / 2);
     if (rotationDeg !== 0) {
       ctx.rotate((rotationDeg * Math.PI) / 180);
+    }
+    if ('filter' in ctx) {
+      ctx.filter = 'contrast(1.22) brightness(1.06)';
     }
     const drawW = Math.round(srcW * scale);
     const drawH = Math.round(srcH * scale);
@@ -567,7 +570,7 @@ export const PurchaseInvoiceScanModal: React.FC = () => {
     const timeoutId = window.setTimeout(() => controller.abort(), 45000);
 
     try {
-      const { base64, dataUrl } = await prepareInvoiceImageForVision(blob, 1600, 0.86, nextRotation);
+      const { base64, dataUrl } = await prepareInvoiceImageForVision(blob, 2200, 0.9, nextRotation);
       setPreviewDataUrl(dataUrl);
 
       if (typeof navigator !== 'undefined' && !navigator.onLine) {
@@ -598,8 +601,8 @@ export const PurchaseInvoiceScanModal: React.FC = () => {
         setScanError(
           errPayload ||
             (isAr
-              ? 'تعذر قراءة الفاتورة بـ Gemini Vision دابا — عاود حاول مرة أخرى أو دخّل يدوياً.'
-              : 'Could not read invoice with Gemini Vision — try again or enter manually.')
+              ? 'ما قراش مزيان. عاود صورها قريبة، من الفوق، فالضو — أو دخّل يدوياً.'
+              : 'Could not read invoice — retake close-up in good light, or enter manually.')
         );
         setIsScanning(false);
         return;
@@ -628,8 +631,8 @@ export const PurchaseInvoiceScanModal: React.FC = () => {
       if (visionItems.length === 0) {
         setScanError(
           isAr
-            ? 'ما بانوش السلع واضحين فهاد التصويرة — جرب تصويرة أوضح أو اضغط "حاول مرة أخرى" ولا "دخل يدوياً".'
-            : 'No invoice items detected in this photo — retake, retry, or enter manually.'
+            ? 'ما قراش السلع واضحين. عاود صور الفاتورة قريبة، من الفوق، فالضو — ولا اضغط "دخل يدوياً".'
+            : 'No invoice items detected — capture closer from above in good light, or enter manually.'
         );
         setIsScanning(false);
         return;
@@ -845,8 +848,8 @@ export const PurchaseInvoiceScanModal: React.FC = () => {
     const video = videoRef.current;
     if (!video || !video.videoWidth || !video.videoHeight) return;
 
-    // Scale cleanly up to 1600px JPEG so small receipt numbers stay crystal clear for Gemini Vision
-    const maxDim = 1600;
+    // Scale cleanly up to 2200px JPEG so small receipt numbers stay crystal clear for Gemini Vision
+    const maxDim = 2200;
     const scale = Math.min(1, maxDim / Math.max(video.videoWidth, video.videoHeight));
     const w = Math.max(1, Math.round(video.videoWidth * scale));
     const h = Math.max(1, Math.round(video.videoHeight * scale));
@@ -866,7 +869,7 @@ export const PurchaseInvoiceScanModal: React.FC = () => {
         if (blob) void analyzeImageBlob(blob, 0);
       },
       'image/jpeg',
-      0.86
+      0.9
     );
   };
 
@@ -950,6 +953,18 @@ export const PurchaseInvoiceScanModal: React.FC = () => {
           : 'Please enter supplier name for official invoice archiving.'
       );
       return;
+    }
+
+    if (invoiceMode !== 'informal_noir') {
+      const missingSell = activeRows.find((r) => !r.matchedProductId && !(Number(r.sellPrice) > 0));
+      if (missingSell) {
+        setScanError(
+          isAr
+            ? `باقي ما عمرتي ثمن البيع ديال: ${missingSell.rawName || 'سلعة جديدة'}`
+            : `Please fill in sell price for: ${missingSell.rawName || 'new item'}`
+        );
+        return;
+      }
     }
 
     let updatedExistingCount = 0;
@@ -1724,11 +1739,11 @@ export const PurchaseInvoiceScanModal: React.FC = () => {
                     <th className="py-2 px-2.5 text-end">
                       {invoiceMode === 'informal_noir'
                         ? isAr
-                          ? 'ثمن الوحدة (اختياري)'
-                          : 'Unit Cost'
+                          ? 'الشراء (اختياري)'
+                          : 'Buy Cost'
                         : isAr
-                        ? 'ثمن الوحدة'
-                        : 'Unit Cost'}
+                        ? 'الشراء'
+                        : 'Buy Cost'}
                     </th>
                     <th className="py-2 px-2.5 text-end">
                       {isAr ? 'المجموع' : 'Total'}
@@ -1736,11 +1751,11 @@ export const PurchaseInvoiceScanModal: React.FC = () => {
                     <th className="py-2 px-2.5 text-end">
                       {invoiceMode === 'informal_noir'
                         ? isAr
-                          ? 'ثمن البيع (اختياري)'
+                          ? 'البيع - نتا (اختياري)'
                           : 'Sell (Opt.)'
                         : isAr
-                        ? 'ثمن البيع'
-                        : 'Sell'}
+                        ? 'البيع - نتا'
+                        : 'Your Sell'}
                     </th>
                     <th className="py-2 px-2.5 text-center">{isAr ? 'حيد' : 'Del'}</th>
                   </tr>

@@ -20,7 +20,8 @@ import {
   Unlock,
   Ear,
   Wifi,
-  WifiOff
+  WifiOff,
+  Camera
 } from 'lucide-react';
 import { PinGateModal } from './auth/PinGateModal';
 import { KExecutivePanel } from './KExecutivePanel';
@@ -728,6 +729,24 @@ export const Navbar: React.FC = () => {
               {arrivedShopEarCount > 0 ? arrivedShopEarCount : pendingShopEarCount}
             </span>
           )}
+        </button>
+
+        {/* Quick 1-Tap Purchase Invoice Camera Scanner (صور الفاتورة) */}
+        <button
+          type="button"
+          onClick={() => {
+            setShowPaletteDropdown(false);
+            setShowBranchDropdown(false);
+            setShowUserDropdown(false);
+            setShowKPanel(false);
+            window.dispatchEvent(new CustomEvent('kadi:open-purchase-invoice-scanner'));
+          }}
+          aria-label={isAr ? 'صور الفاتورة بالذكاء الاصطناعي' : 'Scan Purchase Invoice'}
+          title={isAr ? 'صور الفاتورة (أتقداو، الحليبة، جملة) ودخلها للستوك' : 'Snap invoice to add stock'}
+          className="flex items-center gap-1 px-2.5 py-1.5 rounded-lg bg-amber-400 hover:bg-amber-500 text-slate-950 text-[11px] font-black transition-colors shadow-2xs shrink-0 whitespace-nowrap"
+        >
+          <Camera className="w-3.5 h-3.5 shrink-0" />
+          <span className="hidden sm:inline">{isAr ? 'صور الفاتورة' : 'Scan Invoice'}</span>
         </button>
 
         {/* Compact Top Voice Assistant Trigger */}
