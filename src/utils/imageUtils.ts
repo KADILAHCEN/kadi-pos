@@ -1,14 +1,14 @@
 /**
  * Mobile Image Compression & Upload Utility
- * Resizes smartphone camera & gallery photos to crisp, lightweight 800px JPEGs (<100KB)
- * to prevent mobile browser memory freezes and IndexedDB quota overflow.
+ * Resizes smartphone camera & gallery photos to ultra-lightweight 300px JPEGs (~8-15KB)
+ * to save IndexedDB storage and keep Kadi POS fast across mobile devices.
  */
 
 export const compressImageFile = (
   file: File,
-  maxWidth = 800,
-  maxHeight = 800,
-  quality = 0.82
+  maxWidth = 300,
+  maxHeight = 300,
+  quality = 0.6
 ): Promise<string> => {
   return new Promise((resolve, reject) => {
     // Check if valid image

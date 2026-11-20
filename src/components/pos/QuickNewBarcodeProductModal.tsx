@@ -65,22 +65,29 @@ export const QuickNewBarcodeProductModal: React.FC<QuickNewBarcodeProductModalPr
 
     setIsLookingUp(true);
     setLookupStatus('searching');
-    setLookupMessage(isAr ? 'كنقلب على المنتوج في OpenFoodFacts...' : 'Searching OpenFoodFacts...');
+    setLookupMessage(
+      isOnline
+        ? isAr
+          ? 'كنقلب في Open Food / Beauty / Products...'
+          : 'Searching Open Food, Beauty & Products...'
+        : isAr
+        ? 'كنقلب في الذاكرة المحلية (أوفلاين)...'
+        : 'Checking offline IndexedDB cache...'
+    );
 
     const res = await lookupProductByBarcode(cleanCode, controller.signal);
     if (controller.signal.aborted) return;
 
     setIsLookingUp(false);
 
-    if (res.offline) {
-      setLookupStatus('offline');
-      setLookupMessage(isAr ? 'أوفلاين — كتب الاسم وثمن البيع وحفظ عادي' : 'Offline — enter name & price manually');
-      return;
-    }
-
     if (res.found) {
       setLookupStatus('found');
-      setLookupMessage(isAr ? `لقيتو: ${res.name}` : `Found: ${res.name}`);
+      const srcTag = res.fromCache
+        ? isAr
+          ? 'من الذاكرة أوفلاين'
+          : 'Offline Cache'
+        : res.sourceLabel || 'OpenFacts';
+      setLookupMessage(isAr ? `لقيتو (${srcTag}): ${res.name}` : `Found (${srcTag}): ${res.name}`);
       if (forceOverwriteName || !userEditedNameRef.current) {
         setName(res.name);
         setNameEn(res.nameEn || res.name);
@@ -91,18 +98,25 @@ export const QuickNewBarcodeProductModal: React.FC<QuickNewBarcodeProductModalPr
       if (settings.bluetoothSoundFeedback !== false) {
         playSound('click');
       }
-    } else {
-      setLookupStatus('not_found');
-      setLookupMessage(
-        res.error
-          ? isAr
-            ? 'تعذر البحث دابا، كتب الاسم يدوي'
-            : 'Lookup unavailable — enter name manually'
-          : isAr
-          ? 'ما لقيتوش، كتب الاسم يدوي'
-          : 'Not found — enter name manually'
-      );
+      return;
     }
+
+    if (res.offline) {
+      setLookupStatus('offline');
+      setLookupMessage(isAr ? 'أوفلاين ومامسجلش فـ IndexedDB — كتب الاسم وحفظ عادي' : 'Offline — enter name & price manually');
+      return;
+    }
+
+    setLookupStatus('not_found');
+    setLookupMessage(
+      res.error
+        ? isAr
+          ? 'تعذر البحث دابا، كتب الاسم يدوي'
+          : 'Lookup unavailable — enter name manually'
+        : isAr
+        ? 'ما لقيتوش فـ 3 قواعد، كتب الاسم يدوي'
+        : 'Not found in Food/Beauty/Products DBs — enter manually'
+    );
   };
 
   useEffect(() => {
@@ -131,11 +145,8 @@ export const QuickNewBarcodeProductModal: React.FC<QuickNewBarcodeProductModalPr
     }, 80);
 
     const cleanCode = scannedBarcode.trim();
-    if (cleanCode.length >= 8 && isOnline) {
+    if (cleanCode.length >= 6) {
       void runOpenFoodFactsLookup(cleanCode, false);
-    } else if (cleanCode.length >= 8 && !isOnline) {
-      setLookupStatus('offline');
-      setLookupMessage(isAr ? 'بلا أنترنت — كتب الاسم وحفظ عادي' : 'Offline — enter name and save normally');
     }
 
     return () => {

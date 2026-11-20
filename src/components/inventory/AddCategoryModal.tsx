@@ -108,8 +108,8 @@ export const AddCategoryModal: React.FC<AddCategoryModalProps> = ({
 
     try {
       setIsProcessingImage(true);
-      // Auto compress to crisp, lightweight 800px JPEG (<90KB)
-      const dataUrl = await compressImageFile(file, 800, 800, 0.85);
+      // Auto compress to ultra-lightweight 300px JPEG (~8-15KB)
+      const dataUrl = await compressImageFile(file, 300, 300, 0.6);
       setSelectedImage(dataUrl);
       playSound('beep');
       setImageToast(isAr ? 'تم تحميل صورة الصنف من الهاتف وتحسينها' : 'Photo uploaded from phone');

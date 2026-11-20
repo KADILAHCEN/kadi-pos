@@ -118,11 +118,34 @@ export const EditProductModal: React.FC<EditProductModalProps> = ({
     setIsLookingUpBarcode(true);
     setBarcodeLookupNote({
       type: 'searching',
-      text: isAr ? 'كنقلب على المنتوج...' : 'Searching OpenFoodFacts...'
+      text: isOnline
+        ? isAr
+          ? 'كنقلب في Open Food / Beauty / Products...'
+          : 'Searching Open Food, Beauty & Products...'
+        : isAr
+        ? 'كنقلب في الذاكرة المحلية (أوفلاين)...'
+        : 'Checking offline IndexedDB cache...'
     });
 
     const res = await lookupProductByBarcode(code);
     setIsLookingUpBarcode(false);
+
+    if (res.found) {
+      if (forceFillName || !name.trim()) setName(res.name);
+      if (forceFillName || !nameEn.trim()) setNameEn(res.nameEn || res.name);
+      const srcTag = res.fromCache
+        ? isAr
+          ? 'من الذاكرة أوفلاين'
+          : 'Offline Cache'
+        : res.sourceLabel || 'OpenFacts';
+      setBarcodeLookupNote({
+        type: 'found',
+        text: isAr ? `لقيتو (${srcTag}): ${res.name}` : `Found (${srcTag}): ${res.name}`,
+        imageUrl: res.imageUrl || undefined
+      });
+      if (settings.enableSoundEffects) playSound('beep');
+      return;
+    }
 
     if (res.offline) {
       setBarcodeLookupNote({
@@ -132,21 +155,10 @@ export const EditProductModal: React.FC<EditProductModalProps> = ({
       return;
     }
 
-    if (res.found) {
-      if (forceFillName || !name.trim()) setName(res.name);
-      if (forceFillName || !nameEn.trim()) setNameEn(res.nameEn || res.name);
-      setBarcodeLookupNote({
-        type: 'found',
-        text: isAr ? `لقيتو: ${res.name}` : `Found: ${res.name}`,
-        imageUrl: res.imageUrl || undefined
-      });
-      if (settings.enableSoundEffects) playSound('beep');
-    } else {
-      setBarcodeLookupNote({
-        type: 'not_found',
-        text: isAr ? 'ما لقيتوش، احتفظ بالاسم الحالي' : 'Not found — keep current name'
-      });
-    }
+    setBarcodeLookupNote({
+      type: 'not_found',
+      text: isAr ? 'ما لقيتوش، احتفظ بالاسم الحالي' : 'Not found — keep current name'
+    });
   };
 
   useEffect(() => {
@@ -162,7 +174,7 @@ export const EditProductModal: React.FC<EditProductModalProps> = ({
       setBarcode(clean);
       setSku((prev) => prev || `SKU-${clean.slice(-4)}`);
       if (settings.bluetoothSoundFeedback !== false) playSound('beep');
-      if (isOnline && clean.length >= 8) {
+      if (clean.length >= 6) {
         void handleLookupBarcode(clean, !name.trim());
       }
     });
@@ -170,7 +182,7 @@ export const EditProductModal: React.FC<EditProductModalProps> = ({
       unsubscribe();
       bluetoothScanner.popScope('edit_product_modal');
     };
-  }, [isOpen, product, showBarcodeScanner, isOnline, settings.bluetoothSoundFeedback, name]);
+  }, [isOpen, product, showBarcodeScanner, settings.bluetoothSoundFeedback, name]);
 
   if (!isOpen || !product) return null;
 
@@ -195,7 +207,7 @@ export const EditProductModal: React.FC<EditProductModalProps> = ({
 
     try {
       setIsProcessingImage(true);
-      const dataUrl = await compressImageFile(file, 800, 800, 0.85);
+      const dataUrl = await compressImageFile(file, 300, 300, 0.6);
       setImage(dataUrl);
       setRepType('image');
       playSound('beep');
@@ -796,7 +808,7 @@ export const EditProductModal: React.FC<EditProductModalProps> = ({
             onScanned={(code) => {
               setBarcode(code);
               if (!sku) setSku('SKU-' + code.slice(-4));
-              if (isOnline && code.trim().length >= 8) {
+              if (code.trim().length >= 6) {
                 void handleLookupBarcode(code, !name.trim());
               }
             }}

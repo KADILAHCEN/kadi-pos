@@ -166,7 +166,7 @@ export const AddProductModal: React.FC<AddProductModalProps> = ({
       if (settings.bluetoothSoundFeedback !== false) {
         playSound('beep');
       }
-      if (isOnline && clean.length >= 8) {
+      if (clean.length >= 6) {
         void handleLookupBarcode(clean, !name.trim());
       }
     });
@@ -175,7 +175,7 @@ export const AddProductModal: React.FC<AddProductModalProps> = ({
       unsubscribe();
       bluetoothScanner.popScope('add_product_modal');
     };
-  }, [isOpen, showBarcodeScanner, isOnline, settings.bluetoothSoundFeedback, name]);
+  }, [isOpen, showBarcodeScanner, settings.bluetoothSoundFeedback, name]);
 
   const handleCaptureFromCamera = (dataUrl: string) => {
     setCustomCapturedImage(dataUrl);
@@ -189,7 +189,7 @@ export const AddProductModal: React.FC<AddProductModalProps> = ({
 
     try {
       setIsProcessingImage(true);
-      const dataUrl = await compressImageFile(file, 800, 800, 0.82);
+      const dataUrl = await compressImageFile(file, 300, 300, 0.6);
       setCustomCapturedImage(dataUrl);
       setSelectedImage(dataUrl);
       setRepType('image');
@@ -269,19 +269,17 @@ export const AddProductModal: React.FC<AddProductModalProps> = ({
     setIsLookingUpBarcode(true);
     setBarcodeLookupNote({
       type: 'searching',
-      text: isAr ? 'كنقلب على المنتوج...' : 'Searching OpenFoodFacts...'
+      text: isOnline
+        ? isAr
+          ? 'كنقلب في Open Food / Beauty / Products...'
+          : 'Searching Open Food, Beauty & Products...'
+        : isAr
+        ? 'كنقلب في الذاكرة المحلية (أوفلاين)...'
+        : 'Checking offline IndexedDB cache...'
     });
 
     const res = await lookupProductByBarcode(code);
     setIsLookingUpBarcode(false);
-
-    if (res.offline) {
-      setBarcodeLookupNote({
-        type: 'offline',
-        text: isAr ? 'ما كاينش أنترنت — كتب اسم المنتوج يدوي' : 'Offline — enter product name manually'
-      });
-      return;
-    }
 
     if (res.found) {
       if (forceFillName || !name.trim()) {
@@ -290,24 +288,38 @@ export const AddProductModal: React.FC<AddProductModalProps> = ({
       if (forceFillName || !nameEn.trim()) {
         setNameEn(res.nameEn || res.name);
       }
+      const srcTag = res.fromCache
+        ? isAr
+          ? 'من الذاكرة أوفلاين'
+          : 'Offline Cache'
+        : res.sourceLabel || 'OpenFacts';
       setBarcodeLookupNote({
         type: 'found',
-        text: isAr ? `لقيتو: ${res.name}` : `Found: ${res.name}`,
+        text: isAr ? `لقيتو (${srcTag}): ${res.name}` : `Found (${srcTag}): ${res.name}`,
         imageUrl: res.imageUrl || undefined
       });
       if (settings.enableSoundEffects) playSound('beep');
-    } else {
-      setBarcodeLookupNote({
-        type: 'not_found',
-        text: res.error
-          ? isAr
-            ? 'تعذر الاتصال بـ OpenFoodFacts، كتب الاسم يدوي'
-            : 'Lookup failed — enter name manually'
-          : isAr
-          ? 'ما لقيتوش، كتب الاسم يدوي'
-          : 'Not found — enter name manually'
-      });
+      return;
     }
+
+    if (res.offline) {
+      setBarcodeLookupNote({
+        type: 'offline',
+        text: isAr ? 'ما كاينش أنترنت ومامسجلش — كتب الاسم يدوي' : 'Offline & not cached — enter name manually'
+      });
+      return;
+    }
+
+    setBarcodeLookupNote({
+      type: 'not_found',
+      text: res.error
+        ? isAr
+          ? 'تعذر الاتصال، كتب الاسم يدوي'
+          : 'Lookup failed — enter name manually'
+        : isAr
+        ? 'ما لقيتوش فـ 3 قواعد، كتب الاسم يدوي'
+        : 'Not found in Food/Beauty/Products DBs'
+    });
   };
 
   const handleCreateCategory = (e: React.FormEvent) => {
@@ -1355,7 +1367,7 @@ export const AddProductModal: React.FC<AddProductModalProps> = ({
               setSku('SKU-' + code.slice(-4));
             }
             setBarcodeErrorAlert(null);
-            if (isOnline && code.trim().length >= 8) {
+            if (code.trim().length >= 6) {
               void handleLookupBarcode(code, !name.trim());
             }
           }}

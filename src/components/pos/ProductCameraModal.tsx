@@ -124,15 +124,15 @@ export const ProductCameraModal: React.FC<ProductCameraModalProps> = ({
     const startX = ((video.videoWidth || 640) - size) / 2;
     const startY = ((video.videoHeight || 480) - size) / 2;
 
-    canvas.width = 600;
-    canvas.height = 600;
+    canvas.width = 300;
+    canvas.height = 300;
     const ctx = canvas.getContext('2d');
     if (!ctx) return;
 
-    // Draw square cropped image
-    ctx.drawImage(video, startX, startY, size, size, 0, 0, 600, 600);
+    // Draw square cropped image (300px @ 60% JPEG = tiny storage footprint)
+    ctx.drawImage(video, startX, startY, size, size, 0, 0, 300, 300);
 
-    const dataUrl = canvas.toDataURL('image/jpeg', 0.88);
+    const dataUrl = canvas.toDataURL('image/jpeg', 0.6);
     setCapturedImage(dataUrl);
 
     // Stop live stream while reviewing
@@ -164,7 +164,7 @@ export const ProductCameraModal: React.FC<ProductCameraModalProps> = ({
     if (!file) return;
 
     try {
-      const compressed = await compressImageFile(file, 800, 800, 0.82);
+      const compressed = await compressImageFile(file, 300, 300, 0.6);
       setCapturedImage(compressed);
       if (stream) {
         stream.getTracks().forEach((t) => t.stop());
