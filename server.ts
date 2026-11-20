@@ -469,23 +469,26 @@ If audio is provided, transcribe what was said verbatim into "transcript" in Ara
 
       const cleanBase64 = imageBase64.replace(/^data:[^;]+;base64,/, '');
 
-      const visionItemsInstruction = `You are a world-class multimodal document Vision AI specialized in reading ANY Moroccan invoice, wholesale receipt, thermal supermarket ticket, delivery slip (BL), or handwritten hanout carnet/bon.
+      const visionItemsInstruction = `You are a world-class multimodal document Vision AI specialized in reading ANY Moroccan invoice, wholesale receipt, dairy delivery slip, thermal supermarket ticket, or handwritten hanout carnet/bon.
 Understand the FULL image visually just like Meta AI:
 1. AUTO-CORRECT SCENE & GEOMETRY:
    - The paper may be tilted, rotated sideways/upside-down, crumpled, wrinkled, creased, poorly lit, or photographed on a patterned Moroccan carpet (زربية), wooden table, tiled floor, or counter.
    - Ignore the carpet/background completely, mentally straighten and un-wrinkle the invoice, and read the whole page with full visual layout comprehension — NOT naive flat-line OCR.
-2. SUPPORT ANY MOROCCAN INVOICE FORMAT:
-   - Atacadao, Marjane, Carrefour, Bim, Metro, Supeco, Asswak Assalam, wholesale A4/A5 invoices, thermal POS receipts, and handwritten paper slips in French, Arabic, or Darija.
-   - Thermal receipts (e.g. Atacadao/Marjane) often wrap product descriptions across two lines or place "2 x 14,50  29,00" beneath the item name, or have SKU/EAN barcodes on the left — NEVER mistake barcodes, line numbers, TVA %, or dates for quantity or price.
-   - Understand column alignments even when skewed/wrinkled: DESIGNATION/ARTICLE -> "nom", QTE/COLIS -> "quantite", PU/P.U./PRIX -> "prix", MONTANT/PT/TOTAL -> "total".
+2. SUPPORT ANY MOROCCAN HANOUT & WHOLESALE INVOICE FORMAT:
+   - ATACADAO, Marjane, Carrefour, Bim, Metro, Supeco, Asswak Assalam.
+   - Dairy / الحليبة delivery slips & invoices: Centrale Danone (سنطرال / دانون), Jibal (جبال), Colainor (كولينور), Jaouda (جودة), Chergui (شرقي), Copag.
+   - Wholesale grocery A4/A5 invoices, thermal POS receipts, and handwritten paper slips in French, Arabic, or Darija (زيت، سكر، دقيق، أتاي، صابون، بيسكوي، مشروبات).
+   - Thermal receipts (e.g. ATACADAO/Marjane) often wrap product descriptions across two lines, place "2 x 14,50  29,00" beneath the item name, or print an EAN barcode / article code (8–13 digits) next to or above the product name — extract that barcode into "barcode" when clearly visible, and NEVER mistake barcodes, line numbers, TVA %, or dates for quantity or price.
+   - Understand column alignments even when skewed/wrinkled: CODE BARRE/EAN -> "barcode", DESIGNATION/ARTICLE -> "nom", QTE/COLIS -> "quantite", PU/P.U./PRIX -> "prix", MONTANT/PT/TOTAL -> "total".
    - Convert European commas ("14,50" -> 14.5).
 3. MATH & RECONCILIATION PER ITEM:
    - If "quantite" is missing or unclear on a single line item, use 1.
    - If "prix" (unit price) is missing but "total" and "quantite" are visible, compute prix = total / quantite.
    - If "total" is missing but "quantite" and "prix" are visible, compute total = quantite * prix.
+   - If no barcode/EAN is printed on that line, return "" for "barcode".
    - Skip footer/summary/payment rows (TOTAL, TOTAL TTC, TOTAL HT, TVA, SOUS-TOTAL, NET A PAYER, ESPECE, RENDU, TIMBRE, ICE, IF, RC).
 4. OUTPUT FORMAT (STRICT):
-   - Return ONLY a JSON array of objects matching exactly: [{"nom": "...", "quantite": 0, "prix": 0, "total": 0}]`;
+   - Return ONLY a JSON array of objects matching exactly: [{"barcode": "", "nom": "...", "quantite": 0, "prix": 0, "total": 0}]`;
 
       const callVisionItems = () =>
         ai.models.generateContent({
@@ -499,7 +502,7 @@ Understand the FULL image visually just like Meta AI:
                 }
               },
               {
-                text: 'Read the full invoice image visually (auto-correct any tilt, wrinkles, rotation, or carpet background). Extract every product with nom, quantite, prix (unit price), and total (line total). Return only JSON: [{"nom": "...", "quantite": 0, "prix": 0, "total": 0}].'
+                text: 'Read the full Moroccan invoice image visually (ATACADAO, dairy/الحليبة like Centrale/Danone/Jibal/Colainor, wholesale, or handwritten bon; auto-correct tilt, wrinkles, rotation, or carpet background). Extract every product with barcode (digits if printed else ""), nom, quantite, prix (unit cost MAD), and total (line total MAD). Return only JSON: [{"barcode": "", "nom": "...", "quantite": 0, "prix": 0, "total": 0}].'
               }
             ]
           },
@@ -512,6 +515,10 @@ Understand the FULL image visually just like Meta AI:
               items: {
                 type: Type.OBJECT,
                 properties: {
+                  barcode: {
+                    type: Type.STRING,
+                    description: 'EAN barcode or article code printed on the line item, or empty string if absent'
+                  },
                   nom: {
                     type: Type.STRING,
                     description: 'Clean product name as written on the invoice'
@@ -590,6 +597,7 @@ Understand the FULL image visually just like Meta AI:
       }
 
       type RawVisionItem = {
+        barcode?: unknown;
         nom?: unknown;
         quantite?: unknown;
         prix?: unknown;
@@ -599,6 +607,10 @@ Understand the FULL image visually just like Meta AI:
       const rawItems = safeParseGeminiJson<RawVisionItem[]>(itemsResult.value.text || '[]', []);
       const normalizedItems = (Array.isArray(rawItems) ? rawItems : [])
         .map((it) => {
+          const barcode = String(it?.barcode ?? '')
+            .replace(/[^0-9A-Za-z-]/g, '')
+            .trim()
+            .slice(0, 32);
           const nom = String(it?.nom ?? '').trim();
           const rawQty = Number(it?.quantite);
           const quantite = Number.isFinite(rawQty) && rawQty > 0 ? Number(rawQty.toFixed(3)) : 1;
@@ -616,7 +628,7 @@ Understand the FULL image visually just like Meta AI:
             total = Number(total.toFixed(2));
           }
 
-          return { nom, quantite, prix, total };
+          return { barcode, nom, quantite, prix, total };
         })
         .filter((it) => it.nom.length > 0);
 

@@ -35,6 +35,7 @@ import {
 export type PurchaseInvoiceMode = 'official_ice' | 'informal_noir';
 
 export interface VisionInvoiceItem {
+  barcode?: string;
   nom: string;
   quantite: number;
   prix: number;
@@ -44,12 +45,14 @@ export interface VisionInvoiceItem {
 interface ScannedLineItem {
   id: string;
   include: boolean;
+  barcode: string;
   rawName: string;
   matchedProductId: string; // '' means create new catalog product
   quantity: number;
   unitCost: number;
   lineTotal: number;
   sellPrice: number;
+  suggestedMarginPct?: number;
   unitType: UnitType;
   source?: 'vision' | 'manual';
 }
@@ -188,10 +191,45 @@ const prepareInvoiceImageForVision = async (
   }
 };
 
+/**
+ * Smart Moroccan Hanout margin heuristic for newly scanned items:
+ * - Basic staples (زيت، سكر، دقيق، أتاي، قهوة): +10%
+ * - Dairy / الحليبة (حليب، دانون، سنطرال، جبال، كولينور، جودة، شرقي، رايب، جبن، زبدة): +15%
+ * - Hygiene / cleaning / snacks / general: +20%
+ */
+const suggestMoroccanMarginPercent = (itemName: string): number => {
+  const s = itemName.toLowerCase();
+  if (
+    /(زيت|سكر|دقيق|فرينة|فينو|سميد|سميدة|اتاي|أتاي|شاي|قهوة|huile|sucre|farine|semoule|the\b|thé|cafe|café|lesieur|cristal|alhor|ounous|oued|sultan)/i.test(
+      s
+    )
+  ) {
+    return 10;
+  }
+  if (
+    /(حليب|دانون|ياغورت|جبن|زبدة|رايب|لبن|سنطرال|جبال|كولينور|جودة|شرقي|lait|danone|centrale|jibal|colainor|jaouda|chergui|copag|yaourt|fromage|beurre|kiri|vache)/i.test(
+      s
+    )
+  ) {
+    return 15;
+  }
+  return 20;
+};
+
 const findBestCatalogProduct = (
   rawName: string,
-  products: Product[]
+  products: Product[],
+  rawBarcode?: string
 ): Product | undefined => {
+  const cleanBarcode = (rawBarcode || '').replace(/[^0-9A-Za-z-]/g, '').trim();
+  if (cleanBarcode.length >= 4) {
+    const byBarcode = products.find((p) => {
+      const pb = (p.barcode || '').replace(/[^0-9A-Za-z-]/g, '').trim();
+      return pb.length > 0 && (pb === cleanBarcode || pb.endsWith(cleanBarcode) || cleanBarcode.endsWith(pb));
+    });
+    if (byBarcode) return byBarcode;
+  }
+
   const clean = rawName.trim().toLowerCase();
   if (!clean) return undefined;
 
@@ -452,12 +490,14 @@ export const PurchaseInvoiceScanModal: React.FC = () => {
   const buildEmptyManualRow = (): ScannedLineItem => ({
     id: `man-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`,
     include: true,
+    barcode: '',
     rawName: '',
     matchedProductId: '',
     quantity: 1,
     unitCost: 0,
     lineTotal: 0,
     sellPrice: 0,
+    suggestedMarginPct: 20,
     unitType: 'piece',
     source: 'manual'
   });
@@ -489,6 +529,7 @@ export const PurchaseInvoiceScanModal: React.FC = () => {
         {
           id: `cat-${prod.id}-${Date.now()}`,
           include: true,
+          barcode: prod.barcode || '',
           rawName: prod.name,
           matchedProductId: prod.id,
           quantity: 1,
@@ -596,10 +637,13 @@ export const PurchaseInvoiceScanModal: React.FC = () => {
 
       const extractedRows: ScannedLineItem[] = visionItems.map((raw, idx) => {
         const name = String(raw.nom || '').trim();
+        const barcode = String(raw.barcode || '')
+          .replace(/[^0-9A-Za-z-]/g, '')
+          .trim();
         const qty = Math.max(0.01, Number(raw.quantite) || 1);
         const rawPrix = Number(raw.prix);
         const rawTotal = Number(raw.total);
-        const matched = findBestCatalogProduct(name, products);
+        const matched = findBestCatalogProduct(name, products, barcode);
 
         const unitCost =
           Number.isFinite(rawPrix) && rawPrix > 0
@@ -615,21 +659,24 @@ export const PurchaseInvoiceScanModal: React.FC = () => {
             ? rawTotal
             : Number((qty * unitCost).toFixed(2));
 
+        const marginPct = suggestMoroccanMarginPercent(name);
         const suggestedSell = matched
           ? matched.price
           : unitCost > 0
-          ? Number((unitCost * 1.2).toFixed(2))
+          ? Number((unitCost * (1 + marginPct / 100)).toFixed(2))
           : 0;
 
         return {
           id: `vision-${Date.now()}-${idx}`,
           include: true,
+          barcode: barcode || matched?.barcode || '',
           rawName: name,
           matchedProductId: matched?.id || '',
           quantity: Number(qty.toFixed(3)),
           unitCost: Number(Math.max(0, unitCost).toFixed(2)),
           lineTotal: Number(Math.max(0, lineTotal).toFixed(2)),
           sellPrice: suggestedSell,
+          suggestedMarginPct: matched ? undefined : marginPct,
           unitType: matched ? matched.unitType : normalizeUnitType(name),
           source: 'vision'
         };
@@ -853,10 +900,12 @@ export const PurchaseInvoiceScanModal: React.FC = () => {
         return {
           ...it,
           matchedProductId: prod.id,
+          barcode: it.barcode || prod.barcode || '',
           rawName: prod.name,
           unitCost: cost,
           lineTotal: Number((it.quantity * cost).toFixed(2)),
           sellPrice: prod.price,
+          suggestedMarginPct: undefined,
           unitType: prod.unitType
         };
       })
@@ -868,6 +917,7 @@ export const PurchaseInvoiceScanModal: React.FC = () => {
       items
         .filter((it) => it.include && (it.rawName.trim() || it.matchedProductId))
         .map((it) => ({
+          ...(it.barcode.trim() ? { barcode: it.barcode.trim() } : {}),
           nom: it.rawName.trim(),
           quantite: Number(it.quantity) || 0,
           prix: Number(it.unitCost) || 0,
@@ -942,12 +992,13 @@ export const PurchaseInvoiceScanModal: React.FC = () => {
         });
       } else {
         const cleanName = row.rawName.trim() || `${isAr ? 'سلعة جديدة' : 'New Item'} #${index + 1}`;
-        const skuCode = `SC-${Date.now().toString().slice(-5)}-${index + 1}`;
+        const cleanBarcode = row.barcode.trim();
+        const skuCode = cleanBarcode || `SC-${Date.now().toString().slice(-5)}-${index + 1}`;
         addProduct({
           name: cleanName,
           nameEn: cleanName,
           sku: skuCode,
-          barcode: '',
+          barcode: cleanBarcode,
           categoryId: categories[0]?.id || 'cat-1',
           price: Number(sellPrice.toFixed(2)),
           costPrice: Number(unitCost.toFixed(2)),
@@ -1041,8 +1092,8 @@ export const PurchaseInvoiceScanModal: React.FC = () => {
               </div>
               <p className="text-xs text-slate-500 dark:text-slate-400 truncate">
                 {isAr
-                  ? 'أتقداو، مرجان، جملة، بون — كيقرا التصويرة كاملة وخا مايلة، مكمشة، ولا فوق زربية'
-                  : 'Atacadao, Marjane, wholesale, handwritten — even tilted, wrinkled, or on carpet'}
+                  ? 'أتقداو (ATACADAO)، الحليبة (سنطرال، دانون، جبال، كولينور)، جملة، بون — باقتراح هامش الربح تلقائياً'
+                  : 'Atacadao, Dairy (Centrale/Danone/Jibal/Colainor), wholesale, bons — with smart margin suggestions'}
               </p>
             </div>
           </div>
@@ -1732,14 +1783,34 @@ export const PurchaseInvoiceScanModal: React.FC = () => {
                             className="w-4 h-4 accent-emerald-600"
                           />
                         </td>
-                        <td className="py-2 px-2.5 min-w-[165px]">
+                        <td className="py-2 px-2.5 min-w-[175px] space-y-1">
                           <input
                             ref={idx === 0 ? firstRowInputRef : undefined}
                             type="text"
                             value={it.rawName}
-                            onChange={(e) => updateLine(it.id, { rawName: e.target.value })}
+                            onChange={(e) => {
+                              const nextName = e.target.value;
+                              const nextMargin = !it.matchedProductId
+                                ? suggestMoroccanMarginPercent(nextName)
+                                : it.suggestedMarginPct;
+                              updateLine(it.id, {
+                                rawName: nextName,
+                                suggestedMarginPct: nextMargin
+                              });
+                            }}
                             placeholder={isAr ? 'كتب إسم السلعة...' : 'Product name'}
                             className="w-full px-2.5 py-1.5 rounded-lg bg-slate-50 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 font-bold text-slate-900 dark:text-white"
+                          />
+                          <input
+                            type="text"
+                            value={it.barcode}
+                            onChange={(e) =>
+                              updateLine(it.id, {
+                                barcode: e.target.value.replace(/[^0-9A-Za-z-]/g, '')
+                              })
+                            }
+                            placeholder={isAr ? 'باركود (اختياري)...' : 'Barcode (optional)'}
+                            className="w-full px-2 py-0.5 rounded-md bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-700 font-mono text-[10px] text-slate-500 dark:text-slate-400"
                           />
                         </td>
                         <td className="py-2 px-2.5 min-w-[155px]">
@@ -1827,18 +1898,25 @@ export const PurchaseInvoiceScanModal: React.FC = () => {
                           />
                         </td>
                         <td className="py-2 px-2.5 text-end">
-                          <input
-                            type="number"
-                            step="0.01"
-                            min="0"
-                            value={it.sellPrice}
-                            onChange={(e) =>
-                              updateLine(it.id, {
-                                sellPrice: Math.max(0, Number(e.target.value) || 0)
-                              })
-                            }
-                            className="w-18 px-2 py-1 rounded-lg bg-slate-50 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 text-end font-mono tabular-nums"
-                          />
+                          <div className="flex flex-col items-end gap-0.5">
+                            <input
+                              type="number"
+                              step="0.01"
+                              min="0"
+                              value={it.sellPrice}
+                              onChange={(e) =>
+                                updateLine(it.id, {
+                                  sellPrice: Math.max(0, Number(e.target.value) || 0)
+                                })
+                              }
+                              className="w-18 px-2 py-1 rounded-lg bg-slate-50 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 text-end font-mono tabular-nums"
+                            />
+                            {!it.matchedProductId && it.suggestedMarginPct ? (
+                              <span className="text-[9px] font-bold text-emerald-600 dark:text-emerald-400">
+                                {isAr ? `مقترح +${it.suggestedMarginPct}%` : `+${it.suggestedMarginPct}% est.`}
+                              </span>
+                            ) : null}
+                          </div>
                         </td>
                         <td className="py-2 px-2.5 text-center">
                           <button
