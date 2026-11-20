@@ -17,12 +17,17 @@ import {
   DollarSign,
   Calendar,
   AlertTriangle,
-  Smartphone
+  Smartphone,
+  Search,
+  Loader2,
+  Globe
 } from 'lucide-react';
 import { playSound } from '../../utils/audio';
 import { compressImageFile } from '../../utils/imageUtils';
 import { ProductCameraModal } from './ProductCameraModal';
 import { BarcodeScannerModal } from './BarcodeScannerModal';
+import { lookupProductByBarcode } from '../../utils/openFoodFacts';
+import { bluetoothScanner } from '../../utils/bluetoothScanner';
 
 interface EditProductModalProps {
   product: Product | null;
@@ -35,7 +40,7 @@ export const EditProductModal: React.FC<EditProductModalProps> = ({
   isOpen,
   onClose
 }) => {
-  const { categories, updateProduct, currencySymbol, language, settings } = usePos();
+  const { products, categories, updateProduct, currencySymbol, language, settings, isOnline } = usePos();
   const t = getT(language);
   const isAr = language === 'ar';
   const isFr = language === 'fr';
@@ -65,10 +70,16 @@ export const EditProductModal: React.FC<EditProductModalProps> = ({
   const [color, setColor] = useState<string>('#059669');
   const [repType, setRepType] = useState<'image' | 'color'>('image');
 
-  // Camera & File Upload
+  // Camera, Lookup & File Upload
   const [showCameraModal, setShowCameraModal] = useState(false);
   const [showBarcodeScanner, setShowBarcodeScanner] = useState(false);
   const [isProcessingImage, setIsProcessingImage] = useState(false);
+  const [isLookingUpBarcode, setIsLookingUpBarcode] = useState(false);
+  const [barcodeLookupNote, setBarcodeLookupNote] = useState<{
+    type: 'searching' | 'found' | 'not_found' | 'offline';
+    text: string;
+    imageUrl?: string;
+  } | null>(null);
   const galleryInputRef = useRef<HTMLInputElement>(null);
   const nativeCameraInputRef = useRef<HTMLInputElement>(null);
 
@@ -88,10 +99,89 @@ export const EditProductModal: React.FC<EditProductModalProps> = ({
       setColor(product.color || '#059669');
       setRepType(product.image ? 'image' : 'color');
       setIsProcessingImage(false);
+      setIsLookingUpBarcode(false);
+      setBarcodeLookupNote(null);
     }
   }, [product, categories]);
 
+  const handleLookupBarcode = async (targetCode?: string, forceFillName = false) => {
+    if (isLookingUpBarcode) return;
+    const code = (targetCode ?? barcode).trim();
+    if (!code) {
+      setBarcodeLookupNote({
+        type: 'not_found',
+        text: isAr ? 'كتب الباركود أولا' : 'Enter a barcode first'
+      });
+      return;
+    }
+
+    setIsLookingUpBarcode(true);
+    setBarcodeLookupNote({
+      type: 'searching',
+      text: isAr ? 'كنقلب على المنتوج...' : 'Searching OpenFoodFacts...'
+    });
+
+    const res = await lookupProductByBarcode(code);
+    setIsLookingUpBarcode(false);
+
+    if (res.offline) {
+      setBarcodeLookupNote({
+        type: 'offline',
+        text: isAr ? 'ما كاينش أنترنت — كتب البيانات يدوي' : 'Offline — enter details manually'
+      });
+      return;
+    }
+
+    if (res.found) {
+      if (forceFillName || !name.trim()) setName(res.name);
+      if (forceFillName || !nameEn.trim()) setNameEn(res.nameEn || res.name);
+      setBarcodeLookupNote({
+        type: 'found',
+        text: isAr ? `لقيتو: ${res.name}` : `Found: ${res.name}`,
+        imageUrl: res.imageUrl || undefined
+      });
+      if (settings.enableSoundEffects) playSound('beep');
+    } else {
+      setBarcodeLookupNote({
+        type: 'not_found',
+        text: isAr ? 'ما لقيتوش، احتفظ بالاسم الحالي' : 'Not found — keep current name'
+      });
+    }
+  };
+
+  useEffect(() => {
+    if (!isOpen || !product || showBarcodeScanner) {
+      bluetoothScanner.popScope('edit_product_modal');
+      return;
+    }
+    bluetoothScanner.pushScope('edit_product_modal');
+    const unsubscribe = bluetoothScanner.onScan((payload) => {
+      if (bluetoothScanner.getActiveScope() !== 'edit_product_modal') return;
+      const clean = payload.barcode.trim();
+      if (!clean) return;
+      setBarcode(clean);
+      setSku((prev) => prev || `SKU-${clean.slice(-4)}`);
+      if (settings.bluetoothSoundFeedback !== false) playSound('beep');
+      if (isOnline && clean.length >= 8) {
+        void handleLookupBarcode(clean, !name.trim());
+      }
+    });
+    return () => {
+      unsubscribe();
+      bluetoothScanner.popScope('edit_product_modal');
+    };
+  }, [isOpen, product, showBarcodeScanner, isOnline, settings.bluetoothSoundFeedback, name]);
+
   if (!isOpen || !product) return null;
+
+  const duplicateOtherProduct = barcode.trim()
+    ? products.find(
+        (p) =>
+          p.id !== product.id &&
+          p.barcode &&
+          p.barcode.trim().toLowerCase() === barcode.trim().toLowerCase()
+      )
+    : undefined;
 
   const handleCaptureFromCamera = (dataUrl: string) => {
     setImage(dataUrl);
@@ -129,6 +219,10 @@ export const EditProductModal: React.FC<EditProductModalProps> = ({
   const handleSave = (e: React.FormEvent) => {
     e.preventDefault();
     if (!name.trim()) return;
+    if (duplicateOtherProduct) {
+      playSound('error');
+      return;
+    }
 
     updateProduct(product.id, {
       name: name.trim(),
@@ -181,7 +275,128 @@ export const EditProductModal: React.FC<EditProductModalProps> = ({
 
         {/* Form Body */}
         <form onSubmit={handleSave} className="flex-1 overflow-y-auto p-5 sm:p-6 space-y-5 text-xs">
-          {/* Section 1: Names (الاسم) */}
+          {/* Section 1: Barcode & SKU (Top for Instant Scan / Lookup) */}
+          <div className="p-4 rounded-2xl bg-emerald-50/70 dark:bg-emerald-950/25 border-2 border-emerald-200 dark:border-emerald-800/80 space-y-3">
+            <div className="flex items-center justify-between gap-2 flex-wrap">
+              <div className="font-black text-slate-900 dark:text-white flex items-center gap-1.5">
+                <Barcode className="w-4 h-4 text-emerald-600" />
+                <span>{isAr ? 'الكود بار (الباركود) ورمز SKU' : 'Barcode & SKU'}</span>
+              </div>
+              <span className="text-[10px] font-bold text-emerald-700 dark:text-emerald-300">
+                {isAr ? 'اسكاني بالبلوتوث أو الكاميرا لتحديث الباركود' : 'Scan via Bluetooth or Camera'}
+              </span>
+            </div>
+
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+              <div>
+                <div className="flex items-center justify-between mb-1 gap-1.5 flex-wrap">
+                  <label className="block text-xs font-semibold text-slate-700 dark:text-slate-300">
+                    {isAr ? 'الكود بار (الباركود)' : t.barcode}
+                  </label>
+                  <div className="flex items-center gap-1.5 flex-wrap">
+                    <button
+                      type="button"
+                      disabled={isLookingUpBarcode}
+                      onClick={() => void handleLookupBarcode(barcode, true)}
+                      className="px-2 py-0.5 rounded-lg bg-blue-600 hover:bg-blue-700 disabled:opacity-60 text-white text-[10px] font-bold flex items-center gap-1 transition-colors"
+                    >
+                      {isLookingUpBarcode ? (
+                        <Loader2 className="w-3 h-3 animate-spin" />
+                      ) : (
+                        <Search className="w-3 h-3" />
+                      )}
+                      <span>{isAr ? 'قلب بالباركود' : 'Lookup'}</span>
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => setShowBarcodeScanner(true)}
+                      className="px-2 py-0.5 rounded-lg bg-slate-900 dark:bg-slate-700 hover:bg-slate-800 text-white text-[10px] font-bold flex items-center gap-1 transition-colors"
+                      title={isAr ? 'قراءة الباركود بالكاميرا' : 'Scan barcode with camera'}
+                    >
+                      <Camera className="w-3 h-3 text-emerald-400" />
+                      <span>{isAr ? 'مسح بالكاميرا' : 'Camera Scan'}</span>
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => {
+                        const code = '628' + Math.floor(100000000 + Math.random() * 900000000).toString();
+                        setBarcode(code);
+                        if (!sku) setSku('SKU-' + code.slice(-4));
+                        setBarcodeLookupNote(null);
+                      }}
+                      className="px-2 py-0.5 rounded-lg bg-emerald-100 dark:bg-emerald-900/60 text-emerald-700 dark:text-emerald-300 text-[10px] font-bold hover:bg-emerald-200 flex items-center gap-1 transition-colors"
+                    >
+                      <Sparkles className="w-3 h-3" />
+                      <span>{isAr ? 'توليد' : 'Generate'}</span>
+                    </button>
+                  </div>
+                </div>
+                <input
+                  type="text"
+                  data-barcode-allow-input="true"
+                  value={barcode}
+                  onChange={(e) => {
+                    setBarcode(e.target.value);
+                    if (barcodeLookupNote) setBarcodeLookupNote(null);
+                  }}
+                  onKeyDown={(e) => {
+                    if (e.key === 'Enter' && barcode.trim().length >= 6) {
+                      e.preventDefault();
+                      void handleLookupBarcode(barcode.trim(), false);
+                    }
+                  }}
+                  placeholder={isAr ? 'اسكاني أو كتب الباركود...' : 'Scan or enter barcode...'}
+                  className={`w-full px-3 py-2 bg-white dark:bg-slate-800 border rounded-xl font-mono text-sm font-bold text-slate-900 dark:text-white ${
+                    duplicateOtherProduct
+                      ? 'border-rose-500 ring-2 ring-rose-500/30'
+                      : 'border-emerald-300 dark:border-emerald-700'
+                  }`}
+                />
+                {barcodeLookupNote && (
+                  <div className="mt-2 px-3 py-1.5 rounded-xl border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-800 text-[11px] font-bold flex items-center justify-between gap-2">
+                    <div className="flex items-center gap-2 min-w-0">
+                      <Globe className="w-3.5 h-3.5 text-blue-600 shrink-0" />
+                      <span className="truncate">{barcodeLookupNote.text}</span>
+                    </div>
+                    {barcodeLookupNote.imageUrl && (
+                      <button
+                        type="button"
+                        onClick={() => {
+                          if (!barcodeLookupNote.imageUrl) return;
+                          setImage(barcodeLookupNote.imageUrl);
+                          setRepType('image');
+                        }}
+                        className="px-2 py-0.5 rounded-lg bg-emerald-600 text-white text-[10px] font-black shrink-0"
+                      >
+                        {isAr ? 'اعتماد الصورة' : 'Use Photo'}
+                      </button>
+                    )}
+                  </div>
+                )}
+                {duplicateOtherProduct && (
+                  <p className="mt-1.5 text-[11px] font-bold text-rose-600 dark:text-rose-400">
+                    {isAr
+                      ? `⚠️ هذا الباركود مستعمل بالفعل لمنتوج "${duplicateOtherProduct.name}"`
+                      : `⚠️ Barcode already used by "${duplicateOtherProduct.name}"`}
+                  </p>
+                )}
+              </div>
+
+              <div>
+                <label className="block text-xs font-semibold text-slate-700 dark:text-slate-300 mb-1">
+                  {t.sku}
+                </label>
+                <input
+                  type="text"
+                  value={sku}
+                  onChange={(e) => setSku(e.target.value)}
+                  className="w-full px-3 py-2 bg-white dark:bg-slate-800 border border-slate-300 dark:border-slate-700 rounded-xl font-mono text-slate-900 dark:text-white"
+                />
+              </div>
+            </div>
+          </div>
+
+          {/* Section 2: Names (الاسم) */}
           <div className="p-4 rounded-2xl bg-slate-50 dark:bg-slate-800/50 border border-slate-200/80 dark:border-slate-800 space-y-3">
             <div className="font-bold text-slate-900 dark:text-white flex items-center gap-1.5">
               <Tag className="w-4 h-4 text-emerald-600" />
@@ -545,50 +760,6 @@ export const EditProductModal: React.FC<EditProductModalProps> = ({
             )}
           </div>
 
-          {/* Section 5: Barcode & SKU */}
-          <div className="p-4 rounded-2xl bg-slate-50 dark:bg-slate-800/50 border border-slate-200/80 dark:border-slate-800 space-y-3">
-            <div className="font-bold text-slate-900 dark:text-white flex items-center gap-1.5">
-              <Barcode className="w-4 h-4 text-emerald-600" />
-              <span>{isAr ? 'الباركود ورمز SKU' : 'Barcode & SKU'}</span>
-            </div>
-
-            <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
-              <div>
-                <div className="flex items-center justify-between mb-1">
-                  <label className="block text-xs font-semibold text-slate-700 dark:text-slate-300">
-                    {t.barcode}
-                  </label>
-                  <button
-                    type="button"
-                    onClick={() => setShowBarcodeScanner(true)}
-                    className="px-2 py-0.5 rounded-lg bg-slate-900 dark:bg-slate-700 hover:bg-slate-800 text-white text-[10px] font-bold flex items-center gap-1 transition-colors"
-                    title={isAr ? 'قراءة الباركود بالكاميرا' : 'Scan barcode with camera'}
-                  >
-                    <Camera className="w-3 h-3 text-emerald-400" />
-                    <span>{isAr ? 'مسح بالكاميرا' : 'Camera Scan'}</span>
-                  </button>
-                </div>
-                <input
-                  type="text"
-                  value={barcode}
-                  onChange={(e) => setBarcode(e.target.value)}
-                  className="w-full px-3 py-2 bg-white dark:bg-slate-800 border border-slate-300 dark:border-slate-700 rounded-xl font-mono text-slate-900 dark:text-white"
-                />
-              </div>
-
-              <div>
-                <label className="block text-xs font-semibold text-slate-700 dark:text-slate-300 mb-1">
-                  {t.sku}
-                </label>
-                <input
-                  type="text"
-                  value={sku}
-                  onChange={(e) => setSku(e.target.value)}
-                  className="w-full px-3 py-2 bg-white dark:bg-slate-800 border border-slate-300 dark:border-slate-700 rounded-xl font-mono text-slate-900 dark:text-white"
-                />
-              </div>
-            </div>
-          </div>
 
           {/* Submit Footer */}
           <div className="pt-3 border-t border-slate-100 dark:border-slate-800 flex items-center justify-end gap-3">
@@ -625,6 +796,9 @@ export const EditProductModal: React.FC<EditProductModalProps> = ({
             onScanned={(code) => {
               setBarcode(code);
               if (!sku) setSku('SKU-' + code.slice(-4));
+              if (isOnline && code.trim().length >= 8) {
+                void handleLookupBarcode(code, !name.trim());
+              }
             }}
           />
         )}
