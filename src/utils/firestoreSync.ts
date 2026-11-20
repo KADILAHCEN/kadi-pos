@@ -26,6 +26,18 @@ const DEVICE_ID_STORAGE_KEY = 'kadi_pos_device_id';
 const DEVICE_NAME_STORAGE_KEY = 'kadi_pos_device_name';
 const LOCAL_CLOUD_BACKUP_KEY = 'kadi_pos_cloud_backup_v1';
 const PENDING_SYNC_ACTIVITY_KEY = 'kadi_pos_cloud_pending_activity';
+const DELETED_PRODUCTS_TOMBSTONE_KEY = 'kadi_pos_deleted_products_v1';
+const KNOWN_CLOUD_PRODUCT_IDS_KEY = 'kadi_pos_known_cloud_product_ids_v1';
+
+export interface DeletedProductTombstones {
+  byId: Record<string, number>;
+  byBarcode: Record<string, number>;
+}
+
+export interface MergeStoreOptions {
+  previouslySyncedProductIds?: Set<string>;
+  locallyDeleted?: DeletedProductTombstones;
+}
 
 export interface LocalStoreSyncPayload {
   products: Product[];
@@ -153,6 +165,98 @@ export function clearPendingCloudSyncFlag(): void {
   }
 }
 
+const TOMBSTONE_TTL_MS = 30 * 24 * 60 * 60 * 1000;
+
+export function loadDeletedProductTombstones(): DeletedProductTombstones {
+  try {
+    const raw = localStorage.getItem(DELETED_PRODUCTS_TOMBSTONE_KEY);
+    if (!raw) return { byId: {}, byBarcode: {} };
+    const parsed = JSON.parse(raw) as Partial<DeletedProductTombstones>;
+    const cutoff = Date.now() - TOMBSTONE_TTL_MS;
+    const byId: Record<string, number> = {};
+    const byBarcode: Record<string, number> = {};
+
+    if (parsed.byId && typeof parsed.byId === 'object') {
+      Object.entries(parsed.byId).forEach(([k, v]) => {
+        if (typeof v === 'number' && v >= cutoff) byId[k] = v;
+      });
+    }
+    if (parsed.byBarcode && typeof parsed.byBarcode === 'object') {
+      Object.entries(parsed.byBarcode).forEach(([k, v]) => {
+        if (typeof v === 'number' && v >= cutoff) byBarcode[k] = v;
+      });
+    }
+    return { byId, byBarcode };
+  } catch {
+    return { byId: {}, byBarcode: {} };
+  }
+}
+
+export function recordDeletedProductTombstone(
+  productId: string,
+  barcode?: string
+): DeletedProductTombstones {
+  const current = loadDeletedProductTombstones();
+  const now = Date.now();
+  if (productId) {
+    current.byId[productId] = now;
+  }
+  const cleanBarcode = (barcode || '').trim().toLowerCase();
+  if (cleanBarcode) {
+    current.byBarcode[cleanBarcode] = now;
+  }
+
+  // Keep bounded to last 500 tombstones
+  const trimMap = (rec: Record<string, number>): Record<string, number> => {
+    const entries = Object.entries(rec).sort((a, b) => b[1] - a[1]).slice(0, 500);
+    return Object.fromEntries(entries);
+  };
+
+  const next: DeletedProductTombstones = {
+    byId: trimMap(current.byId),
+    byBarcode: trimMap(current.byBarcode)
+  };
+  safeLocalStorageSet(DELETED_PRODUCTS_TOMBSTONE_KEY, JSON.stringify(next));
+  return next;
+}
+
+export function clearDeletedProductTombstone(productId?: string, barcode?: string): void {
+  const current = loadDeletedProductTombstones();
+  let changed = false;
+  if (productId && productId in current.byId) {
+    delete current.byId[productId];
+    changed = true;
+  }
+  const cleanBarcode = (barcode || '').trim().toLowerCase();
+  if (cleanBarcode && cleanBarcode in current.byBarcode) {
+    delete current.byBarcode[cleanBarcode];
+    changed = true;
+  }
+  if (changed) {
+    safeLocalStorageSet(DELETED_PRODUCTS_TOMBSTONE_KEY, JSON.stringify(current));
+  }
+}
+
+export function loadKnownCloudProductIds(): Set<string> {
+  try {
+    const raw = localStorage.getItem(KNOWN_CLOUD_PRODUCT_IDS_KEY);
+    if (!raw) return new Set();
+    const arr = JSON.parse(raw);
+    return Array.isArray(arr) ? new Set(arr.filter((x): x is string => typeof x === 'string')) : new Set();
+  } catch {
+    return new Set();
+  }
+}
+
+export function saveKnownCloudProductIds(productIds: Iterable<string>): void {
+  try {
+    const list = Array.from(new Set(productIds)).slice(0, 2600);
+    safeLocalStorageSet(KNOWN_CLOUD_PRODUCT_IDS_KEY, JSON.stringify(list));
+  } catch {
+    // ignore
+  }
+}
+
 /**
  * Recursively strips `undefined` properties because Firestore rejects undefined values.
  */
@@ -238,18 +342,34 @@ function getItemTimestamp(item: { updatedAt?: number; syncedAt?: string; date?: 
  */
 export function mergePosStoreData(
   local: LocalStoreSyncPayload,
-  remote: LocalStoreSyncPayload
+  remote: LocalStoreSyncPayload,
+  options?: MergeStoreOptions
 ): LocalStoreSyncPayload {
   const remoteIsNewerStore = (remote.lastUpdated || 0) >= (local.lastUpdated || 0);
+  const tombstones = options?.locallyDeleted ?? loadDeletedProductTombstones();
+  const knownCloudIds = options?.previouslySyncedProductIds;
 
-  // 1. Merge Products by ID
+  // 1. Merge Products by ID (respecting both local deletions & remote deletions)
   const localProductMap = new Map<string, Product>();
   local.products.forEach((p) => localProductMap.set(p.id, p));
 
-  const mergedProductsMap = new Map<string, Product>();
-  local.products.forEach((p) => mergedProductsMap.set(p.id, p));
+  const remoteProductMap = new Map<string, Product>();
+  remote.products.forEach((p) => remoteProductMap.set(p.id, p));
 
+  const mergedProductsMap = new Map<string, Product>();
+
+  // First process remote products: skip if locally deleted more recently than remote update
   remote.products.forEach((rp) => {
+    const cleanBc = (rp.barcode || '').trim().toLowerCase();
+    const localDelTs = Math.max(
+      tombstones.byId[rp.id] || 0,
+      cleanBc ? tombstones.byBarcode[cleanBc] || 0 : 0
+    );
+    const remoteItemTs = rp.updatedAt || remote.lastUpdated || 0;
+    if (localDelTs > 0 && localDelTs >= remoteItemTs) {
+      return;
+    }
+
     const lp = localProductMap.get(rp.id);
     if (!lp) {
       mergedProductsMap.set(rp.id, rp);
@@ -264,6 +384,31 @@ export function mergePosStoreData(
       rp.id,
       preservedImage ? { ...winner, image: preservedImage } : winner
     );
+  });
+
+  // Next process local-only products (not in remote): keep ONLY if newly created locally and NOT deleted remotely
+  local.products.forEach((lp) => {
+    if (mergedProductsMap.has(lp.id) || remoteProductMap.has(lp.id)) return;
+
+    const cleanBc = (lp.barcode || '').trim().toLowerCase();
+    const localDelTs = Math.max(
+      tombstones.byId[lp.id] || 0,
+      cleanBc ? tombstones.byBarcode[cleanBc] || 0 : 0
+    );
+    if (localDelTs > 0) return;
+
+    // If this product was previously synced to Firestore and is now missing from remoteDoc, another device deleted it
+    if (knownCloudIds && knownCloudIds.has(lp.id)) {
+      return;
+    }
+
+    // Also if remote store snapshot is strictly newer than this item's last local timestamp and it wasn't created after remote update, drop it
+    const lpTs = lp.updatedAt || 0;
+    if (lpTs > 0 && (remote.lastUpdated || 0) > lpTs && knownCloudIds && knownCloudIds.size > 0) {
+      return;
+    }
+
+    mergedProductsMap.set(lp.id, lp);
   });
 
   // 2. Merge Sales Orders by ID (never drop sales created on other devices)
@@ -503,8 +648,15 @@ export async function pushMergedStoreToFirestore(params: {
     }
   }
 
+  const knownCloudIds = loadKnownCloudProductIds();
+  if (baseRemote) {
+    baseRemote.products.forEach((p) => knownCloudIds.add(p.id));
+  }
   const merged = baseRemote
-    ? mergePosStoreData(localPayload, baseRemote)
+    ? mergePosStoreData(localPayload, baseRemote, {
+        previouslySyncedProductIds: knownCloudIds,
+        locallyDeleted: loadDeletedProductTombstones()
+      })
     : localPayload;
 
   const nowMs = Date.now();
@@ -549,6 +701,7 @@ export async function pushMergedStoreToFirestore(params: {
 
   try {
     await setDoc(storeRef, docToWrite, { merge: false });
+    saveKnownCloudProductIds(docToWrite.products.map((p) => p.id));
     clearPendingCloudSyncFlag();
     return docToWrite;
   } catch (err) {

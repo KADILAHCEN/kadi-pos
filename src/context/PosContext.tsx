@@ -98,14 +98,19 @@ import { auth, signInWithGoogleForFirestore, signOutFromFirestore } from '../fir
 import {
   FirestoreStoreDocument,
   LocalStoreSyncPayload,
+  clearDeletedProductTombstone,
   clearPendingCloudSyncFlag,
   getOrCreateDeviceId,
   getPendingCloudSyncFlag,
   getShortDevicePlatform,
   getStoredDeviceName,
+  loadDeletedProductTombstones,
+  loadKnownCloudProductIds,
   loadLocalCloudBackup,
   mergePosStoreData,
   pushMergedStoreToFirestore,
+  recordDeletedProductTombstone,
+  saveKnownCloudProductIds,
   saveLocalCloudBackup,
   saveStoredDeviceName,
   setPendingCloudSyncFlag,
@@ -1157,8 +1162,10 @@ export const PosProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
     }
     const newProduct: Product = {
       ...productData,
-      id: `prod-${Date.now()}`
+      id: `prod-${Date.now()}`,
+      updatedAt: Date.now()
     };
+    clearDeletedProductTombstone(newProduct.id, newProduct.barcode);
     setProducts((prev) => [newProduct, ...prev]);
     if (newProduct.stock > 0) {
       markMatchingShopEarArrivedInternal(newProduct);
@@ -1169,8 +1176,9 @@ export const PosProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
 
   const updateProduct = (id: string, updated: Partial<Product>) => {
     const prevProd = products.find((p) => p.id === id);
+    const nowTs = Date.now();
     setProducts((prev) =>
-      prev.map((p) => (p.id === id ? { ...p, ...updated } : p))
+      prev.map((p) => (p.id === id ? { ...p, ...updated, updatedAt: nowTs } : p))
     );
     if (
       updated.costPrice !== undefined &&
@@ -1600,6 +1608,8 @@ export const PosProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
   };
 
   const deleteProduct = (id: string) => {
+    const target = latestProductsRef.current.find((p) => p.id === id);
+    recordDeletedProductTombstone(id, target?.barcode);
     setProducts((prev) => prev.filter((p) => p.id !== id));
   };
 
@@ -5638,6 +5648,11 @@ export const PosProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
           return;
         }
 
+        const prevKnownIds = loadKnownCloudProductIds();
+        if (cachedRemoteDocRef.current?.products) {
+          cachedRemoteDocRef.current.products.forEach((p) => prevKnownIds.add(p.id));
+        }
+
         cachedRemoteDocRef.current = remoteDoc;
         setStoreExistsInCloud(true);
         setCloudOwnerEmail(remoteDoc.ownerEmail || null);
@@ -5652,11 +5667,17 @@ export const PosProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
         );
         setCloudDevices(devicesList);
 
-        // Merge remote + local data using concurrent conflict resolution (never drop items from any device)
+        // Merge remote + local data using concurrent conflict resolution & deletion tombstones
         const localPayload = buildCurrentLocalPayload();
-        const merged = mergePosStoreData(localPayload, remoteDoc);
+        const merged = mergePosStoreData(localPayload, remoteDoc, {
+          previouslySyncedProductIds: prevKnownIds,
+          locallyDeleted: loadDeletedProductTombstones()
+        });
 
         saveLocalCloudBackup(merged);
+        if (!meta.fromCache) {
+          saveKnownCloudProductIds(merged.products.map((p) => p.id));
+        }
 
         // Compare if merged data introduces updates not yet reflected in local React state
         const prodChanged =
@@ -5723,17 +5744,21 @@ export const PosProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
           setCloudSyncingNow(false);
         }
 
-        // If this device isn't registered yet, marked offline, or has offline mutations queued -> push back merged doc
+        const mergedProdIds = new Set(merged.products.map((p) => p.id));
+        const localDeletionNeedsPush = remoteDoc.products.some((rp) => !mergedProdIds.has(rp.id));
+
+        // If this device isn't registered yet, marked offline, has offline mutations, or suppressed a deleted item -> push back merged doc
         if (
           !meta.fromCache &&
           (!myDevice ||
             myDevice.online === false ||
             pendingOfflineActivity ||
+            localDeletionNeedsPush ||
             merged.products.length > remoteDoc.products.length ||
             merged.sales.length > remoteDoc.sales.length)
         ) {
           void pushCurrentStoreToCloud(
-            pendingOfflineActivity || 'انضمام ومزامنة تلقائية للجهاز',
+            pendingOfflineActivity || (localDeletionNeedsPush ? 'مزامنة حذف سلعة' : 'انضمام ومزامنة تلقائية للجهاز'),
             true
           );
         }
