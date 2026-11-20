@@ -86,6 +86,10 @@ export const ProductGrid: React.FC<ProductGridProps> = ({ onOpenBarcodeScanner }
   // High-capacity pagination state (handles 2,000+ to 10,000+ items smoothly at 60fps)
   const [visibleCount, setVisibleCount] = useState<number>(36);
 
+  // Out-of-stock snackbar toast state
+  const [outOfStockToast, setOutOfStockToast] = useState<string | null>(null);
+  const outOfStockTimerRef = useRef<number | null>(null);
+
   // Tactile feedback state for tablet touch animation
   const [tappedProductId, setTappedProductId] = useState<string | null>(null);
   const tapTimerRef = useRef<number | null>(null);
@@ -93,6 +97,7 @@ export const ProductGrid: React.FC<ProductGridProps> = ({ onOpenBarcodeScanner }
   useEffect(() => {
     return () => {
       if (tapTimerRef.current) window.clearTimeout(tapTimerRef.current);
+      if (outOfStockTimerRef.current) window.clearTimeout(outOfStockTimerRef.current);
     };
   }, []);
 
@@ -169,12 +174,19 @@ export const ProductGrid: React.FC<ProductGridProps> = ({ onOpenBarcodeScanner }
       (p) => p.barcode === clean || p.sku.toLowerCase() === clean.toLowerCase()
     );
     if (matched) {
-      if (settings.bluetoothSoundFeedback !== false) {
-        playSound('beep');
-      }
       if (settings.bluetoothAutoAddToCart !== false) {
+        if (matched.stock <= 0) {
+          handleProductClick(matched);
+          return;
+        }
+        if (settings.bluetoothSoundFeedback !== false) {
+          playSound('beep');
+        }
         handleProductClick(matched);
       } else {
+        if (settings.bluetoothSoundFeedback !== false) {
+          playSound('beep');
+        }
         setSearchQuery(clean);
       }
       setBarcodeToast(
@@ -196,6 +208,25 @@ export const ProductGrid: React.FC<ProductGridProps> = ({ onOpenBarcodeScanner }
   };
 
   const handleProductClick = (product: Product) => {
+    if (product.stock <= 0) {
+      if (typeof navigator !== 'undefined' && typeof navigator.vibrate === 'function') {
+        navigator.vibrate([30, 40, 30]);
+      }
+      playSound('error');
+      setOutOfStockToast(
+        isAr
+          ? `❌ ${product.name} تسالات`
+          : isFr
+          ? `❌ ${product.nameEn || product.name} : Rupture de stock`
+          : `❌ ${product.nameEn || product.name} Out of stock`
+      );
+      if (outOfStockTimerRef.current) window.clearTimeout(outOfStockTimerRef.current);
+      outOfStockTimerRef.current = window.setTimeout(() => {
+        setOutOfStockToast(null);
+      }, 2800);
+      return;
+    }
+
     // Tactile haptic pulse + visual spring micro-feedback for tablet POS use
     if (typeof navigator !== 'undefined' && typeof navigator.vibrate === 'function') {
       navigator.vibrate(15);
@@ -242,6 +273,16 @@ export const ProductGrid: React.FC<ProductGridProps> = ({ onOpenBarcodeScanner }
         <div className="fixed top-14 left-1/2 -translate-x-1/2 z-50 px-4 py-1.5 bg-slate-900 text-white rounded-xl shadow-xl flex items-center gap-2 text-xs font-bold animate-in fade-in slide-in-from-top duration-150">
           <Zap className="w-3.5 h-3.5 text-emerald-400" />
           <span>{barcodeToast}</span>
+        </div>
+      )}
+
+      {/* Out-of-stock red SnackBar */}
+      {outOfStockToast && (
+        <div
+          role="alert"
+          className="fixed bottom-20 lg:bottom-6 left-1/2 -translate-x-1/2 z-50 px-5 py-3 bg-red-600 text-white rounded-xl shadow-2xl border border-red-400/50 flex items-center gap-2 text-sm sm:text-base font-extrabold animate-in fade-in slide-in-from-bottom-3 duration-150 whitespace-nowrap max-w-[92vw] truncate"
+        >
+          <span>{outOfStockToast}</span>
         </div>
       )}
 
@@ -549,8 +590,8 @@ export const ProductGrid: React.FC<ProductGridProps> = ({ onOpenBarcodeScanner }
                     {/* Stock status tag top-right */}
                     <div className="absolute top-2 right-2 rtl:right-auto rtl:left-2">
                       {isOutOfStock ? (
-                        <span className="px-1.5 py-0.5 text-[10px] font-bold bg-rose-600 text-white rounded-md shadow-xs">
-                          {t.stock_out}
+                        <span className="px-1.5 py-0.5 text-[10px] font-extrabold bg-red-600 text-white rounded-md shadow-xs">
+                          {isAr ? 'تسالات' : t.stock_out}
                         </span>
                       ) : isLowStock ? (
                         <span className="px-1.5 py-0.5 text-[10px] font-bold bg-amber-500 text-white rounded-md shadow-xs">
@@ -614,8 +655,26 @@ export const ProductGrid: React.FC<ProductGridProps> = ({ onOpenBarcodeScanner }
                       <h4 className="font-bold text-xs sm:text-sm text-slate-900 dark:text-white line-clamp-2 leading-tight mb-1">
                         {isAr ? prod.name : prod.nameEn}
                       </h4>
-                      <div className="text-[10px] text-slate-400 font-mono tracking-tight mb-2">
+                      <div className="text-[10px] text-slate-400 font-mono tracking-tight mb-1.5">
                         {prod.barcode || prod.sku}
+                      </div>
+
+                      {/* Stock count (non-faded, bold red/green) + out-of-stock label */}
+                      <div className="mb-1.5 flex items-center justify-between gap-1.5 flex-wrap">
+                        <span
+                          className={`font-bold text-sm sm:text-base tabular-nums ${
+                            isOutOfStock
+                              ? 'text-red-600 dark:text-red-400'
+                              : 'text-emerald-600 dark:text-emerald-400'
+                          }`}
+                        >
+                          {isAr ? `المخزون: ${prod.stock}` : `Stock: ${prod.stock}`}
+                        </span>
+                        {isOutOfStock && (
+                          <span className="text-red-600 dark:text-red-400 font-extrabold text-xs sm:text-sm">
+                            {isAr ? 'تسالات' : isFr ? 'Épuisé' : 'Out'}
+                          </span>
+                        )}
                       </div>
                     </div>
 

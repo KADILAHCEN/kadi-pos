@@ -203,16 +203,33 @@ const PosMainContent: React.FC = () => {
         (p) => p.barcode === clean || p.sku.toLowerCase() === clean.toLowerCase()
       );
       if (matched) {
-        if (settings.bluetoothSoundFeedback !== false) playSound('beep');
         if (settings.bluetoothAutoAddToCart !== false) {
+          if (matched.stock <= 0) {
+            playSound('error');
+            setScanFeedbackToast({
+              text: isAr ? `❌ ${matched.name} تسالات` : `❌ ${matched.name} Out of stock`,
+              isError: true
+            });
+            setTimeout(() => setScanFeedbackToast(null), 2800);
+            return;
+          }
+          if (settings.bluetoothSoundFeedback !== false) playSound('beep');
           addToCart(matched);
+          setScanFeedbackToast({
+            text: isAr
+              ? `🔊 بيب! تزادت للسلة: ${matched.name}`
+              : `🔊 Scanned & added: ${matched.name}`
+          });
+          setTimeout(() => setScanFeedbackToast(null), 2600);
+        } else {
+          if (settings.bluetoothSoundFeedback !== false) playSound('beep');
+          setScanFeedbackToast({
+            text: isAr
+              ? `🔊 ${matched.name} (${matched.price.toFixed(2)} ${currencySymbol})`
+              : `🔊 ${matched.name}`
+          });
+          setTimeout(() => setScanFeedbackToast(null), 2600);
         }
-        setScanFeedbackToast({
-          text: isAr
-            ? `🔊 بيب! تزادت للسلة: ${matched.name}`
-            : `🔊 Scanned & added: ${matched.name}`
-        });
-        setTimeout(() => setScanFeedbackToast(null), 2600);
       } else {
         playSound('error');
         setQuickNewBarcodeReq({ barcode: clean, sourceContext: 'global' });
@@ -379,6 +396,15 @@ const PosMainContent: React.FC = () => {
       (p) => p.barcode === clean || p.sku.toLowerCase() === clean.toLowerCase()
     );
     if (matched) {
+      if (matched.stock <= 0) {
+        playSound('error');
+        setScanFeedbackToast({
+          text: isAr ? `❌ ${matched.name} تسالات` : `❌ ${matched.name} Out of stock`,
+          isError: true
+        });
+        setTimeout(() => setScanFeedbackToast(null), 2800);
+        return;
+      }
       if (settings.bluetoothSoundFeedback !== false) playSound('beep');
       addToCart(matched);
       setScanFeedbackToast({

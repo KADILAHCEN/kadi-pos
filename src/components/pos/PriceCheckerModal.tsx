@@ -33,6 +33,7 @@ export const PriceCheckerModal: React.FC = () => {
   const [showAchat, setShowAchat] = useState(false);
   const [searchQuery, setSearchQuery] = useState('');
   const [addedToast, setAddedToast] = useState(false);
+  const [outOfStockError, setOutOfStockError] = useState<string | null>(null);
 
   const [cameraActive, setCameraActive] = useState(false);
   const [cameraError, setCameraError] = useState<string | null>(null);
@@ -100,6 +101,7 @@ export const PriceCheckerModal: React.FC = () => {
         setNotFoundCode(null);
         setShowAchat(false);
         setAddedToast(false);
+        setOutOfStockError(null);
         if (settings.enableSoundEffects) playSound('beep');
         if (typeof navigator !== 'undefined' && typeof navigator.vibrate === 'function') {
           navigator.vibrate(25);
@@ -631,16 +633,37 @@ export const PriceCheckerModal: React.FC = () => {
                 )}
               </div>
 
+              {outOfStockError && (
+                <div
+                  role="alert"
+                  className="px-4 py-2.5 rounded-xl bg-red-600 text-white text-xs sm:text-sm font-extrabold text-center shadow-lg"
+                >
+                  {outOfStockError}
+                </div>
+              )}
+
               {/* Action Buttons */}
               <div className="flex flex-wrap items-center gap-2">
                 <button
                   type="button"
                   onClick={() => {
+                    if (foundProduct.stock <= 0) {
+                      playSound('error');
+                      setOutOfStockError(
+                        isAr ? `❌ ${foundProduct.name} تسالات` : `❌ ${foundProduct.name} Out of stock`
+                      );
+                      return;
+                    }
+                    setOutOfStockError(null);
                     addToCart(foundProduct);
                     setAddedToast(true);
                     if (settings.enableSoundEffects) playSound('beep');
                   }}
-                  className="flex-1 py-2.5 px-4 rounded-xl bg-emerald-600 hover:bg-emerald-700 text-white text-xs font-black flex items-center justify-center gap-2"
+                  className={`flex-1 py-2.5 px-4 rounded-xl text-white text-xs font-black flex items-center justify-center gap-2 ${
+                    foundProduct.stock <= 0
+                      ? 'bg-red-600 hover:bg-red-700'
+                      : 'bg-emerald-600 hover:bg-emerald-700'
+                  }`}
                 >
                   {addedToast ? (
                     <>
@@ -650,7 +673,15 @@ export const PriceCheckerModal: React.FC = () => {
                   ) : (
                     <>
                       <ShoppingCart className="w-4 h-4" />
-                      <span>{isAr ? 'أضف للسلة' : 'Add to Cart'}</span>
+                      <span>
+                        {foundProduct.stock <= 0
+                          ? isAr
+                            ? 'تسالات — غير متوفر'
+                            : 'Out of Stock'
+                          : isAr
+                          ? 'أضف للسلة'
+                          : 'Add to Cart'}
+                      </span>
                     </>
                   )}
                 </button>
@@ -661,6 +692,7 @@ export const PriceCheckerModal: React.FC = () => {
                     setNotFoundCode(null);
                     setShowAchat(false);
                     setAddedToast(false);
+                    setOutOfStockError(null);
                   }}
                   className="py-2.5 px-4 rounded-xl bg-slate-800 hover:bg-slate-700 text-slate-200 text-xs font-bold flex items-center gap-1.5"
                 >

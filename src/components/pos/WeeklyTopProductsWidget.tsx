@@ -142,13 +142,12 @@ export const WeeklyTopProductsWidget: React.FC<WeeklyTopProductsWidgetProps> = (
                 <button
                   key={item.productId}
                   type="button"
-                  disabled={!canAdd}
                   onClick={() => item.product && onQuickAddProduct(item.product)}
                   title={`${item.name} · ${item.quantitySold} ${isAr ? 'مبيعة' : 'sold'} (${item.revenue.toFixed(2)} ${currencySymbol})`}
-                  className={`group flex items-center gap-1 px-1.5 py-0.5 rounded-md border text-[10px] shrink-0 transition-all ${
+                  className={`group flex items-center gap-1 px-1.5 py-0.5 rounded-md border text-[10px] shrink-0 transition-all cursor-pointer active:scale-95 ${
                     canAdd
-                      ? 'bg-slate-50 dark:bg-slate-800/80 border-slate-200 dark:border-slate-700 hover:border-emerald-500 hover:bg-emerald-50/70 dark:hover:bg-emerald-950/40 active:scale-95 cursor-pointer'
-                      : 'bg-slate-100/70 dark:bg-slate-800/40 border-slate-200/60 dark:border-slate-800 text-slate-400 cursor-not-allowed'
+                      ? 'bg-slate-50 dark:bg-slate-800/80 border-slate-200 dark:border-slate-700 hover:border-emerald-500 hover:bg-emerald-50/70 dark:hover:bg-emerald-950/40'
+                      : 'bg-red-50 dark:bg-red-950/30 border-red-200 dark:border-red-800/80 text-red-600 dark:text-red-400'
                   }`}
                 >
                   <span
