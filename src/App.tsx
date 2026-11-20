@@ -30,6 +30,7 @@ import { MarketRadarView } from './components/marketRadar/MarketRadarView';
 import { FinMchaElMhalView } from './components/home/FinMchaElMhalView';
 import { ShopEarQuickModal } from './components/shopEar/ShopEarQuickModal';
 import { PurchaseInvoiceScanModal } from './components/inventory/PurchaseInvoiceScanModal';
+import { PriceCheckerModal } from './components/pos/PriceCheckerModal';
 import { AiAssistantView } from './components/ai/AiAssistantView';
 import { FloatingAiChatButton } from './components/ai/FloatingAiChatButton';
 import { VoiceAssistantModal } from './components/voice/VoiceAssistantModal';
@@ -719,6 +720,7 @@ const PosMainContent: React.FC = () => {
 
       <ShopEarQuickModal />
       <PurchaseInvoiceScanModal />
+      <PriceCheckerModal />
       <QuickNewBarcodeProductModal
         isOpen={!!quickNewBarcodeReq}
         scannedBarcode={quickNewBarcodeReq?.barcode || ''}

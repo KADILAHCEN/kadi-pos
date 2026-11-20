@@ -12,6 +12,7 @@ import {
   Moon,
   ShieldAlert,
   Sun,
+  Tag,
   X,
   Zap
 } from 'lucide-react';
@@ -292,6 +293,18 @@ export const MobileBottomNav: React.FC<MobileBottomNavProps> = ({ onSelectProtec
                   >
                     <Monitor className="w-4 h-4 shrink-0" />
                     <span className="truncate">{isAr ? 'شاشة العميل' : 'Customer Screen'}</span>
+                  </button>
+
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setShowMoreSheet(false);
+                      window.dispatchEvent(new CustomEvent('kadi:open-price-checker'));
+                    }}
+                    className="col-span-2 min-h-[46px] px-3.5 py-2.5 rounded-2xl bg-amber-400 hover:bg-amber-500 text-slate-950 text-xs font-black flex items-center justify-center gap-2 shadow-xs"
+                  >
+                    <Tag className="w-4 h-4 shrink-0" />
+                    <span>{isAr ? '🏷️ شحال الثمن (فحص السعر بالكاميرا)' : '🏷️ Price Checker (Camera)'}</span>
                   </button>
                 </div>
               </div>

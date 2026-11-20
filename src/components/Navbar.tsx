@@ -21,7 +21,8 @@ import {
   Ear,
   Wifi,
   WifiOff,
-  Camera
+  Camera,
+  Tag
 } from 'lucide-react';
 import { PinGateModal } from './auth/PinGateModal';
 import { KExecutivePanel } from './KExecutivePanel';
@@ -746,7 +747,26 @@ export const Navbar: React.FC = () => {
           className="flex items-center gap-1 px-2.5 py-1.5 rounded-lg bg-amber-400 hover:bg-amber-500 text-slate-950 text-[11px] font-black transition-colors shadow-2xs shrink-0 whitespace-nowrap"
         >
           <Camera className="w-3.5 h-3.5 shrink-0" />
+          <span className="sm:hidden">{isAr ? 'فاتورة' : 'Invoice'}</span>
           <span className="hidden sm:inline">{isAr ? 'صور الفاتورة' : 'Scan Invoice'}</span>
+        </button>
+
+        {/* Quick 1-Tap Price Checker ("شحال الثمن") */}
+        <button
+          type="button"
+          onClick={() => {
+            setShowPaletteDropdown(false);
+            setShowBranchDropdown(false);
+            setShowUserDropdown(false);
+            setShowKPanel(false);
+            window.dispatchEvent(new CustomEvent('kadi:open-price-checker'));
+          }}
+          aria-label={isAr ? 'شحال الثمن - فحص السعر بالكاميرا' : 'Price Checker'}
+          title={isAr ? 'شحال الثمن (فحص سريع بالباركود أو الكاميرا)' : 'Price Checker (Scan Barcode)'}
+          className="hidden sm:flex items-center gap-1 px-2.5 py-1.5 rounded-lg bg-slate-900 dark:bg-slate-800 hover:bg-slate-800 dark:hover:bg-slate-700 border border-slate-700 text-amber-400 text-[11px] font-black transition-colors shadow-2xs shrink-0 whitespace-nowrap"
+        >
+          <Tag className="w-3.5 h-3.5 shrink-0" />
+          <span>{isAr ? 'شحال الثمن' : 'Price Check'}</span>
         </button>
 
         {/* Compact Top Voice Assistant Trigger */}

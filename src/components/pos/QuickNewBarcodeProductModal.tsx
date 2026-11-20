@@ -6,7 +6,7 @@ import { playSound } from '../../utils/audio';
 import { lookupProductByBarcode } from '../../utils/openFoodFacts';
 import { Barcode, CheckCircle2, Globe, Loader2, PackagePlus, Search, Sparkles, X } from 'lucide-react';
 
-export type QuickBarcodeSourceContext = 'pos' | 'inventory' | 'invoice' | 'global';
+export type QuickBarcodeSourceContext = 'pos' | 'inventory' | 'invoice' | 'price_checker' | 'global';
 
 interface QuickNewBarcodeProductModalProps {
   isOpen: boolean;

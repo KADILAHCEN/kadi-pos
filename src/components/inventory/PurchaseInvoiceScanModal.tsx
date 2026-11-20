@@ -5,6 +5,7 @@ import { safeParseJsonResponse } from '../../utils/aiVoice';
 import { getLocalTodayYMD } from '../../utils/expenses';
 import { bluetoothScanner } from '../../utils/bluetoothScanner';
 import { playSound } from '../../utils/audio';
+import { BarcodeScannerModal } from '../pos/BarcodeScannerModal';
 import {
   Camera,
   Upload,
@@ -29,7 +30,9 @@ import {
   Focus,
   ShieldAlert,
   Code2,
-  Copy
+  Copy,
+  Barcode,
+  Smartphone
 } from 'lucide-react';
 
 export type PurchaseInvoiceMode = 'official_ice' | 'informal_noir';
@@ -304,14 +307,19 @@ export const PurchaseInvoiceScanModal: React.FC = () => {
   const [scanNotice, setScanNotice] = useState<string | null>(null);
   const [completedMessage, setCompletedMessage] = useState<string | null>(null);
   const [quickCatalogQuery, setQuickCatalogQuery] = useState('');
+  const [showBarcodeCamScanner, setShowBarcodeCamScanner] = useState(false);
 
   // Invoice metadata fields
+  const [entryMethod, setEntryMethod] = useState<'camera' | 'manual'>('camera');
   const [supplierName, setSupplierName] = useState('');
   const [supplierIce, setSupplierIce] = useState('');
   const [supplierPhone, setSupplierPhone] = useState('');
   const [invoiceNumber, setInvoiceNumber] = useState('');
   const [invoiceDate, setInvoiceDate] = useState(todayStr);
+  const [dueDate, setDueDate] = useState('');
+  const [manualTotalAmount, setManualTotalAmount] = useState('');
   const [paidAmount, setPaidAmount] = useState('');
+  const [invoiceNotes, setInvoiceNotes] = useState('');
   const [items, setItems] = useState<ScannedLineItem[]>([]);
 
   const videoRef = useRef<HTMLVideoElement | null>(null);
@@ -346,10 +354,14 @@ export const PurchaseInvoiceScanModal: React.FC = () => {
     setIsLiveCameraOpen(false);
   };
 
-  const resetFormState = (mode: PurchaseInvoiceMode = 'official_ice') => {
+  const resetFormState = (
+    mode: PurchaseInvoiceMode = 'official_ice',
+    initialEntryMethod: 'camera' | 'manual' = 'camera'
+  ) => {
     stopCameraStream();
     lastCapturedBlobRef.current = null;
     setInvoiceMode(mode);
+    setEntryMethod(initialEntryMethod);
     setPreviewDataUrl(null);
     setShowZoomPhoto(false);
     setShowRawJson(false);
@@ -360,24 +372,33 @@ export const PurchaseInvoiceScanModal: React.FC = () => {
     setScanNotice(null);
     setCompletedMessage(null);
     setQuickCatalogQuery('');
+    setShowBarcodeCamScanner(false);
     setSupplierName('');
     setSupplierIce('');
     setSupplierPhone('');
     setInvoiceNumber('');
     setInvoiceDate(getLocalTodayYMD());
+    setDueDate('');
+    setManualTotalAmount('');
     setPaidAmount('');
-    setItems([]);
+    setInvoiceNotes('');
+    setItems(initialEntryMethod === 'manual' ? [buildEmptyManualRow()] : []);
   };
 
   useEffect(() => {
     const handleOpen = (evt: Event) => {
-      const detail = (evt as CustomEvent<{ defaultMode?: PurchaseInvoiceMode }>).detail;
-      resetFormState(detail?.defaultMode || 'official_ice');
+      const detail = (
+        evt as CustomEvent<{ defaultMode?: PurchaseInvoiceMode; manualEntry?: boolean }>
+      ).detail;
+      const startManual = Boolean(detail?.manualEntry);
+      resetFormState(detail?.defaultMode || 'official_ice', startManual ? 'manual' : 'camera');
       setIsOpen(true);
-      // Immediately ask for Camera permission & open fast camera on first open
-      window.setTimeout(() => {
-        void startLiveCamera();
-      }, 60);
+      if (!startManual) {
+        // Ask for Camera permission & open fast camera when opening in camera mode
+        window.setTimeout(() => {
+          void startLiveCamera();
+        }, 60);
+      }
     };
     window.addEventListener('kadi:open-purchase-invoice-scanner', handleOpen);
     return () => {
@@ -389,8 +410,40 @@ export const PurchaseInvoiceScanModal: React.FC = () => {
 
   const closeModal = () => {
     stopCameraStream();
+    setShowBarcodeCamScanner(false);
     bluetoothScanner.popScope('purchase_invoice');
     setIsOpen(false);
+  };
+
+  const handleCameraBarcodeDetected = (rawCode: string) => {
+    const clean = rawCode.trim();
+    if (!clean) return;
+    setShowBarcodeCamScanner(false);
+
+    const matched = products.find(
+      (p) => p.barcode === clean || p.sku.toLowerCase() === clean.toLowerCase()
+    );
+
+    if (matched) {
+      if (settings.bluetoothSoundFeedback !== false) playSound('beep');
+      quickAddCatalogProduct(matched);
+      setScanError(null);
+      setScanNotice(
+        isAr
+          ? `📷 تم مسح الباركود بكاميرا الهاتف وإضافة: ${matched.name}`
+          : `📷 Scanned with camera & added: ${matched.name}`
+      );
+      window.setTimeout(() => {
+        itemsTableRef.current?.scrollIntoView({ behavior: 'smooth', block: 'center' });
+      }, 60);
+    } else {
+      playSound('error');
+      window.dispatchEvent(
+        new CustomEvent('kadi:open-quick-new-barcode', {
+          detail: { barcode: clean, sourceContext: 'invoice' }
+        })
+      );
+    }
   };
 
   // Priority Bluetooth HID scanner integration while Invoice Scan Modal is open
@@ -937,9 +990,20 @@ export const PurchaseInvoiceScanModal: React.FC = () => {
       (it) => it.include && (it.rawName.trim() || it.matchedProductId) && Number(it.quantity) > 0
     );
 
-    if (activeRows.length === 0) {
+    const manualTotalVal = Math.max(0, Number(manualTotalAmount) || 0);
+    const canSaveHeaderOnlyInvoice =
+      invoiceMode === 'official_ice' &&
+      supplierName.trim().length > 0 &&
+      manualTotalVal > 0 &&
+      activeRows.length === 0;
+
+    if (activeRows.length === 0 && !canSaveHeaderOnlyInvoice) {
       setScanError(
-        isAr
+        invoiceMode === 'official_ice'
+          ? isAr
+            ? 'زيد سلعة واحدة على الأقل فالجدول، أو كتب اسم المورد والمبلغ الإجمالي لتسجيل الفاتورة.'
+            : 'Add at least one item row, or enter Supplier Name & Total Amount to save this invoice.'
+          : isAr
           ? 'زيد أو اختار سلعة واحدة على الأقل (واكتب إسمها ولا اختارها من المخزون) باش نزيدوها.'
           : 'Select or add at least one item to add to inventory.'
       );
@@ -955,7 +1019,7 @@ export const PurchaseInvoiceScanModal: React.FC = () => {
       return;
     }
 
-    if (invoiceMode !== 'informal_noir') {
+    if (invoiceMode !== 'informal_noir' && activeRows.length > 0) {
       const missingSell = activeRows.find((r) => !r.matchedProductId && !(Number(r.sellPrice) > 0));
       if (missingSell) {
         setScanError(
@@ -1032,11 +1096,27 @@ export const PurchaseInvoiceScanModal: React.FC = () => {
     });
 
     if (invoiceMode === 'official_ice') {
-      const totalVal = computedItemsTotal > 0 ? computedItemsTotal : Math.max(0, Number(paidAmount) || 0);
+      const totalVal =
+        manualTotalVal > 0
+          ? manualTotalVal
+          : computedItemsTotal > 0
+          ? computedItemsTotal
+          : Math.max(0, Number(paidAmount) || 0);
       const paidVal =
         paidAmount.trim() === ''
           ? totalVal
           : Math.min(totalVal, Math.max(0, Number(paidAmount) || 0));
+
+      const defaultNote =
+        activeRows.length > 0
+          ? isAr
+            ? `أرشيف رسمي (${activeRows.length} سلع)${
+                supplierIce.trim() ? ` · ICE: ${supplierIce.trim()}` : ''
+              }`
+            : `Official ICE archive (${activeRows.length} items)`
+          : isAr
+          ? `فاتورة مسجلة يدوياً (${totalVal.toFixed(2)} ${currencySymbol})`
+          : `Manually recorded invoice (${totalVal.toFixed(2)} ${currencySymbol})`;
 
       addSupplierInvoice({
         supplierName: supplierName.trim(),
@@ -1045,24 +1125,25 @@ export const PurchaseInvoiceScanModal: React.FC = () => {
         invoiceType: 'official_ice',
         invoiceNumber: cleanInvNum,
         date: invoiceDate || todayStr,
-        totalAmount: totalVal,
-        paidAmount: paidVal,
-        itemsCount: activeRows.length,
-        itemsSummary: summarySnapshot,
-        scannedViaCamera: true,
-        notes: isAr
-          ? `أرشيف رسمي (${activeRows.length} سلع)${
-              supplierIce.trim() ? ` · ICE: ${supplierIce.trim()}` : ''
-            }`
-          : `Official ICE archive (${activeRows.length} items)`
+        dueDate: dueDate || undefined,
+        totalAmount: Number(totalVal.toFixed(2)),
+        paidAmount: Number(paidVal.toFixed(2)),
+        itemsCount: activeRows.length || undefined,
+        itemsSummary: summarySnapshot.length > 0 ? summarySnapshot : undefined,
+        scannedViaCamera: entryMethod === 'camera' && Boolean(previewDataUrl),
+        notes: invoiceNotes.trim() || defaultNote
       });
     }
 
     const doneText =
       invoiceMode === 'official_ice'
-        ? isAr
-          ? `✅ تزادو السلع للمخزون (${updatedExistingCount} محدثة، ${createdNewCount} جديدة) وتسجلات الفاتورة في أرشيف ICE!`
-          : `✅ Stock updated (${updatedExistingCount + createdNewCount} items) & archived with ICE!`
+        ? activeRows.length > 0
+          ? isAr
+            ? `✅ تزادو السلع للمخزون (${updatedExistingCount} محدثة، ${createdNewCount} جديدة) وتسجلات الفاتورة #${cleanInvNum}!`
+            : `✅ Stock updated (${updatedExistingCount + createdNewCount} items) & invoice #${cleanInvNum} saved!`
+          : isAr
+          ? `✅ تسجلات فاتورة المورد (${supplierName.trim()}) رقم #${cleanInvNum} بنجاح في الأرشيف!`
+          : `✅ Supplier invoice #${cleanInvNum} recorded cleanly!`
         : isAr
         ? `✅ تزادت الكميات فـ المخزون (${updatedExistingCount} محدثة، ${createdNewCount} جديدة) فـ وضع نوار/بوار بلا تسجيل أرقام.`
         : `✅ Stock updated (${updatedExistingCount + createdNewCount} items) in Stock-Only mode (no archive).`;
@@ -1124,10 +1205,47 @@ export const PurchaseInvoiceScanModal: React.FC = () => {
 
         {/* Scrollable Body */}
         <form onSubmit={handleConfirmRestock} className="flex-1 overflow-y-auto p-4 sm:p-5 space-y-4">
+          {/* ENTRY METHOD SWITCHER: Camera Scan vs Direct Manual Entry */}
+          <div className="grid grid-cols-2 gap-2 p-1 rounded-2xl bg-slate-100 dark:bg-slate-800/80 border border-slate-200 dark:border-slate-700">
+            <button
+              type="button"
+              onClick={() => {
+                setEntryMethod('camera');
+                void startLiveCamera();
+              }}
+              className={`py-2 px-3 rounded-xl text-xs font-black flex items-center justify-center gap-1.5 transition-colors ${
+                entryMethod === 'camera'
+                  ? 'bg-amber-400 text-slate-950 shadow-xs'
+                  : 'text-slate-600 dark:text-slate-300 hover:bg-white/60 dark:hover:bg-slate-700'
+              }`}
+            >
+              <Camera className="w-4 h-4 shrink-0" />
+              <span>{isAr ? '📸 قراءة بالكاميرا / صورة' : 'Camera / Photo Scan'}</span>
+            </button>
+            <button
+              type="button"
+              onClick={() => {
+                stopCameraStream();
+                setEntryMethod('manual');
+                if (items.length === 0) {
+                  setItems([buildEmptyManualRow()]);
+                }
+              }}
+              className={`py-2 px-3 rounded-xl text-xs font-black flex items-center justify-center gap-1.5 transition-colors ${
+                entryMethod === 'manual'
+                  ? 'bg-indigo-600 text-white shadow-xs'
+                  : 'text-slate-600 dark:text-slate-300 hover:bg-white/60 dark:hover:bg-slate-700'
+              }`}
+            >
+              <Edit3 className="w-4 h-4 shrink-0" />
+              <span>{isAr ? '⌨️ إدخال الفاتورة يدوياً وتسجيلها' : 'Enter & Save Manually'}</span>
+            </button>
+          </div>
+
           {/* 1. INVOICE TYPE SELECTOR */}
           <div className="space-y-2">
             <label className="block text-xs font-black text-slate-700 dark:text-slate-300">
-              {isAr ? '1. اختار كيفاش بغيتي تدخل السلعة:' : '1. Choose Invoice Handling Mode:'}
+              {isAr ? '1. اختار كيفاش بغيتي تدخل الفاتورة:' : '1. Choose Invoice Handling Mode:'}
             </label>
             <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
               <button
@@ -1192,8 +1310,62 @@ export const PurchaseInvoiceScanModal: React.FC = () => {
             </div>
           </div>
 
-          {/* 2. CAPTURE OR UPLOAD INVOICE PHOTO */}
-          <div className="p-4 rounded-2xl bg-slate-50 dark:bg-slate-800/60 border border-slate-200 dark:border-slate-700 space-y-3">
+          {/* 2. CAPTURE OR UPLOAD INVOICE PHOTO (Full panel in camera mode, compact phone bar in manual mode) */}
+          {entryMethod === 'manual' && !previewDataUrl && (
+            <div className="p-3 rounded-2xl bg-amber-50/70 dark:bg-amber-950/25 border border-amber-200 dark:border-amber-800/70 flex flex-wrap items-center justify-between gap-2">
+              <div className="flex items-center gap-2 text-xs font-bold text-amber-950 dark:text-amber-200">
+                <Smartphone className="w-4 h-4 text-amber-600 shrink-0" />
+                <span>
+                  {isAr
+                    ? 'بغيتي تعمّرها سريع بالكاميرا أو الهاتف؟ صور الفاتورة أو اسكان باركود السلع:'
+                    : 'Prefer camera/phone? Snap the invoice or scan item barcodes:'}
+                </span>
+              </div>
+              <div className="flex flex-wrap items-center gap-2">
+                <button
+                  type="button"
+                  onClick={() => phoneCameraInputRef.current?.click()}
+                  className="px-3 py-1.5 rounded-xl bg-amber-400 hover:bg-amber-500 text-slate-950 text-[11px] font-black flex items-center gap-1.5"
+                >
+                  <Camera className="w-3.5 h-3.5" />
+                  <span>{isAr ? 'تصوير بكاميرا الهاتف' : 'Phone Camera'}</span>
+                </button>
+                <button
+                  type="button"
+                  onClick={() => {
+                    setEntryMethod('camera');
+                    void startLiveCamera();
+                  }}
+                  className="px-3 py-1.5 rounded-xl bg-slate-900 dark:bg-slate-700 text-white text-[11px] font-bold flex items-center gap-1.5"
+                >
+                  <Camera className="w-3.5 h-3.5" />
+                  <span>{isAr ? 'كاميرا مباشرة' : 'Live Cam'}</span>
+                </button>
+                <button
+                  type="button"
+                  onClick={() => {
+                    stopCameraStream();
+                    setShowBarcodeCamScanner(true);
+                  }}
+                  className="px-3 py-1.5 rounded-xl bg-emerald-600 hover:bg-emerald-700 text-white text-[11px] font-black flex items-center gap-1.5"
+                >
+                  <Barcode className="w-3.5 h-3.5" />
+                  <span>{isAr ? 'سكان باركود بالكاميرا' : 'Scan Barcode'}</span>
+                </button>
+              </div>
+              <input
+                ref={phoneCameraInputRef}
+                type="file"
+                accept="image/*"
+                capture="environment"
+                onChange={handleFileSelected}
+                className="hidden"
+              />
+            </div>
+          )}
+
+          {(entryMethod === 'camera' || previewDataUrl) && (
+            <div className="p-4 rounded-2xl bg-slate-50 dark:bg-slate-800/60 border border-slate-200 dark:border-slate-700 space-y-3">
             <div className="flex flex-wrap items-center justify-between gap-2">
               <span className="text-xs font-black text-slate-800 dark:text-slate-200 flex items-center gap-1.5">
                 <Sparkles className="w-4 h-4 text-amber-500" />
@@ -1485,7 +1657,8 @@ export const PurchaseInvoiceScanModal: React.FC = () => {
                 />
               </div>
             )}
-          </div>
+            </div>
+          )}
 
           {scanError && (
             <div className="p-4 rounded-2xl border bg-rose-50 dark:bg-rose-950/45 border-rose-300 dark:border-rose-800 text-rose-900 dark:text-rose-200 space-y-2.5">
@@ -1569,17 +1742,24 @@ export const PurchaseInvoiceScanModal: React.FC = () => {
           {/* 3. OFFICIAL ICE METADATA VS NOIR STOCK-ONLY BANNER */}
           {invoiceMode === 'official_ice' ? (
             <div className="p-4 rounded-2xl bg-emerald-50/50 dark:bg-emerald-950/20 border border-emerald-200 dark:border-emerald-800/70 space-y-3">
-              <div className="text-xs font-black text-emerald-900 dark:text-emerald-200 flex items-center gap-1.5">
-                <Building2 className="w-4 h-4 text-emerald-600" />
-                <span>
+              <div className="flex flex-wrap items-center justify-between gap-2">
+                <div className="text-xs font-black text-emerald-900 dark:text-emerald-200 flex items-center gap-1.5">
+                  <Building2 className="w-4 h-4 text-emerald-600" />
+                  <span>
+                    {isAr
+                      ? '2. إدخال معلومات الفاتورة والمورد (أرشيف ICE)'
+                      : '2. Invoice & Supplier Details (ICE Archive)'}
+                  </span>
+                </div>
+                <span className="text-[11px] font-semibold text-emerald-700 dark:text-emerald-300">
                   {isAr
-                    ? 'بيانات الأرشيف الرسمي (ICE والفاتورة)'
-                    : 'Official Invoice Archive Details (ICE)'}
+                    ? 'يمكنك تسجيل الفاتورة بالمبلغ الإجمالي أو مع السلع فالجدول'
+                    : 'Save with line items or summary total'}
                 </span>
               </div>
 
-              <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-5 gap-3 text-xs">
-                <div className="lg:col-span-2">
+              <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-3 text-xs">
+                <div className="sm:col-span-2">
                   <label className="block font-bold text-slate-700 dark:text-slate-300 mb-1">
                     {isAr ? 'إسم المورد / الشركة *' : 'Supplier Name *'}
                   </label>
@@ -1587,7 +1767,7 @@ export const PurchaseInvoiceScanModal: React.FC = () => {
                     type="text"
                     value={supplierName}
                     onChange={(e) => setSupplierName(e.target.value)}
-                    placeholder={isAr ? 'مثال: شركة التوزيع...' : 'Supplier company'}
+                    placeholder={isAr ? 'مثال: أتقداو / سنطرال / شركة التوزيع...' : 'Supplier company'}
                     className="w-full px-3 py-2 rounded-xl bg-white dark:bg-slate-900 border border-slate-300 dark:border-slate-700 text-slate-900 dark:text-white font-semibold"
                   />
                 </div>
@@ -1610,6 +1790,19 @@ export const PurchaseInvoiceScanModal: React.FC = () => {
 
                 <div>
                   <label className="block font-bold text-slate-700 dark:text-slate-300 mb-1">
+                    {isAr ? 'هاتف المورد' : 'Supplier Phone'}
+                  </label>
+                  <input
+                    type="tel"
+                    value={supplierPhone}
+                    onChange={(e) => setSupplierPhone(e.target.value)}
+                    placeholder="06XXXXXXXX"
+                    className="w-full px-3 py-2 rounded-xl bg-white dark:bg-slate-900 border border-slate-300 dark:border-slate-700 text-slate-900 dark:text-white font-mono text-xs"
+                  />
+                </div>
+
+                <div>
+                  <label className="block font-bold text-slate-700 dark:text-slate-300 mb-1">
                     {isAr ? 'رقم الفاتورة' : 'Invoice #'}
                   </label>
                   <input
@@ -1623,7 +1816,7 @@ export const PurchaseInvoiceScanModal: React.FC = () => {
 
                 <div>
                   <label className="block font-bold text-slate-700 dark:text-slate-300 mb-1">
-                    {isAr ? 'التاريخ' : 'Date'}
+                    {isAr ? 'تاريخ الفاتورة' : 'Invoice Date'}
                   </label>
                   <input
                     type="date"
@@ -1632,10 +1825,39 @@ export const PurchaseInvoiceScanModal: React.FC = () => {
                     className="w-full px-3 py-2 rounded-xl bg-white dark:bg-slate-900 border border-slate-300 dark:border-slate-700 text-slate-900 dark:text-white font-mono text-xs"
                   />
                 </div>
+
+                <div>
+                  <label className="block font-bold text-slate-700 dark:text-slate-300 mb-1">
+                    {isAr ? 'تاريخ الاستحقاق (اختياري)' : 'Due Date (Opt.)'}
+                  </label>
+                  <input
+                    type="date"
+                    value={dueDate}
+                    onChange={(e) => setDueDate(e.target.value)}
+                    className="w-full px-3 py-2 rounded-xl bg-white dark:bg-slate-900 border border-slate-300 dark:border-slate-700 text-slate-900 dark:text-white font-mono text-xs"
+                  />
+                </div>
+
+                <div>
+                  <label className="block font-bold text-slate-700 dark:text-slate-300 mb-1">
+                    {isAr ? `مجموع الفاتورة (${currencySymbol})` : `Invoice Total (${currencySymbol})`}
+                  </label>
+                  <input
+                    type="number"
+                    step="0.01"
+                    min="0"
+                    value={manualTotalAmount}
+                    onChange={(e) => setManualTotalAmount(e.target.value)}
+                    placeholder={
+                      computedItemsTotal > 0 ? computedItemsTotal.toFixed(2) : '0.00'
+                    }
+                    className="w-full px-3 py-2 rounded-xl bg-white dark:bg-slate-900 border border-emerald-400 dark:border-emerald-700 font-mono font-black text-emerald-700 dark:text-emerald-300"
+                  />
+                </div>
               </div>
 
-              <div className="flex flex-wrap items-center justify-between gap-3 pt-1 text-xs">
-                <div className="flex items-center gap-2">
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 pt-1 text-xs items-center">
+                <div className="flex flex-wrap items-center gap-2">
                   <label className="font-bold text-slate-700 dark:text-slate-300">
                     {isAr ? `الخلاص المؤدى (${currencySymbol}):` : `Paid (${currencySymbol}):`}
                   </label>
@@ -1645,17 +1867,28 @@ export const PurchaseInvoiceScanModal: React.FC = () => {
                     min="0"
                     value={paidAmount}
                     onChange={(e) => setPaidAmount(e.target.value)}
-                    placeholder={String(computedItemsTotal)}
+                    placeholder={
+                      String(
+                        (Number(manualTotalAmount) > 0
+                          ? Number(manualTotalAmount)
+                          : computedItemsTotal) || 0
+                      )
+                    }
                     className="w-28 px-3 py-1.5 rounded-xl bg-white dark:bg-slate-900 border border-slate-300 dark:border-slate-700 font-mono font-bold text-slate-900 dark:text-white"
                   />
                   <span className="text-[11px] text-slate-500">
-                    {isAr ? '(خليه خاوي إلا خلصتي كلشي)' : '(Blank = fully paid)'}
+                    {isAr ? '(خليه خاوي = مخلّصة كاملة)' : '(Blank = fully paid)'}
                   </span>
                 </div>
 
-                <div className="font-mono font-black tabular-nums text-emerald-700 dark:text-emerald-300">
-                  {isAr ? 'مجموع الفاتورة:' : 'Invoice Total:'} {computedItemsTotal.toFixed(2)}{' '}
-                  {currencySymbol}
+                <div>
+                  <input
+                    type="text"
+                    value={invoiceNotes}
+                    onChange={(e) => setInvoiceNotes(e.target.value)}
+                    placeholder={isAr ? 'ملاحظات حول الفاتورة أو الدفع (اختياري)...' : 'Invoice notes (optional)...'}
+                    className="w-full px-3 py-1.5 rounded-xl bg-white dark:bg-slate-900 border border-slate-300 dark:border-slate-700 text-xs text-slate-900 dark:text-white"
+                  />
                 </div>
               </div>
             </div>
@@ -1716,14 +1949,27 @@ export const PurchaseInvoiceScanModal: React.FC = () => {
                     : `Items to Add to Inventory (${activeItemsCount})`}
                 </span>
               </h3>
-              <button
-                type="button"
-                onClick={addManualLineAndFocus}
-                className="px-3.5 py-1.5 rounded-xl bg-slate-900 dark:bg-slate-700 hover:bg-slate-800 text-xs font-black text-white flex items-center gap-1.5"
-              >
-                <Plus className="w-3.5 h-3.5" />
-                <span>{isAr ? 'دخل يدوياً (+ سطر جديد)' : '+ Add Row Manually'}</span>
-              </button>
+              <div className="flex flex-wrap items-center gap-2">
+                <button
+                  type="button"
+                  onClick={() => {
+                    stopCameraStream();
+                    setShowBarcodeCamScanner(true);
+                  }}
+                  className="px-3.5 py-1.5 rounded-xl bg-emerald-600 hover:bg-emerald-700 text-xs font-black text-white flex items-center gap-1.5 shadow-2xs"
+                >
+                  <Barcode className="w-3.5 h-3.5" />
+                  <span>{isAr ? '📷 سكان باركود بالكاميرا / الهاتف' : 'Scan Barcode (Camera)'}</span>
+                </button>
+                <button
+                  type="button"
+                  onClick={addManualLineAndFocus}
+                  className="px-3.5 py-1.5 rounded-xl bg-slate-900 dark:bg-slate-700 hover:bg-slate-800 text-xs font-black text-white flex items-center gap-1.5"
+                >
+                  <Plus className="w-3.5 h-3.5" />
+                  <span>{isAr ? 'دخل يدوياً (+ سطر جديد)' : '+ Add Row Manually'}</span>
+                </button>
+              </div>
             </div>
 
             <div className="border border-slate-200 dark:border-slate-800 rounded-2xl overflow-x-auto">
@@ -1965,7 +2211,15 @@ export const PurchaseInvoiceScanModal: React.FC = () => {
 
             <button
               type="submit"
-              disabled={isScanning || activeItemsCount === 0}
+              disabled={
+                isScanning ||
+                (activeItemsCount === 0 &&
+                  !(
+                    invoiceMode === 'official_ice' &&
+                    supplierName.trim().length > 0 &&
+                    Number(manualTotalAmount) > 0
+                  ))
+              }
               className={`px-5 py-2.5 rounded-xl text-xs sm:text-sm font-black flex items-center gap-2 transition-colors disabled:opacity-50 ${
                 invoiceMode === 'official_ice'
                   ? 'bg-emerald-600 hover:bg-emerald-700 text-white'
@@ -1975,9 +2229,13 @@ export const PurchaseInvoiceScanModal: React.FC = () => {
               <CheckCircle2 className="w-4 h-4" />
               <span>
                 {invoiceMode === 'official_ice'
-                  ? isAr
-                    ? `تأكيد: زيد للمخزون + أرشيف ICE (${activeItemsCount})`
-                    : `Save Official ICE Archive & Stock (${activeItemsCount})`
+                  ? activeItemsCount > 0
+                    ? isAr
+                      ? `تأكيد وتسجيل الفاتورة + المخزون (${activeItemsCount})`
+                      : `Save Invoice & Stock (${activeItemsCount})`
+                    : isAr
+                    ? 'تسجيل الفاتورة في الأرشيف'
+                    : 'Save Invoice to Archive'
                   : isAr
                   ? `تأكيد: زيد للمخزون فقط - نوار/بوار (${activeItemsCount})`
                   : `Add to Inventory Only - Noir (${activeItemsCount})`}
@@ -1986,6 +2244,20 @@ export const PurchaseInvoiceScanModal: React.FC = () => {
           </div>
         </form>
       </div>
+
+      {showBarcodeCamScanner && (
+        <BarcodeScannerModal
+          mode="field"
+          defaultScanFormat="barcode"
+          title={
+            isAr
+              ? 'مسح باركود السلعة بكاميرا الهاتف لإضافتها للفاتورة'
+              : 'Scan Item Barcode with Camera for Invoice'
+          }
+          onClose={() => setShowBarcodeCamScanner(false)}
+          onScanned={handleCameraBarcodeDetected}
+        />
+      )}
     </div>
   );
 };

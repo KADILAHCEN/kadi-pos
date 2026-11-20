@@ -821,6 +821,27 @@ export const InventoryView: React.FC = () => {
               <span>{isAr ? 'تصوير فاتورة شراء' : 'Scan Purchase Invoice'}</span>
             </button>
 
+            {/* Manual Invoice Entry & Save (إدخال معلومات الفاتورة وتسجيلها يدوياً) */}
+            <button
+              type="button"
+              onClick={() =>
+                window.dispatchEvent(
+                  new CustomEvent('kadi:open-purchase-invoice-scanner', {
+                    detail: { defaultMode: 'official_ice', manualEntry: true }
+                  })
+                )
+              }
+              className="px-4 py-2 text-xs font-black rounded-xl bg-indigo-600 hover:bg-indigo-700 text-white transition-colors flex items-center gap-1.5 shadow-xs shrink-0 whitespace-nowrap"
+              title={
+                isAr
+                  ? 'إدخال معلومات الفاتورة والمورد والسلع وتسجيلها يدوياً'
+                  : 'Enter & save purchase invoice details manually'
+              }
+            >
+              <FileText className="w-3.5 h-3.5" />
+              <span>{isAr ? 'إدخال فاتورة وتسجيلها' : 'Enter & Save Invoice'}</span>
+            </button>
+
             {/* Add Product (إضافة منتوج) */}
             <button
               onClick={() => setShowAddModal(true)}
