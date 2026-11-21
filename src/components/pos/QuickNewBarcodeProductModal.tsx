@@ -5,6 +5,8 @@ import { bluetoothScanner } from '../../utils/bluetoothScanner';
 import { playSound } from '../../utils/audio';
 import { lookupProductByBarcode } from '../../utils/openFoodFacts';
 import { Barcode, CheckCircle2, Globe, Loader2, PackagePlus, Search, Sparkles, X } from 'lucide-react';
+import { PriceAlertAdvisor } from '../alerts/PriceAlertAdvisor';
+import { parseMoroccanNumber, recordPriceAlert } from '../../utils/priceAlerts';
 
 export type QuickBarcodeSourceContext = 'pos' | 'inventory' | 'invoice' | 'price_checker' | 'global';
 
@@ -207,6 +209,16 @@ export const QuickNewBarcodeProductModal: React.FC<QuickNewBarcodeProductModalPr
       return;
     }
 
+    if (finalCost > 0 && cleanPrice <= finalCost) {
+      recordPriceAlert({
+        productId: result.product.id,
+        productName: result.product.name,
+        costPrice: finalCost,
+        sellPrice: Number(cleanPrice.toFixed(2)),
+        type: cleanPrice < finalCost ? 'loss' : 'zero_profit'
+      });
+    }
+
     if (settings.bluetoothSoundFeedback !== false) {
       playSound('beep');
     }
@@ -382,6 +394,17 @@ export const QuickNewBarcodeProductModal: React.FC<QuickNewBarcodeProductModalPr
               />
             </div>
           </div>
+
+          <PriceAlertAdvisor
+            costPrice={parseMoroccanNumber(costPrice)}
+            sellPrice={parseMoroccanNumber(price)}
+            currencySymbol={currencySymbol}
+            isAr={isAr}
+            onApplyChoice={(patch) => {
+              if (typeof patch.price === 'number') setPrice(String(patch.price));
+              if (typeof patch.costPrice === 'number') setCostPrice(String(patch.costPrice));
+            }}
+          />
 
           {/* Stock & Category */}
           <div className="grid grid-cols-2 gap-3">

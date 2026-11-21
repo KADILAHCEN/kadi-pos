@@ -1,5 +1,10 @@
-import React, { useState } from 'react';
+import React, { useEffect, useState } from 'react';
 import { usePos } from '../context/PosContext';
+import {
+  auditOldStockPrices,
+  loadPriceAlerts,
+  PRICE_ALERTS_CHANGED_EVENT
+} from '../utils/priceAlerts';
 import {
   Sun,
   Moon,
@@ -37,6 +42,7 @@ export const Navbar: React.FC = () => {
     heldTickets,
     lowStockProducts,
     expiringSoonProducts,
+    products,
     branches,
     activeBranch,
     setActiveBranchId,
@@ -80,6 +86,17 @@ export const Navbar: React.FC = () => {
   const [showPaletteDropdown, setShowPaletteDropdown] = useState(false);
   const [showPinModal, setShowPinModal] = useState(false);
   const [pendingTab, setPendingTab] = useState<typeof currentTab | null>(null);
+  const [loggedPriceAlertsCount, setLoggedPriceAlertsCount] = useState(() => loadPriceAlerts().length);
+
+  useEffect(() => {
+    const syncPriceAlerts = () => setLoggedPriceAlertsCount(loadPriceAlerts().length);
+    window.addEventListener(PRICE_ALERTS_CHANGED_EVENT, syncPriceAlerts);
+    window.addEventListener('storage', syncPriceAlerts);
+    return () => {
+      window.removeEventListener(PRICE_ALERTS_CHANGED_EVENT, syncPriceAlerts);
+      window.removeEventListener('storage', syncPriceAlerts);
+    };
+  }, []);
 
   const handleTabClick = (tabId: typeof currentTab) => {
     if (isTabProtected(tabId)) {
@@ -331,14 +348,17 @@ export const Navbar: React.FC = () => {
         {/* Alerts Center Button -> Navigates directly to in-app AlertsView page */}
         {(() => {
           const zakatAlertCount = zakatSummary.hasReachedNisab ? 1 : 0;
+          const oldStockIssuesCount = auditOldStockPrices(products).length;
+          const priceAlertsCount = oldStockIssuesCount + loggedPriceAlertsCount;
           const totalAlerts =
+            priceAlertsCount +
             lowStockProducts.length +
             expiringSoonProducts.length +
             zakatAlertCount +
             cpuAlerts.length +
             unresolvedTheftAlerts.length;
           const hasAlerts = totalAlerts > 0;
-          const hasCritical = criticalLowStockProducts.length > 0;
+          const hasCritical = criticalLowStockProducts.length > 0 || oldStockIssuesCount > 0;
           const alertsVisual = resolveTabVisual('alerts', settings.tabCustomizations);
           const AlertsIcon = alertsVisual.IconComponent;
           const isAlertsActive = currentTab === 'alerts';

@@ -28,6 +28,8 @@ import { ProductCameraModal } from './ProductCameraModal';
 import { BarcodeScannerModal } from './BarcodeScannerModal';
 import { lookupProductByBarcode } from '../../utils/openFoodFacts';
 import { bluetoothScanner } from '../../utils/bluetoothScanner';
+import { PriceAlertAdvisor } from '../alerts/PriceAlertAdvisor';
+import { markPriceAlertFixed, recordPriceAlert } from '../../utils/priceAlerts';
 
 interface EditProductModalProps {
   product: Product | null;
@@ -239,11 +241,14 @@ export const EditProductModal: React.FC<EditProductModalProps> = ({
     const parsedStock = parseFloat(stockInput.replace(',', '.'));
     const safeStock = Number.isFinite(parsedStock) && parsedStock >= 0 ? parsedStock : 0;
 
+    const nextPrice = Math.max(0, Number(price));
+    const nextCost = Math.max(0, Number(costPrice));
+
     updateProduct(product.id, {
       name: name.trim(),
       nameEn: nameEn.trim() || name.trim(),
-      price: Math.max(0, Number(price)),
-      costPrice: Math.max(0, Number(costPrice)),
+      price: nextPrice,
+      costPrice: nextCost,
       categoryId,
       unitType,
       stock: safeStock,
@@ -253,6 +258,18 @@ export const EditProductModal: React.FC<EditProductModalProps> = ({
       color: color,
       expiryDate: expiryDate ? expiryDate : undefined
     });
+
+    if (nextCost > 0 && nextPrice <= nextCost) {
+      recordPriceAlert({
+        productId: product.id,
+        productName: name.trim(),
+        costPrice: nextCost,
+        sellPrice: nextPrice,
+        type: nextPrice < nextCost ? 'loss' : 'zero_profit'
+      });
+    } else if (nextPrice > nextCost) {
+      markPriceAlertFixed(product.id);
+    }
 
     playSound('success');
     onClose();
@@ -502,6 +519,17 @@ export const EditProductModal: React.FC<EditProductModalProps> = ({
                 +{profit.toFixed(2)} {currencySymbol} ({marginPercent}%)
               </span>
             </div>
+
+            <PriceAlertAdvisor
+              costPrice={costPrice}
+              sellPrice={price}
+              currencySymbol={currencySymbol}
+              isAr={isAr}
+              onApplyChoice={(patch) => {
+                if (typeof patch.price === 'number') setPrice(patch.price);
+                if (typeof patch.costPrice === 'number') setCostPrice(patch.costPrice);
+              }}
+            />
           </div>
 
           {/* Section 3: Feature / Unit & Category (المميزة والفئة) */}

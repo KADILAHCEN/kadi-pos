@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useEffect, useMemo, useState } from 'react';
 import { usePos } from '../../context/PosContext';
 import {
   AlertTriangle,
@@ -8,20 +8,40 @@ import {
   BellRing,
   Calendar,
   CheckCircle2,
+  Coins,
   Landmark,
   Layers,
   PackageCheck,
   PackagePlus,
+  Plus,
   Scale,
-  ShieldAlert
+  ShieldAlert,
+  Trash2,
+  Wrench
 } from 'lucide-react';
 import { Product } from '../../types';
+import { PriceAlertAdvisor } from './PriceAlertAdvisor';
+import {
+  auditOldStockPrices,
+  clearPriceAlerts,
+  loadPriceAlerts,
+  markPriceAlertFixed,
+  OldStockPriceIssue,
+  PRICE_ALERTS_CHANGED_EVENT,
+  PriceAlertLogEntry,
+  parseMoroccanNumber,
+  recordPriceAlert
+} from '../../utils/priceAlerts';
 
-type AlertsFilterTab = 'all' | 'low_stock' | 'expiring' | 'zakat' | 'cpu' | 'theft';
+type AlertsFilterTab = 'all' | 'price_alerts' | 'low_stock' | 'expiring' | 'zakat' | 'cpu' | 'theft';
 
 export const AlertsView: React.FC = () => {
   const {
     setCurrentTab,
+    products,
+    categories,
+    addProduct,
+    updateProduct,
     lowStockProducts,
     criticalLowStockProducts,
     expiringSoonProducts,
@@ -43,8 +63,132 @@ export const AlertsView: React.FC = () => {
   const [activeFilter, setActiveFilter] = useState<AlertsFilterTab>('all');
   const [restockedIds, setRestockedIds] = useState<Record<string, boolean>>({});
 
+  // Quick Price Alert & Product Entry State (Non-blocking: ما كيمنعش، غير كيعلمك)
+  const [quickName, setQuickName] = useState('');
+  const [quickCostInput, setQuickCostInput] = useState('');
+  const [quickPriceInput, setQuickPriceInput] = useState('');
+  const [quickFeedback, setQuickFeedback] = useState<{ type: 'ok' | 'warn' | 'err'; text: string } | null>(null);
+  const [priceAlertLogs, setPriceAlertLogs] = useState<PriceAlertLogEntry[]>(() => loadPriceAlerts());
+  const [oldStockFixedNotice, setOldStockFixedNotice] = useState<string | null>(null);
+
+  useEffect(() => {
+    const syncLogs = () => setPriceAlertLogs(loadPriceAlerts());
+    window.addEventListener(PRICE_ALERTS_CHANGED_EVENT, syncLogs);
+    window.addEventListener('storage', syncLogs);
+    return () => {
+      window.removeEventListener(PRICE_ALERTS_CHANGED_EVENT, syncLogs);
+      window.removeEventListener('storage', syncLogs);
+    };
+  }, []);
+
+  const oldStockIssues = useMemo(() => auditOldStockPrices(products), [products]);
+  const priceAlertsCount = oldStockIssues.length + priceAlertLogs.length;
+
+  const quickCostNum = parseMoroccanNumber(quickCostInput);
+  const quickPriceNum = parseMoroccanNumber(quickPriceInput);
+
+  const handleQuickPriceSave = (e: React.FormEvent) => {
+    e.preventDefault();
+    const cleanName = quickName.trim();
+    if (!cleanName) {
+      setQuickFeedback({
+        type: 'err',
+        text: isAr ? '⚠️ كتب سميت المنتوج أولا' : 'Please enter product name first'
+      });
+      return;
+    }
+
+    const defaultCat = categories.find((c) => c.id !== 'cat-all')?.id || categories[0]?.id || 'cat-1';
+    const finalSell = Number(quickPriceNum.toFixed(2));
+    const finalCost = Number(quickCostNum.toFixed(2));
+    const autoBarcode = `628${Date.now().toString().slice(-9)}`;
+
+    const res = addProduct({
+      name: cleanName,
+      nameEn: cleanName,
+      sku: `SKU-${autoBarcode.slice(-4)}`,
+      barcode: autoBarcode,
+      categoryId: defaultCat,
+      price: finalSell,
+      costPrice: finalCost,
+      stock: 10,
+      lowStockThreshold: 5,
+      unitType: 'piece',
+      color: '#10B981',
+      hasVariants: false
+    });
+
+    if (!res.success || !res.product) {
+      setQuickFeedback({
+        type: 'err',
+        text: res.message || (isAr ? 'تعذر إضافة المنتوج' : 'Could not save product')
+      });
+      return;
+    }
+
+    // Never blocks saving: record alert when selling at loss or zero profit
+    if (finalCost > 0 && finalSell <= finalCost) {
+      recordPriceAlert({
+        productId: res.product.id,
+        productName: cleanName,
+        costPrice: finalCost,
+        sellPrice: finalSell,
+        type: finalSell < finalCost ? 'loss' : 'zero_profit'
+      });
+      setQuickFeedback({
+        type: 'warn',
+        text: isAr
+          ? `⚠️ تسجل "${cleanName}" بالرغم من الخسارة/بلا ربح — تم تسجيل تنبيه الأثمنة!`
+          : `Saved "${cleanName}" with price alert recorded.`
+      });
+    } else {
+      setQuickFeedback({
+        type: 'ok',
+        text: isAr
+          ? `✅ تسجل "${cleanName}" بنجاح (الشراء: ${finalCost} / البيع: ${finalSell} ${currencySymbol})`
+          : `Saved "${cleanName}" successfully.`
+      });
+    }
+
+    setQuickName('');
+    setQuickCostInput('');
+    setQuickPriceInput('');
+  };
+
+  const handleFixSingleOldStock = (issue: OldStockPriceIssue) => {
+    updateProduct(issue.product.id, {
+      price: issue.suggestedPrice,
+      costPrice: issue.suggestedCostPrice
+    });
+    markPriceAlertFixed(issue.product.id);
+    setOldStockFixedNotice(
+      isAr
+        ? `✅ تم تصحيح "${issue.product.name}" (البيع: ${issue.suggestedPrice} ${currencySymbol})`
+        : `Fixed "${issue.product.name}"`
+    );
+  };
+
+  const handleFixAllOldStock = () => {
+    if (oldStockIssues.length === 0) return;
+    let fixedCount = 0;
+    for (const issue of oldStockIssues) {
+      updateProduct(issue.product.id, {
+        price: issue.suggestedPrice,
+        costPrice: issue.suggestedCostPrice
+      });
+      markPriceAlertFixed(issue.product.id);
+      fixedCount++;
+    }
+    setOldStockFixedNotice(
+      isAr
+        ? `🛠️ تم تصحيح ${fixedCount} منتوج في المخزون القديم كامل بوحدو بنجاح!`
+        : `Auto-fixed ${fixedCount} old inventory items successfully!`
+    );
+  };
+
   const zakatAlertCount = zakatSummary.hasReachedNisab ? 1 : 0;
   const totalAlerts =
+    priceAlertsCount +
     lowStockProducts.length +
     expiringSoonProducts.length +
     zakatAlertCount +
@@ -67,6 +211,12 @@ export const AlertsView: React.FC = () => {
       label: isAr ? 'الكل' : isFr ? 'Tout' : 'All',
       count: totalAlerts,
       accent: 'bg-slate-900 dark:bg-emerald-600 text-white'
+    },
+    {
+      id: 'price_alerts',
+      label: isAr ? 'تنبيهات الأثمنة' : isFr ? 'Prix & Pertes' : 'Price Alerts',
+      count: priceAlertsCount,
+      accent: 'bg-rose-600 text-white'
     },
     {
       id: 'low_stock',
@@ -142,10 +292,10 @@ export const AlertsView: React.FC = () => {
               <button
                 type="button"
                 onClick={() => void requestNotificationPermission()}
-                className="min-h-[44px] px-3.5 py-2 rounded-xl bg-rose-600 hover:bg-rose-700 text-white text-xs font-extrabold flex items-center gap-1.5 transition-colors shadow-2xs whitespace-nowrap"
+                className="min-h-[44px] px-3.5 py-2 rounded-xl bg-blue-600 hover:bg-blue-700 text-white text-xs font-extrabold flex items-center gap-1.5 transition-colors shadow-2xs whitespace-nowrap"
               >
                 <BellRing className="w-4 h-4" />
-                <span>{isAr ? 'تفعيل إشعارات الدفع (Push)' : 'Enable Push Alerts'}</span>
+                <span>{isAr ? '🔔 فعل الإشعارات خارج التطبيق' : 'Enable Push Alerts'}</span>
               </button>
             ) : (
               <button
@@ -154,7 +304,7 @@ export const AlertsView: React.FC = () => {
                 className="min-h-[44px] px-3.5 py-2 rounded-xl bg-emerald-50 dark:bg-emerald-950/50 border border-emerald-200 dark:border-emerald-800 text-emerald-700 dark:text-emerald-300 hover:bg-emerald-100 dark:hover:bg-emerald-900/60 text-xs font-extrabold flex items-center gap-1.5 transition-colors whitespace-nowrap"
               >
                 <BellRing className="w-4 h-4" />
-                <span>{isAr ? 'تجربة تنبيه Push' : 'Test Push Alert'}</span>
+                <span>{isAr ? 'الإشعارات مفعلة ✅ (تجربة)' : 'Push Active (Test)'}</span>
               </button>
             )
           )}
@@ -171,7 +321,30 @@ export const AlertsView: React.FC = () => {
       </div>
 
       {/* Summary KPI Strip */}
-      <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-5 gap-2.5 sm:gap-3.5">
+      <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-6 gap-2.5 sm:gap-3.5">
+        <button
+          type="button"
+          onClick={() => setActiveFilter('price_alerts')}
+          className="text-start p-3.5 rounded-2xl bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 hover:border-rose-400 transition-colors"
+        >
+          <div className="flex items-center justify-between text-xs font-bold text-slate-500 dark:text-slate-400">
+            <span>{isAr ? 'تنبيه الأثمنة' : 'Price Alerts'}</span>
+            <Coins className="w-4 h-4 text-rose-500" />
+          </div>
+          <div className="mt-1.5 text-xl font-black text-slate-900 dark:text-white tabular-nums">
+            {priceAlertsCount}
+          </div>
+          <div className="text-[11px] text-rose-600 dark:text-rose-400 font-bold">
+            {oldStockIssues.length > 0
+              ? isAr
+                ? `${oldStockIssues.length} في المخزون`
+                : `${oldStockIssues.length} in stock`
+              : isAr
+              ? 'ما كيمنعش ✓'
+              : 'Price watch'}
+          </div>
+        </button>
+
         <button
           type="button"
           onClick={() => setActiveFilter('low_stock')}
@@ -314,6 +487,252 @@ export const AlertsView: React.FC = () => {
 
       {/* Sections Grid */}
       <div className="space-y-4 sm:space-y-5">
+        {/* 0. Price Alerts & Moroccan Price Helper Section */}
+        {showSection('price_alerts') && (
+          <section className="bg-white dark:bg-slate-900 rounded-3xl border border-slate-200 dark:border-slate-800 overflow-hidden shadow-xs">
+            <div className="p-4 border-b border-slate-100 dark:border-slate-800 flex flex-wrap items-center justify-between gap-2 bg-emerald-50/70 dark:bg-emerald-950/30">
+              <div className="flex items-center gap-2">
+                <Coins className="w-4 h-4 text-emerald-600 dark:text-emerald-400" />
+                <div>
+                  <h2 className="text-sm font-black text-slate-900 dark:text-white">
+                    {isAr
+                      ? 'تنبيه الأثمنة - ما كيمنعش، غير كيعلمك'
+                      : 'Price Alerts - Non-blocking Advisor'}
+                  </h2>
+                  <p className="text-[11px] text-slate-500 dark:text-slate-400">
+                    {isAr
+                      ? 'الترجمة بالدرهم والسنتيم والريال، تنبيه البيع بالخسارة، وفحص المخزون القديم'
+                      : 'Moroccan currency breakdown, non-blocking loss alerts, and old-stock price audit'}
+                  </p>
+                </div>
+              </div>
+              {oldStockIssues.length > 0 && (
+                <button
+                  type="button"
+                  onClick={handleFixAllOldStock}
+                  className="min-h-[38px] px-3.5 py-1.5 rounded-xl bg-amber-500 hover:bg-amber-600 text-slate-950 text-xs font-black flex items-center gap-1.5 transition-colors shadow-2xs"
+                >
+                  <Wrench className="w-3.5 h-3.5" />
+                  <span>
+                    {isAr
+                      ? `🛠️ صحح المخزون القديم كامل بوحدو (${oldStockIssues.length})`
+                      : `Auto-fix All (${oldStockIssues.length})`}
+                  </span>
+                </button>
+              )}
+            </div>
+
+            <div className="p-4 sm:p-5 space-y-5 text-xs">
+              {/* Quick Non-Blocking Add Product & Price Checker */}
+              <form
+                onSubmit={handleQuickPriceSave}
+                className="p-4 rounded-2xl bg-slate-50 dark:bg-slate-800/50 border border-slate-200 dark:border-slate-700/80 space-y-3"
+              >
+                <div className="font-black text-slate-900 dark:text-white flex items-center gap-1.5">
+                  <Plus className="w-4 h-4 text-emerald-600" />
+                  <span>
+                    {isAr ? '➕ إضافة منتوج سريع وفحص الثمن' : 'Quick Add Product & Price Check'}
+                  </span>
+                </div>
+
+                {quickFeedback && (
+                  <div
+                    className={`px-3 py-2 rounded-xl font-bold border ${
+                      quickFeedback.type === 'ok'
+                        ? 'bg-emerald-50 dark:bg-emerald-950/50 border-emerald-300 dark:border-emerald-700 text-emerald-800 dark:text-emerald-300'
+                        : quickFeedback.type === 'warn'
+                        ? 'bg-amber-50 dark:bg-amber-950/50 border-amber-300 dark:border-amber-700 text-amber-800 dark:text-amber-300'
+                        : 'bg-rose-50 dark:bg-rose-950/50 border-rose-300 dark:border-rose-700 text-rose-700 dark:text-rose-300'
+                    }`}
+                  >
+                    {quickFeedback.text}
+                  </div>
+                )}
+
+                <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
+                  <div>
+                    <label className="block font-bold text-slate-700 dark:text-slate-300 mb-1">
+                      {isAr ? 'سميت المنتوج' : 'Product Name'}
+                    </label>
+                    <input
+                      type="text"
+                      value={quickName}
+                      onChange={(e) => setQuickName(e.target.value)}
+                      placeholder={isAr ? 'مثال: بوطاغاز، دانون، سكر...' : 'Product name...'}
+                      className="w-full px-3 py-2 rounded-xl bg-white dark:bg-slate-900 border border-slate-300 dark:border-slate-700 text-sm font-bold text-slate-900 dark:text-white"
+                    />
+                  </div>
+                  <div>
+                    <label className="block font-bold text-slate-700 dark:text-slate-300 mb-1">
+                      {isAr ? `ثمن الشراء (${currencySymbol})` : `Cost Price (${currencySymbol})`}
+                    </label>
+                    <input
+                      type="text"
+                      inputMode="decimal"
+                      value={quickCostInput}
+                      onChange={(e) => setQuickCostInput(e.target.value)}
+                      placeholder={isAr ? 'مثال: 1.30 أو 130' : 'e.g. 1.30'}
+                      className="w-full px-3 py-2 rounded-xl bg-white dark:bg-slate-900 border border-slate-300 dark:border-slate-700 text-sm font-mono font-bold text-slate-900 dark:text-white"
+                    />
+                  </div>
+                  <div>
+                    <label className="block font-bold text-slate-700 dark:text-slate-300 mb-1">
+                      {isAr ? `ثمن البيع (${currencySymbol})` : `Sell Price (${currencySymbol})`}
+                    </label>
+                    <input
+                      type="text"
+                      inputMode="decimal"
+                      value={quickPriceInput}
+                      onChange={(e) => setQuickPriceInput(e.target.value)}
+                      placeholder={isAr ? 'مثال: 11' : 'e.g. 11'}
+                      className="w-full px-3 py-2 rounded-xl bg-white dark:bg-slate-900 border border-slate-300 dark:border-slate-700 text-sm font-mono font-bold text-slate-900 dark:text-white"
+                    />
+                  </div>
+                </div>
+
+                <PriceAlertAdvisor
+                  costPrice={quickCostNum}
+                  sellPrice={quickPriceNum}
+                  currencySymbol={currencySymbol}
+                  isAr={isAr}
+                  onApplyChoice={(patch) => {
+                    if (typeof patch.price === 'number') setQuickPriceInput(String(patch.price));
+                    if (typeof patch.costPrice === 'number') setQuickCostInput(String(patch.costPrice));
+                  }}
+                />
+
+                <button
+                  type="submit"
+                  className="w-full sm:w-auto min-h-[42px] px-5 py-2 rounded-xl bg-emerald-600 hover:bg-emerald-700 text-white font-black text-xs transition-colors shadow-2xs"
+                >
+                  {isAr ? '✅ سجل المنتوج (ما كيمنعش)' : '✅ Save Product'}
+                </button>
+              </form>
+
+              {/* Old Stock Audit + Recorded Price Alerts Log */}
+              <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
+                {/* Old Stock Price Audit */}
+                <div className="rounded-2xl border border-slate-200 dark:border-slate-800 overflow-hidden">
+                  <div className="px-4 py-3 bg-slate-50 dark:bg-slate-800/60 border-b border-slate-200 dark:border-slate-800 flex items-center justify-between gap-2">
+                    <span className="font-black text-slate-900 dark:text-white">
+                      {isAr
+                        ? `📦 المخزون القديم (${oldStockIssues.length} مشكل)`
+                        : `📦 Old Stock Audit (${oldStockIssues.length})`}
+                    </span>
+                    {oldStockIssues.length > 0 && (
+                      <button
+                        type="button"
+                        onClick={handleFixAllOldStock}
+                        className="px-2.5 py-1 rounded-lg bg-amber-500 hover:bg-amber-600 text-slate-950 text-[11px] font-black transition-colors"
+                      >
+                        {isAr ? 'صحح الكل' : 'Fix All'}
+                      </button>
+                    )}
+                  </div>
+
+                  {oldStockFixedNotice && (
+                    <div className="mx-3 mt-3 px-3 py-2 rounded-xl bg-emerald-50 dark:bg-emerald-950/50 border border-emerald-300 dark:border-emerald-700 text-emerald-800 dark:text-emerald-300 font-bold text-[11px]">
+                      {oldStockFixedNotice}
+                    </div>
+                  )}
+
+                  {oldStockIssues.length === 0 ? (
+                    <div className="p-6 text-center text-slate-400 flex flex-col items-center gap-2">
+                      <CheckCircle2 className="w-8 h-8 text-emerald-500 opacity-75" />
+                      <span>
+                        {isAr
+                          ? 'جميع أثمنة المخزون الحالي سليمة ومربحة!'
+                          : 'All inventory product prices are healthy!'}
+                      </span>
+                    </div>
+                  ) : (
+                    <div className="divide-y divide-slate-100 dark:divide-slate-800 max-h-72 overflow-y-auto">
+                      {oldStockIssues.map((issue) => (
+                        <div
+                          key={issue.product.id}
+                          className="p-3 flex items-center justify-between gap-2.5 hover:bg-slate-50 dark:hover:bg-slate-800/40"
+                        >
+                          <div className="min-w-0">
+                            <div className="font-black text-slate-900 dark:text-white truncate">
+                              {issue.product.name}
+                            </div>
+                            <div className="text-[11px] font-bold text-rose-600 dark:text-rose-400 mt-0.5">
+                              {issue.message}
+                            </div>
+                          </div>
+                          <button
+                            type="button"
+                            onClick={() => handleFixSingleOldStock(issue)}
+                            className="px-2.5 py-1.5 rounded-xl bg-amber-500 hover:bg-amber-600 text-slate-950 text-[11px] font-black shrink-0 transition-colors"
+                          >
+                            {issue.fixLabel}
+                          </button>
+                        </div>
+                      ))}
+                    </div>
+                  )}
+                </div>
+
+                {/* Price Alert History Log */}
+                <div className="rounded-2xl border border-slate-200 dark:border-slate-800 overflow-hidden">
+                  <div className="px-4 py-3 bg-slate-50 dark:bg-slate-800/60 border-b border-slate-200 dark:border-slate-800 flex items-center justify-between gap-2">
+                    <span className="font-black text-slate-900 dark:text-white">
+                      {isAr
+                        ? `📋 سجل التنبيهات (${priceAlertLogs.length})`
+                        : `📋 Price Alert Log (${priceAlertLogs.length})`}
+                    </span>
+                    {priceAlertLogs.length > 0 && (
+                      <button
+                        type="button"
+                        onClick={() => clearPriceAlerts()}
+                        className="px-2.5 py-1 rounded-lg bg-slate-200 dark:bg-slate-700 hover:bg-rose-100 dark:hover:bg-rose-950/60 text-slate-700 dark:text-slate-200 text-[11px] font-bold flex items-center gap-1 transition-colors"
+                      >
+                        <Trash2 className="w-3 h-3" />
+                        <span>{isAr ? 'مسح السجل' : 'Clear'}</span>
+                      </button>
+                    )}
+                  </div>
+
+                  {priceAlertLogs.length === 0 ? (
+                    <div className="p-6 text-center text-slate-400 flex flex-col items-center gap-2">
+                      <CheckCircle2 className="w-8 h-8 text-emerald-500 opacity-75" />
+                      <span>
+                        {isAr ? 'ما كاين حتى تنبيه مسجل دابا' : 'No price alerts logged yet'}
+                      </span>
+                    </div>
+                  ) : (
+                    <div className="divide-y divide-slate-100 dark:divide-slate-800 max-h-72 overflow-y-auto">
+                      {priceAlertLogs.map((log) => (
+                        <div
+                          key={log.id}
+                          className="p-3 bg-amber-50/50 dark:bg-amber-950/20 flex items-center justify-between gap-2"
+                        >
+                          <div className="min-w-0">
+                            <div className="font-black text-slate-900 dark:text-white truncate">
+                              ⚠️ {log.productName}
+                            </div>
+                            <div className="text-[11px] font-bold text-amber-900 dark:text-amber-300 mt-0.5 tabular-nums">
+                              {isAr
+                                ? `شراء: ${log.costPrice} ${currencySymbol} | بيع: ${log.sellPrice} ${currencySymbol}`
+                                : `Cost: ${log.costPrice} | Sell: ${log.sellPrice}`}
+                            </div>
+                          </div>
+                          <span className="text-[10px] text-slate-400 shrink-0 tabular-nums">
+                            {new Date(log.timestamp).toLocaleTimeString(isAr ? 'ar-MA' : 'en-US', {
+                              hour: '2-digit',
+                              minute: '2-digit'
+                            })}
+                          </span>
+                        </div>
+                      ))}
+                    </div>
+                  )}
+                </div>
+              </div>
+            </div>
+          </section>
+        )}
+
         {/* 1. Anti-Theft Section */}
         {showSection('theft') && (unresolvedTheftAlerts.length > 0 || activeFilter === 'theft') && (
           <section className="bg-white dark:bg-slate-900 rounded-3xl border border-slate-200 dark:border-slate-800 overflow-hidden shadow-xs">

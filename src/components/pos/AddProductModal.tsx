@@ -33,6 +33,8 @@ import { BarcodeScannerModal } from './BarcodeScannerModal';
 import { compressImageFile } from '../../utils/imageUtils';
 import { lookupProductByBarcode } from '../../utils/openFoodFacts';
 import { bluetoothScanner } from '../../utils/bluetoothScanner';
+import { PriceAlertAdvisor } from '../alerts/PriceAlertAdvisor';
+import { recordPriceAlert } from '../../utils/priceAlerts';
 
 interface AddProductModalProps {
   isOpen: boolean;
@@ -449,6 +451,16 @@ export const AddProductModal: React.FC<AddProductModalProps> = ({
       ...newProductData,
       id: `prod-${Date.now()}`
     };
+
+    if (newProductData.costPrice > 0 && newProductData.price <= newProductData.costPrice) {
+      recordPriceAlert({
+        productId: createdItem.id,
+        productName: createdItem.name,
+        costPrice: newProductData.costPrice,
+        sellPrice: newProductData.price,
+        type: newProductData.price < newProductData.costPrice ? 'loss' : 'zero_profit'
+      });
+    }
 
     // Notify parent to switch view/category and display success toast
     onProductAdded?.(createdItem);
@@ -927,6 +939,17 @@ export const AddProductModal: React.FC<AddProductModalProps> = ({
                 +{profit.toFixed(2)} {currencySymbol} ({marginPercent}%)
               </span>
             </div>
+
+            <PriceAlertAdvisor
+              costPrice={costPrice}
+              sellPrice={price}
+              currencySymbol={currencySymbol}
+              isAr={isAr}
+              onApplyChoice={(patch) => {
+                if (typeof patch.price === 'number') setPrice(patch.price);
+                if (typeof patch.costPrice === 'number') setCostPrice(patch.costPrice);
+              }}
+            />
           </div>
 
           {/* Section 4: Inventory Tracking (إدارة المخزون والتتبع) */}
