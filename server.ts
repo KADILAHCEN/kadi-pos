@@ -67,7 +67,7 @@ function safeParseGeminiJson<T>(rawText: string, fallback: T): T {
 
 async function startServer() {
   const app = express();
-  app.use(express.json({ limit: '15mb' }));
+  app.use(express.json({ limit: '25mb' }));
 
   app.post('/api/ai/analyze', async (req, res) => {
     const ai = createGeminiClient();
@@ -467,17 +467,23 @@ If audio is provided, transcribe what was said verbatim into "transcript" in Ara
         return res.status(400).json({ error: 'imageBase64 is required' });
       }
 
+      const normalizedMime =
+        typeof mimeType === 'string' &&
+        (mimeType === 'application/pdf' || mimeType.startsWith('image/'))
+          ? mimeType
+          : 'image/jpeg';
+
       const cleanBase64 = imageBase64.replace(/^data:[^;]+;base64,/, '');
 
-      const visionItemsInstruction = `You are a world-class multimodal document Vision AI specialized in reading ANY Moroccan invoice, wholesale receipt, dairy delivery slip, thermal supermarket ticket, or handwritten hanout carnet/bon.
-Understand the FULL image visually just like Meta AI:
+      const visionItemsInstruction = `You are a world-class multimodal document Vision AI specialized in reading ANY Moroccan invoice (photo or PDF), wholesale receipt, dairy delivery slip, thermal supermarket ticket, or handwritten hanout carnet/bon.
+Understand the FULL document visually just like Meta AI:
 1. AUTO-CORRECT SCENE & GEOMETRY:
-   - The paper may be tilted, rotated sideways/upside-down, crumpled, wrinkled, creased, poorly lit, or photographed on a patterned Moroccan carpet (زربية), wooden table, tiled floor, or counter.
-   - Ignore the carpet/background completely, mentally straighten and un-wrinkle the invoice, and read the whole page with full visual layout comprehension — NOT naive flat-line OCR.
+   - The paper may be tilted, rotated sideways/upside-down, crumpled, wrinkled, creased, poorly lit, a multi-page PDF, or photographed on a patterned Moroccan carpet (زربية), wooden table, tiled floor, or counter.
+   - Ignore the carpet/background completely, mentally straighten and un-wrinkle the invoice, and read the whole document with full visual layout comprehension — NOT naive flat-line OCR.
 2. SUPPORT ANY MOROCCAN HANOUT & WHOLESALE INVOICE FORMAT:
    - ATACADAO, Marjane, Carrefour, Bim, Metro, Supeco, Asswak Assalam.
    - Dairy / الحليبة delivery slips & invoices: Centrale Danone (سنطرال / دانون), Jibal (جبال), Colainor (كولينور), Jaouda (جودة), Chergui (شرقي), Copag.
-   - Wholesale grocery A4/A5 invoices, thermal POS receipts, and handwritten paper slips in French, Arabic, or Darija (زيت، سكر، دقيق، أتاي، صابون، بيسكوي، مشروبات).
+   - Wholesale grocery A4/A5 invoices, PDF invoices, thermal POS receipts, and handwritten paper slips in French, Arabic, or Darija (زيت، سكر، دقيق، أتاي، صابون، بيسكوي، مشروبات).
    - Thermal receipts (e.g. ATACADAO/Marjane) often wrap product descriptions across two lines, place "2 x 14,50  29,00" beneath the item name, or print an EAN barcode / article code (8–13 digits) next to or above the product name — extract that barcode into "barcode" when clearly visible, and NEVER mistake barcodes, line numbers, TVA %, or dates for quantity or price.
    - Understand column alignments even when skewed/wrinkled: CODE BARRE/EAN -> "barcode", DESIGNATION/ARTICLE -> "nom", QTE/COLIS -> "quantite", PU/P.U./PRIX -> "prix", MONTANT/PT/TOTAL -> "total".
    - Convert European commas ("14,50" -> 14.5).
@@ -497,12 +503,12 @@ Understand the FULL image visually just like Meta AI:
             parts: [
               {
                 inlineData: {
-                  mimeType,
+                  mimeType: normalizedMime,
                   data: cleanBase64
                 }
               },
               {
-                text: 'Read the full Moroccan invoice image visually (ATACADAO, dairy/الحليبة like Centrale/Danone/Jibal/Colainor, wholesale, or handwritten bon; auto-correct tilt, wrinkles, rotation, or carpet background). Extract every product with barcode (digits if printed else ""), nom, quantite, prix (unit cost MAD), and total (line total MAD). Return only JSON: [{"barcode": "", "nom": "...", "quantite": 0, "prix": 0, "total": 0}].'
+                text: 'Read the full Moroccan invoice document (photo or PDF: ATACADAO, dairy/الحليبة like Centrale/Danone/Jibal/Colainor, wholesale, or handwritten bon; auto-correct tilt, wrinkles, rotation, or carpet background). Extract every product with barcode (digits if printed else ""), nom, quantite, prix (unit cost MAD), and total (line total MAD). Return only JSON: [{"barcode": "", "nom": "...", "quantite": 0, "prix": 0, "total": 0}].'
               }
             ]
           },
@@ -549,12 +555,12 @@ Understand the FULL image visually just like Meta AI:
             parts: [
               {
                 inlineData: {
-                  mimeType,
+                  mimeType: normalizedMime,
                   data: cleanBase64
                 }
               },
               {
-                text: 'Extract only header/footer metadata from this Moroccan invoice (even if tilted or on a carpet): supplierName, supplierIce (15 digits if present), supplierPhone, invoiceNumber, invoiceDate (YYYY-MM-DD), hasOfficialMarkers, isHandwritten, totalAmount.'
+                text: 'Extract only header/footer metadata from this Moroccan invoice (photo or PDF, even if tilted or on a carpet): supplierName, supplierIce (exact 15 digits only if present), supplierPhone, invoiceNumber, invoiceDate (YYYY-MM-DD), hasOfficialMarkers, isHandwritten, totalHt (Total HT before tax), tvaAmount (TVA tax amount), totalTtc (Total TTC / Net a payer), totalAmount.'
               }
             ]
           },
@@ -571,6 +577,9 @@ Understand the FULL image visually just like Meta AI:
                 invoiceDate: { type: Type.STRING },
                 hasOfficialMarkers: { type: Type.BOOLEAN },
                 isHandwritten: { type: Type.BOOLEAN },
+                totalHt: { type: Type.NUMBER },
+                tvaAmount: { type: Type.NUMBER },
+                totalTtc: { type: Type.NUMBER },
                 totalAmount: { type: Type.NUMBER }
               }
             }
@@ -644,6 +653,9 @@ Understand the FULL image visually just like Meta AI:
         invoiceDate: '',
         hasOfficialMarkers: false,
         isHandwritten: false,
+        totalHt: 0,
+        tvaAmount: 0,
+        totalTtc: 0,
         totalAmount: 0
       };
       const meta =
@@ -655,17 +667,30 @@ Understand the FULL image visually just like Meta AI:
         normalizedItems.reduce((sum, it) => sum + (it.total || it.quantite * it.prix), 0).toFixed(2)
       );
 
+      const totalHt = Number(meta.totalHt) > 0 ? Number(Number(meta.totalHt).toFixed(2)) : 0;
+      const tvaAmount = Number(meta.tvaAmount) >= 0 ? Number(Number(meta.tvaAmount).toFixed(2)) : 0;
+      const rawTtc =
+        Number(meta.totalTtc) > 0 ? Number(meta.totalTtc) : Number(meta.totalAmount);
+      const resolvedTotal =
+        Number.isFinite(rawTtc) && rawTtc > 0 ? Number(rawTtc.toFixed(2)) : itemsSum;
+      const cleanedIce = String(meta.supplierIce || '')
+        .replace(/[^0-9]/g, '')
+        .slice(0, 15);
+
       return res.json({
         items: normalizedItems,
         invoice: {
           supplierName: String(meta.supplierName || '').trim(),
-          supplierIce: String(meta.supplierIce || '').replace(/\s+/g, '').trim(),
+          supplierIce: cleanedIce,
           supplierPhone: String(meta.supplierPhone || '').trim(),
           invoiceNumber: String(meta.invoiceNumber || '').trim(),
           invoiceDate: String(meta.invoiceDate || '').trim(),
           hasOfficialMarkers: Boolean(meta.hasOfficialMarkers),
           isHandwritten: Boolean(meta.isHandwritten),
-          totalAmount: Number(meta.totalAmount) > 0 ? Number(meta.totalAmount) : itemsSum,
+          totalHt,
+          tvaAmount,
+          totalTtc: resolvedTotal,
+          totalAmount: resolvedTotal,
           items: normalizedItems
         }
       });

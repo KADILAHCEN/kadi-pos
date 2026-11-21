@@ -45,6 +45,7 @@ export const ProductGrid: React.FC<ProductGridProps> = ({ onOpenBarcodeScanner }
     deleteCategory,
     addToCart,
     adjustStock,
+    updateProduct,
     deleteProduct,
     currencySymbol,
     language,
@@ -104,6 +105,8 @@ export const ProductGrid: React.FC<ProductGridProps> = ({ onOpenBarcodeScanner }
   // Quick Restock ("شريت +") modal state
   const [buyModalProduct, setBuyModalProduct] = useState<Product | null>(null);
   const [buyQtyInput, setBuyQtyInput] = useState<string>('');
+  const [buyPriceInput, setBuyPriceInput] = useState<string>('');
+  const [buyModalError, setBuyModalError] = useState<string | null>(null);
   const buyInputRef = useRef<HTMLInputElement | null>(null);
 
   // Out-of-stock snackbar toast state
@@ -209,6 +212,8 @@ export const ProductGrid: React.FC<ProductGridProps> = ({ onOpenBarcodeScanner }
   const openBuyProductDialog = (prod: Product) => {
     setBuyModalProduct(prod);
     setBuyQtyInput('');
+    setBuyPriceInput(String(prod.price));
+    setBuyModalError(null);
     window.setTimeout(() => {
       buyInputRef.current?.focus();
     }, 60);
@@ -217,28 +222,52 @@ export const ProductGrid: React.FC<ProductGridProps> = ({ onOpenBarcodeScanner }
   const handleConfirmBuyProduct = (e?: React.FormEvent) => {
     if (e) e.preventDefault();
     if (!buyModalProduct) return;
+
     const rawQty = parseFloat(buyQtyInput.replace(',', '.'));
-    if (!Number.isFinite(rawQty) || rawQty <= 0) return;
+    if (!Number.isFinite(rawQty) || rawQty <= 0) {
+      setBuyModalError(
+        isAr ? 'كتب الكمية' : isFr ? 'Saisissez la quantité' : 'Please enter quantity'
+      );
+      return;
+    }
+
+    const rawPrice = parseFloat(buyPriceInput.replace(',', '.'));
+    if (!Number.isFinite(rawPrice) || rawPrice <= 0) {
+      setBuyModalError(
+        isAr ? 'كتب الثمن الصحيح' : isFr ? 'Saisissez un prix valide' : 'Please enter a valid price'
+      );
+      return;
+    }
 
     const cleanQty = Number(rawQty.toFixed(2));
+    const cleanPrice = Number(rawPrice.toFixed(2));
+
     adjustStock(
       buyModalProduct.id,
       cleanQty,
       isAr ? 'شراء سريع من شاشة البيع (شريت +)' : 'Quick restock from POS',
       'restock'
     );
+
+    if (Math.abs(cleanPrice - buyModalProduct.price) > 0.001) {
+      updateProduct(buyModalProduct.id, { price: cleanPrice });
+    }
+
     if (settings.enableSoundEffects !== false) {
       playSound('success');
     }
     const updatedName = isAr ? buyModalProduct.name : buyModalProduct.nameEn || buyModalProduct.name;
+    const newStock = Number((buyModalProduct.stock + cleanQty).toFixed(2));
     setBarcodeToast(
       isAr
-        ? `✅ تزادت +${cleanQty} لـ ${updatedName}`
-        : `✅ +${cleanQty} added to ${updatedName}`
+        ? `✅ تزادت +${cleanQty} لـ ${updatedName} (المخزون: ${newStock} | الثمن: ${cleanPrice.toFixed(2)} ${currencySymbol})`
+        : `✅ +${cleanQty} ${updatedName} (Stock: ${newStock} | Price: ${cleanPrice.toFixed(2)} ${currencySymbol})`
     );
-    setTimeout(() => setBarcodeToast(null), 2600);
+    setTimeout(() => setBarcodeToast(null), 2800);
     setBuyModalProduct(null);
     setBuyQtyInput('');
+    setBuyPriceInput('');
+    setBuyModalError(null);
   };
 
   const handleScannedBarcode = (code: string, _speedMs?: number) => {
@@ -866,7 +895,11 @@ export const ProductGrid: React.FC<ProductGridProps> = ({ onOpenBarcodeScanner }
 
             <div>
               <label className="block text-xs font-bold text-slate-700 dark:text-slate-300 mb-1.5">
-                {isAr ? 'شحال شريتي؟' : isFr ? 'Quantité achetée ?' : 'Quantity purchased?'}
+                {isAr
+                  ? 'شحال شريتي؟ - الكمية'
+                  : isFr
+                  ? 'Quantité achetée ?'
+                  : 'Quantity purchased?'}
               </label>
               <input
                 ref={buyInputRef}
@@ -874,7 +907,10 @@ export const ProductGrid: React.FC<ProductGridProps> = ({ onOpenBarcodeScanner }
                 step={buyModalProduct.unitType === 'kg' || buyModalProduct.unitType === 'liter' ? '0.1' : '1'}
                 min="0.01"
                 value={buyQtyInput}
-                onChange={(e) => setBuyQtyInput(e.target.value)}
+                onChange={(e) => {
+                  setBuyQtyInput(e.target.value);
+                  if (buyModalError) setBuyModalError(null);
+                }}
                 placeholder={isAr ? 'مثلاً: 10' : 'e.g. 10'}
                 className="w-full px-3.5 py-2.5 text-base font-bold rounded-xl border border-slate-300 dark:border-slate-700 bg-slate-50 dark:bg-slate-800 text-slate-900 dark:text-white focus:outline-none focus:ring-2 focus:ring-emerald-500 tabular-nums"
               />
@@ -886,6 +922,7 @@ export const ProductGrid: React.FC<ProductGridProps> = ({ onOpenBarcodeScanner }
                     onClick={() => {
                       const curr = parseFloat(buyQtyInput) || 0;
                       setBuyQtyInput(String(curr + preset));
+                      if (buyModalError) setBuyModalError(null);
                     }}
                     className="flex-1 py-1.5 rounded-lg bg-slate-100 dark:bg-slate-800 hover:bg-emerald-50 dark:hover:bg-emerald-950/50 border border-slate-200 dark:border-slate-700 text-xs font-extrabold text-slate-700 dark:text-slate-200 tabular-nums"
                   >
@@ -894,6 +931,45 @@ export const ProductGrid: React.FC<ProductGridProps> = ({ onOpenBarcodeScanner }
                 ))}
               </div>
             </div>
+
+            <div>
+              <div className="flex items-center justify-between gap-2 mb-1.5">
+                <label className="block text-xs font-bold text-slate-700 dark:text-slate-300">
+                  {isAr
+                    ? `الثمن الجديد (${currencySymbol})`
+                    : isFr
+                    ? `Nouveau prix (${currencySymbol})`
+                    : `New Price (${currencySymbol})`}
+                </label>
+                <span className="text-[11px] text-slate-500 dark:text-slate-400 tabular-nums">
+                  {isAr
+                    ? `الثمن الحالي: ${buyModalProduct.price.toFixed(2)} ${currencySymbol}`
+                    : `Current: ${buyModalProduct.price.toFixed(2)} ${currencySymbol}`}
+                </span>
+              </div>
+              <input
+                type="number"
+                step="0.01"
+                min="0.01"
+                value={buyPriceInput}
+                onChange={(e) => {
+                  setBuyPriceInput(e.target.value);
+                  if (buyModalError) setBuyModalError(null);
+                }}
+                placeholder={String(buyModalProduct.price)}
+                className="w-full px-3.5 py-2.5 text-base font-bold rounded-xl border border-slate-300 dark:border-slate-700 bg-slate-50 dark:bg-slate-800 text-slate-900 dark:text-white focus:outline-none focus:ring-2 focus:ring-emerald-500 tabular-nums"
+              />
+            </div>
+
+            {buyModalError && (
+              <div
+                role="alert"
+                className="px-3.5 py-2.5 rounded-xl bg-rose-50 dark:bg-rose-950/50 border border-rose-300 dark:border-rose-800 text-rose-700 dark:text-rose-300 text-xs font-extrabold flex items-center gap-2"
+              >
+                <AlertTriangle className="w-4 h-4 shrink-0" />
+                <span>{buyModalError}</span>
+              </div>
+            )}
 
             <div className="flex items-center justify-end gap-2 pt-1">
               <button
@@ -905,8 +981,7 @@ export const ProductGrid: React.FC<ProductGridProps> = ({ onOpenBarcodeScanner }
               </button>
               <button
                 type="submit"
-                disabled={!buyQtyInput || parseFloat(buyQtyInput) <= 0}
-                className="px-5 py-2 rounded-xl bg-emerald-600 hover:bg-emerald-700 disabled:opacity-45 text-white text-xs font-extrabold shadow-sm transition-all active:scale-95"
+                className="px-5 py-2 rounded-xl bg-emerald-600 hover:bg-emerald-700 text-white text-xs font-extrabold shadow-sm transition-all active:scale-95"
               >
                 {isAr ? 'زيد' : isFr ? 'Ajouter' : 'Add'}
               </button>

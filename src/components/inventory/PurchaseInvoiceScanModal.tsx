@@ -6,6 +6,7 @@ import { getLocalTodayYMD } from '../../utils/expenses';
 import { bluetoothScanner } from '../../utils/bluetoothScanner';
 import { playSound } from '../../utils/audio';
 import { BarcodeScannerModal } from '../pos/BarcodeScannerModal';
+import { parsePurchaseInvoiceXml } from '../../utils/xmlInvoiceParser';
 import {
   Camera,
   Upload,
@@ -32,7 +33,9 @@ import {
   Code2,
   Copy,
   Barcode,
-  Smartphone
+  Smartphone,
+  FileText,
+  FileCode2
 } from 'lucide-react';
 
 export type PurchaseInvoiceMode = 'official_ice' | 'informal_noir';
@@ -70,12 +73,27 @@ interface ScannedInvoiceResponse {
     invoiceDate?: string;
     hasOfficialMarkers?: boolean;
     isHandwritten?: boolean;
+    totalHt?: number;
+    tvaAmount?: number;
+    totalTtc?: number;
     totalAmount?: number;
     items?: VisionInvoiceItem[];
   };
   error?: string;
   code?: string;
 }
+
+const readFileAsBase64 = (file: Blob): Promise<string> =>
+  new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onload = () => {
+      const result = typeof reader.result === 'string' ? reader.result : '';
+      const commaIdx = result.indexOf(',');
+      resolve(commaIdx >= 0 ? result.slice(commaIdx + 1) : result);
+    };
+    reader.onerror = () => reject(new Error('تعذر قراءة ملف PDF'));
+    reader.readAsDataURL(file);
+  });
 
 const normalizeUnitType = (nameOrUnit?: string): UnitType => {
   const s = (nameOrUnit || '').toLowerCase();
@@ -275,6 +293,7 @@ export const PurchaseInvoiceScanModal: React.FC = () => {
     categories,
     adjustStock,
     addProduct,
+    updateProduct,
     updateProductPurchaseCostAndRecalculateProfit,
     addSupplierInvoice,
     settings,
@@ -290,6 +309,13 @@ export const PurchaseInvoiceScanModal: React.FC = () => {
 
   // Camera / upload states
   const [previewDataUrl, setPreviewDataUrl] = useState<string | null>(null);
+  const [uploadedPdfName, setUploadedPdfName] = useState<string | null>(null);
+  const [uploadedDocKind, setUploadedDocKind] = useState<'pdf' | 'xml' | null>(null);
+  const [extractedTaxInfo, setExtractedTaxInfo] = useState<{
+    totalHt?: number;
+    tvaAmount?: number;
+    totalTtc?: number;
+  } | null>(null);
   const [showZoomPhoto, setShowZoomPhoto] = useState(false);
   const [showRawJson, setShowRawJson] = useState(false);
   const [rotationDeg, setRotationDeg] = useState<0 | 90 | 180 | 270>(0);
@@ -326,6 +352,8 @@ export const PurchaseInvoiceScanModal: React.FC = () => {
   const streamRef = useRef<MediaStream | null>(null);
   const lastCapturedBlobRef = useRef<Blob | null>(null);
   const phoneCameraInputRef = useRef<HTMLInputElement | null>(null);
+  const pdfFileInputRef = useRef<HTMLInputElement | null>(null);
+  const xmlFileInputRef = useRef<HTMLInputElement | null>(null);
   const itemsTableRef = useRef<HTMLDivElement | null>(null);
   const firstRowInputRef = useRef<HTMLInputElement | null>(null);
   const focusTimerRef = useRef<number | null>(null);
@@ -363,6 +391,9 @@ export const PurchaseInvoiceScanModal: React.FC = () => {
     setInvoiceMode(mode);
     setEntryMethod(initialEntryMethod);
     setPreviewDataUrl(null);
+    setUploadedPdfName(null);
+    setUploadedDocKind(null);
+    setExtractedTaxInfo(null);
     setShowZoomPhoto(false);
     setShowRawJson(false);
     setRotationDeg(0);
@@ -623,13 +654,147 @@ export const PurchaseInvoiceScanModal: React.FC = () => {
     const timeoutId = window.setTimeout(() => controller.abort(), 45000);
 
     try {
-      const { base64, dataUrl } = await prepareInvoiceImageForVision(blob, 2200, 0.9, nextRotation);
-      setPreviewDataUrl(dataUrl);
+      const maybeFileName = blob instanceof File ? blob.name : '';
+      const isXmlFile =
+        blob.type === 'text/xml' ||
+        blob.type === 'application/xml' ||
+        maybeFileName.toLowerCase().endsWith('.xml');
+      const isPdfFile =
+        !isXmlFile &&
+        (blob.type === 'application/pdf' || maybeFileName.toLowerCase().endsWith('.pdf'));
+
+      if (isXmlFile) {
+        setPreviewDataUrl(null);
+        setShowZoomPhoto(false);
+        setUploadedPdfName(maybeFileName || 'facture.xml');
+        setUploadedDocKind('xml');
+
+        const xmlText = await blob.text();
+        const xmlResult = parsePurchaseInvoiceXml(xmlText);
+
+        if (xmlResult.supplierName) setSupplierName(xmlResult.supplierName);
+        if (xmlResult.supplierPhone) setSupplierPhone(xmlResult.supplierPhone);
+        if (xmlResult.supplierIce) setSupplierIce(xmlResult.supplierIce);
+        if (xmlResult.invoiceNumber) setInvoiceNumber(xmlResult.invoiceNumber);
+        if (xmlResult.invoiceDate) setInvoiceDate(xmlResult.invoiceDate);
+        if (xmlResult.totalTtc > 0) {
+          setManualTotalAmount(xmlResult.totalTtc.toFixed(2));
+        }
+        if (xmlResult.totalHt > 0 || xmlResult.tvaAmount > 0 || xmlResult.totalTtc > 0) {
+          setExtractedTaxInfo({
+            totalHt: xmlResult.totalHt > 0 ? xmlResult.totalHt : undefined,
+            tvaAmount: xmlResult.tvaAmount > 0 ? xmlResult.tvaAmount : undefined,
+            totalTtc: xmlResult.totalTtc > 0 ? xmlResult.totalTtc : undefined
+          });
+        } else {
+          setExtractedTaxInfo(null);
+        }
+        if (
+          invoiceMode !== 'informal_noir' &&
+          (xmlResult.supplierIce || xmlResult.invoiceNumber || xmlResult.supplierName)
+        ) {
+          setInvoiceMode('official_ice');
+        }
+
+        if (xmlResult.items.length === 0) {
+          setScanError(
+            isAr
+              ? 'تقراو معلومات الفاتورة من ملف XML ولكن ما تلقاوش سلع (<Item> / <InvoiceLine> / <Ligne>). تقدر تزيدهم يدوياً لتحت.'
+              : 'Header info parsed from XML, but no line items were found. You can add rows manually below.'
+          );
+          setIsScanning(false);
+          return;
+        }
+
+        const xmlRows: ScannedLineItem[] = xmlResult.items.map((raw, idx) => {
+          const name = String(raw.nom || '').trim();
+          const barcode = String(raw.barcode || '')
+            .replace(/[^0-9A-Za-z-]/g, '')
+            .trim();
+          const qty = Math.max(0.01, Number(raw.quantite) || 1);
+          const rawPrix = Number(raw.prix);
+          const rawTotal = Number(raw.total);
+          const matched = findBestCatalogProduct(name, products, barcode);
+
+          const unitCost =
+            Number.isFinite(rawPrix) && rawPrix > 0
+              ? rawPrix
+              : Number.isFinite(rawTotal) && rawTotal > 0
+              ? rawTotal / qty
+              : matched
+              ? matched.costPrice
+              : 0;
+
+          const lineTotal =
+            Number.isFinite(rawTotal) && rawTotal > 0
+              ? rawTotal
+              : Number((qty * unitCost).toFixed(2));
+
+          const marginPct = suggestMoroccanMarginPercent(name);
+          const suggestedSell = matched
+            ? matched.price
+            : unitCost > 0
+            ? Number((unitCost * (1 + marginPct / 100)).toFixed(2))
+            : 0;
+
+          return {
+            id: `xml-${Date.now()}-${idx}`,
+            include: true,
+            barcode: barcode || matched?.barcode || '',
+            rawName: name,
+            matchedProductId: matched?.id || '',
+            quantity: Number(qty.toFixed(3)),
+            unitCost: Number(Math.max(0, unitCost).toFixed(2)),
+            lineTotal: Number(Math.max(0, lineTotal).toFixed(2)),
+            sellPrice: suggestedSell,
+            suggestedMarginPct: matched ? undefined : marginPct,
+            unitType: matched ? matched.unitType : normalizeUnitType(name),
+            source: 'vision'
+          };
+        });
+
+        setItems(xmlRows);
+        setScanNotice(
+          isAr
+            ? `✅ تقرا ملف XML بنجاح وجبد ${xmlRows.length} سلع (الإسم + الكمية + الثمن${xmlResult.supplierIce ? ` · ICE: ${xmlResult.supplierIce}` : ''}).`
+            : `✅ Parsed XML invoice cleanly (${xmlRows.length} items extracted offline).`
+        );
+        if (settings.enableSoundEffects) playSound('success');
+        setIsScanning(false);
+        return;
+      }
+
+      let base64 = '';
+      let requestMimeType = 'image/jpeg';
+
+      if (isPdfFile) {
+        if (blob.size > 18 * 1024 * 1024) {
+          setScanError(
+            isAr
+              ? 'ملف PDF كبير بزاف (الحد الأقصى 18MB).'
+              : 'PDF file is too large (max 18MB).'
+          );
+          setIsScanning(false);
+          return;
+        }
+        setPreviewDataUrl(null);
+        setShowZoomPhoto(false);
+        setUploadedPdfName(maybeFileName || 'facture.pdf');
+        setUploadedDocKind('pdf');
+        base64 = await readFileAsBase64(blob);
+        requestMimeType = 'application/pdf';
+      } else {
+        setUploadedPdfName(null);
+        setUploadedDocKind(null);
+        const prepared = await prepareInvoiceImageForVision(blob, 2200, 0.9, nextRotation);
+        base64 = prepared.base64;
+        setPreviewDataUrl(prepared.dataUrl);
+      }
 
       if (typeof navigator !== 'undefined' && !navigator.onLine) {
         setScanError(
           isAr
-            ? 'ما كاينش أنترنت دابا باش Gemini Vision يقرا التصويرة. شغّل الأنترنت واضغط "حاول مرة أخرى" أو دخّل يدوياً.'
+            ? 'ما كاينش أنترنت دابا باش Gemini Vision يقرا الفاتورة. شغّل الأنترنت واضغط "حاول مرة أخرى" أو دخّل يدوياً.'
             : 'No internet connection for Gemini Vision. Reconnect and retry, or enter manually.'
         );
         setIsScanning(false);
@@ -642,7 +807,7 @@ export const PurchaseInvoiceScanModal: React.FC = () => {
         signal: controller.signal,
         body: JSON.stringify({
           imageBase64: base64,
-          mimeType: 'image/jpeg'
+          mimeType: requestMimeType
         })
       });
 
@@ -654,7 +819,7 @@ export const PurchaseInvoiceScanModal: React.FC = () => {
         setScanError(
           errPayload ||
             (isAr
-              ? 'ما قراش مزيان. عاود صورها قريبة، من الفوق، فالضو — أو دخّل يدوياً.'
+              ? 'ما قراش مزيان. عاود صورها قريبة أو جرب ملف أوضح — أو دخّل يدوياً.'
               : 'Could not read invoice — retake close-up in good light, or enter manually.')
         );
         setIsScanning(false);
@@ -668,13 +833,31 @@ export const PurchaseInvoiceScanModal: React.FC = () => {
 
       if (!Array.isArray(payload) && payload.invoice) {
         const inv = payload.invoice;
-        const extractedIce = (inv.supplierIce || '').replace(/\s+/g, '').trim();
+        const extractedIce = (inv.supplierIce || '').replace(/[^0-9]/g, '').slice(0, 15);
         if (inv.supplierName) setSupplierName(inv.supplierName.trim());
         if (inv.supplierPhone) setSupplierPhone(inv.supplierPhone.trim());
         if (extractedIce) setSupplierIce(extractedIce);
         if (inv.invoiceNumber) setInvoiceNumber(inv.invoiceNumber.trim());
         if (inv.invoiceDate && /^\d{4}-\d{2}-\d{2}$/.test(inv.invoiceDate)) {
           setInvoiceDate(inv.invoiceDate);
+        }
+        const resolvedTtc =
+          Number(inv.totalTtc) > 0
+            ? Number(inv.totalTtc)
+            : Number(inv.totalAmount) > 0
+            ? Number(inv.totalAmount)
+            : 0;
+        if (resolvedTtc > 0) {
+          setManualTotalAmount(resolvedTtc.toFixed(2));
+        }
+        if ((Number(inv.totalHt) || 0) > 0 || (Number(inv.tvaAmount) || 0) > 0 || resolvedTtc > 0) {
+          setExtractedTaxInfo({
+            totalHt: Number(inv.totalHt) > 0 ? Number(inv.totalHt) : undefined,
+            tvaAmount: Number(inv.tvaAmount) >= 0 && Number(inv.tvaAmount) > 0 ? Number(inv.tvaAmount) : undefined,
+            totalTtc: resolvedTtc > 0 ? resolvedTtc : undefined
+          });
+        } else {
+          setExtractedTaxInfo(null);
         }
         if (invoiceMode !== 'informal_noir' && (extractedIce || inv.hasOfficialMarkers)) {
           setInvoiceMode('official_ice');
@@ -1010,13 +1193,24 @@ export const PurchaseInvoiceScanModal: React.FC = () => {
       return;
     }
 
-    if (invoiceMode === 'official_ice' && !supplierName.trim()) {
-      setScanError(
-        isAr
-          ? 'للفاتورة الرسمية، كتب إسم المورد أو الشركة الفوق.'
-          : 'Please enter supplier name for official invoice archiving.'
-      );
-      return;
+    if (invoiceMode === 'official_ice') {
+      if (!supplierName.trim()) {
+        setScanError(
+          isAr
+            ? 'للفاتورة الرسمية، كتب إسم المورد أو الشركة الفوق.'
+            : 'Please enter supplier name for official invoice archiving.'
+        );
+        return;
+      }
+      const cleanIceDigits = supplierIce.replace(/[^0-9]/g, '');
+      if (cleanIceDigits.length !== 15) {
+        setScanError(
+          isAr
+            ? 'ICE خاصو يكون 15 رقم بالضبط'
+            : 'ICE must be exactly 15 digits'
+        );
+        return;
+      }
     }
 
     if (invoiceMode !== 'informal_noir' && activeRows.length > 0) {
@@ -1040,10 +1234,12 @@ export const PurchaseInvoiceScanModal: React.FC = () => {
         ? invoiceNumber.trim() || `INV-${Date.now().toString().slice(-5)}`
         : '';
 
+    const normalizedSupplierIce = supplierIce.replace(/[^0-9]/g, '').slice(0, 15);
+
     const restockReason =
       invoiceMode === 'official_ice'
         ? isAr
-          ? `فاتورة شراء رسمية #${cleanInvNum}${supplierIce.trim() ? ` (ICE: ${supplierIce.trim()})` : ''}`
+          ? `فاتورة شراء رسمية #${cleanInvNum}${normalizedSupplierIce ? ` (ICE: ${normalizedSupplierIce})` : ''}`
           : `Official purchase invoice #${cleanInvNum}`
         : isAr
         ? 'توريد للمخزون (بوار / نوار - بدون أرقام)'
@@ -1061,6 +1257,13 @@ export const PurchaseInvoiceScanModal: React.FC = () => {
         adjustStock(existing.id, qty, restockReason, 'restock');
         if (unitCost > 0 && Math.abs(unitCost - existing.costPrice) > 0.001) {
           updateProductPurchaseCostAndRecalculateProfit(existing.id, unitCost);
+        }
+        if (
+          invoiceMode !== 'informal_noir' &&
+          Number(row.sellPrice) > 0 &&
+          Math.abs(Number(row.sellPrice) - existing.price) > 0.001
+        ) {
+          updateProduct(existing.id, { price: Number(Number(row.sellPrice).toFixed(2)) });
         }
         updatedExistingCount += 1;
         summarySnapshot.push({
@@ -1107,21 +1310,24 @@ export const PurchaseInvoiceScanModal: React.FC = () => {
           ? totalVal
           : Math.min(totalVal, Math.max(0, Number(paidAmount) || 0));
 
+      const taxBreakdownSuffix =
+        extractedTaxInfo && (extractedTaxInfo.totalHt || extractedTaxInfo.tvaAmount)
+          ? ` · HT: ${(extractedTaxInfo.totalHt || 0).toFixed(2)} | TVA: ${(extractedTaxInfo.tvaAmount || 0).toFixed(2)}`
+          : '';
+
       const defaultNote =
         activeRows.length > 0
           ? isAr
-            ? `أرشيف رسمي (${activeRows.length} سلع)${
-                supplierIce.trim() ? ` · ICE: ${supplierIce.trim()}` : ''
-              }`
-            : `Official ICE archive (${activeRows.length} items)`
+            ? `أرشيف رسمي (${activeRows.length} سلع) · ICE: ${normalizedSupplierIce}${taxBreakdownSuffix}`
+            : `Official ICE archive (${activeRows.length} items) · ICE: ${normalizedSupplierIce}`
           : isAr
-          ? `فاتورة مسجلة يدوياً (${totalVal.toFixed(2)} ${currencySymbol})`
-          : `Manually recorded invoice (${totalVal.toFixed(2)} ${currencySymbol})`;
+          ? `فاتورة مسجلة (${totalVal.toFixed(2)} ${currencySymbol}) · ICE: ${normalizedSupplierIce}${taxBreakdownSuffix}`
+          : `Recorded invoice (${totalVal.toFixed(2)} ${currencySymbol})`;
 
       addSupplierInvoice({
         supplierName: supplierName.trim(),
         supplierPhone: supplierPhone.trim() || undefined,
-        supplierIce: supplierIce.trim() || undefined,
+        supplierIce: normalizedSupplierIce || undefined,
         invoiceType: 'official_ice',
         invoiceNumber: cleanInvNum,
         date: invoiceDate || todayStr,
@@ -1130,7 +1336,8 @@ export const PurchaseInvoiceScanModal: React.FC = () => {
         paidAmount: Number(paidVal.toFixed(2)),
         itemsCount: activeRows.length || undefined,
         itemsSummary: summarySnapshot.length > 0 ? summarySnapshot : undefined,
-        scannedViaCamera: entryMethod === 'camera' && Boolean(previewDataUrl),
+        scannedViaCamera:
+          entryMethod === 'camera' && (Boolean(previewDataUrl) || Boolean(uploadedPdfName)),
         notes: invoiceNotes.trim() || defaultNote
       });
     }
@@ -1310,15 +1517,15 @@ export const PurchaseInvoiceScanModal: React.FC = () => {
             </div>
           </div>
 
-          {/* 2. CAPTURE OR UPLOAD INVOICE PHOTO (Full panel in camera mode, compact phone bar in manual mode) */}
-          {entryMethod === 'manual' && !previewDataUrl && (
+          {/* 2. CAPTURE OR UPLOAD INVOICE PHOTO / PDF (Full panel in camera mode, compact phone bar in manual mode) */}
+          {entryMethod === 'manual' && !previewDataUrl && !uploadedPdfName && (
             <div className="p-3 rounded-2xl bg-amber-50/70 dark:bg-amber-950/25 border border-amber-200 dark:border-amber-800/70 flex flex-wrap items-center justify-between gap-2">
               <div className="flex items-center gap-2 text-xs font-bold text-amber-950 dark:text-amber-200">
                 <Smartphone className="w-4 h-4 text-amber-600 shrink-0" />
                 <span>
                   {isAr
-                    ? 'بغيتي تعمّرها سريع بالكاميرا أو الهاتف؟ صور الفاتورة أو اسكان باركود السلع:'
-                    : 'Prefer camera/phone? Snap the invoice or scan item barcodes:'}
+                    ? 'بغيتي تعمّرها سريع بالكاميرا، الهاتف، أو PDF؟ صور الفاتورة، جيب PDF، أو اسكان باركود:'
+                    : 'Prefer camera, phone, or PDF? Snap the invoice, upload PDF, or scan barcodes:'}
                 </span>
               </div>
               <div className="flex flex-wrap items-center gap-2">
@@ -1329,6 +1536,22 @@ export const PurchaseInvoiceScanModal: React.FC = () => {
                 >
                   <Camera className="w-3.5 h-3.5" />
                   <span>{isAr ? 'تصوير بكاميرا الهاتف' : 'Phone Camera'}</span>
+                </button>
+                <button
+                  type="button"
+                  onClick={() => pdfFileInputRef.current?.click()}
+                  className="px-3 py-1.5 rounded-xl bg-indigo-600 hover:bg-indigo-700 text-white text-[11px] font-black flex items-center gap-1.5"
+                >
+                  <FileText className="w-3.5 h-3.5" />
+                  <span>{isAr ? 'جيب PDF' : 'Upload PDF'}</span>
+                </button>
+                <button
+                  type="button"
+                  onClick={() => xmlFileInputRef.current?.click()}
+                  className="px-3 py-1.5 rounded-xl bg-teal-600 hover:bg-teal-700 text-white text-[11px] font-black flex items-center gap-1.5"
+                >
+                  <FileCode2 className="w-3.5 h-3.5" />
+                  <span>{isAr ? 'جيب XML' : 'Upload XML'}</span>
                 </button>
                 <button
                   type="button"
@@ -1361,18 +1584,32 @@ export const PurchaseInvoiceScanModal: React.FC = () => {
                 onChange={handleFileSelected}
                 className="hidden"
               />
+              <input
+                ref={pdfFileInputRef}
+                type="file"
+                accept="application/pdf,.pdf"
+                onChange={handleFileSelected}
+                className="hidden"
+              />
+              <input
+                ref={xmlFileInputRef}
+                type="file"
+                accept=".xml,text/xml,application/xml"
+                onChange={handleFileSelected}
+                className="hidden"
+              />
             </div>
           )}
 
-          {(entryMethod === 'camera' || previewDataUrl) && (
+          {(entryMethod === 'camera' || previewDataUrl || uploadedPdfName) && (
             <div className="p-4 rounded-2xl bg-slate-50 dark:bg-slate-800/60 border border-slate-200 dark:border-slate-700 space-y-3">
             <div className="flex flex-wrap items-center justify-between gap-2">
               <span className="text-xs font-black text-slate-800 dark:text-slate-200 flex items-center gap-1.5">
                 <Sparkles className="w-4 h-4 text-amber-500" />
                 <span>
                   {isAr
-                    ? '2. صور أي فاتورة (أتقداو، مرجان، جملة، بون — واخا مايلة ولا فوق زربية):'
-                    : '2. Snap or Upload Any Invoice Image:'}
+                    ? '2. صور أي فاتورة أو جيب PDF / XML (أتقداو، مرجان، جملة، UBL):'
+                    : '2. Snap Photo or Upload PDF / XML Invoice:'}
                 </span>
               </span>
 
@@ -1396,6 +1633,30 @@ export const PurchaseInvoiceScanModal: React.FC = () => {
                   <input
                     type="file"
                     accept="image/*"
+                    onChange={handleFileSelected}
+                    className="hidden"
+                  />
+                </label>
+
+                <label className="cursor-pointer px-3.5 py-2 rounded-xl bg-indigo-600 hover:bg-indigo-700 text-white text-xs font-black flex items-center gap-1.5 transition-colors whitespace-nowrap">
+                  <FileText className="w-3.5 h-3.5" />
+                  <span>{isAr ? 'جيب PDF' : 'Upload PDF'}</span>
+                  <input
+                    ref={pdfFileInputRef}
+                    type="file"
+                    accept="application/pdf,.pdf"
+                    onChange={handleFileSelected}
+                    className="hidden"
+                  />
+                </label>
+
+                <label className="cursor-pointer px-3.5 py-2 rounded-xl bg-teal-600 hover:bg-teal-700 text-white text-xs font-black flex items-center gap-1.5 transition-colors whitespace-nowrap">
+                  <FileCode2 className="w-3.5 h-3.5" />
+                  <span>{isAr ? 'جيب XML' : 'Upload XML'}</span>
+                  <input
+                    ref={xmlFileInputRef}
+                    type="file"
+                    accept=".xml,text/xml,application/xml"
                     onChange={handleFileSelected}
                     className="hidden"
                   />
@@ -1573,6 +1834,77 @@ export const PurchaseInvoiceScanModal: React.FC = () => {
                     ? 'Gemini Vision كيقرا التصويرة كاملة (وخا مايلة ولا فوق زربية)...'
                     : 'Gemini Vision is analyzing the full invoice image...'}
                 </span>
+              </div>
+            )}
+
+            {uploadedPdfName && !previewDataUrl && !isLiveCameraOpen && (
+              <div
+                className={`flex flex-wrap items-center justify-between gap-3 pt-1 px-3.5 py-3 rounded-xl border ${
+                  uploadedDocKind === 'xml'
+                    ? 'bg-teal-50 dark:bg-teal-950/35 border-teal-200 dark:border-teal-800'
+                    : 'bg-indigo-50 dark:bg-indigo-950/35 border-indigo-200 dark:border-indigo-800'
+                }`}
+              >
+                <div className="flex items-center gap-3 min-w-0">
+                  <div
+                    className={`w-11 h-11 rounded-xl text-white flex items-center justify-center shrink-0 ${
+                      uploadedDocKind === 'xml' ? 'bg-teal-600' : 'bg-indigo-600'
+                    }`}
+                  >
+                    {uploadedDocKind === 'xml' ? (
+                      <FileCode2 className="w-5 h-5" />
+                    ) : (
+                      <FileText className="w-5 h-5" />
+                    )}
+                  </div>
+                  <div className="min-w-0 text-xs">
+                    <div className="font-black text-slate-900 dark:text-white flex items-center gap-1.5">
+                      <span className="truncate max-w-[220px] sm:max-w-xs" dir="ltr">
+                        {uploadedPdfName}
+                      </span>
+                      <span
+                        className={`px-1.5 py-0.5 rounded text-[10px] font-black shrink-0 ${
+                          uploadedDocKind === 'xml'
+                            ? 'bg-teal-100 dark:bg-teal-900 text-teal-800 dark:text-teal-200'
+                            : 'bg-indigo-100 dark:bg-indigo-900 text-indigo-700 dark:text-indigo-200'
+                        }`}
+                      >
+                        {uploadedDocKind === 'xml' ? 'UBL / XML' : 'Gemini PDF'}
+                      </span>
+                    </div>
+                    <div className="text-[11px] text-slate-600 dark:text-slate-300 mt-0.5">
+                      {uploadedDocKind === 'xml'
+                        ? isAr
+                          ? 'ملف XML إلكتروني — تقراو منه المعطيات والسلع نيشان بلا أنترنت.'
+                          : 'XML invoice parsed locally without internet.'
+                        : isAr
+                        ? 'ملف PDF جاهز — تقراو منه المعطيات والسلع تلقائياً.'
+                        : 'PDF document ready for Gemini parsing.'}
+                    </div>
+                  </div>
+                </div>
+                {lastCapturedBlobRef.current && !isScanning && (
+                  <button
+                    type="button"
+                    onClick={handleRetryScan}
+                    className={`px-3 py-1.5 rounded-xl bg-white dark:bg-slate-900 border text-[11px] font-black flex items-center gap-1 ${
+                      uploadedDocKind === 'xml'
+                        ? 'border-teal-300 dark:border-teal-700 hover:bg-teal-100 text-teal-800 dark:text-teal-200'
+                        : 'border-indigo-300 dark:border-indigo-700 hover:bg-indigo-100 text-indigo-800 dark:text-indigo-200'
+                    }`}
+                  >
+                    <RotateCw className="w-3 h-3" />
+                    <span>
+                      {uploadedDocKind === 'xml'
+                        ? isAr
+                          ? 'عاود القراءة'
+                          : 'Re-parse XML'
+                        : isAr
+                        ? 'عاود القراءة'
+                        : 'Retry PDF'}
+                    </span>
+                  </button>
+                )}
               </div>
             )}
 
@@ -1773,17 +2105,37 @@ export const PurchaseInvoiceScanModal: React.FC = () => {
                 </div>
 
                 <div>
-                  <label className="block font-bold text-slate-700 dark:text-slate-300 mb-1">
-                    {isAr ? 'رقم ICE (15 رقم)' : 'ICE Number'}
-                  </label>
+                  <div className="flex items-center justify-between gap-1 mb-1">
+                    <label className="block font-bold text-slate-700 dark:text-slate-300">
+                      {isAr ? 'رقم ICE (15 رقم) *' : 'ICE Number (15 digits) *'}
+                    </label>
+                    <span
+                      className={`text-[10px] font-mono font-black tabular-nums ${
+                        supplierIce.replace(/[^0-9]/g, '').length === 15
+                          ? 'text-emerald-600 dark:text-emerald-400'
+                          : 'text-amber-600 dark:text-amber-400'
+                      }`}
+                    >
+                      {supplierIce.replace(/[^0-9]/g, '').length}/15
+                    </span>
+                  </div>
                   <div className="relative">
                     <Hash className="w-3.5 h-3.5 text-slate-400 absolute top-1/2 -translate-y-1/2 start-2.5 pointer-events-none" />
                     <input
                       type="text"
+                      inputMode="numeric"
+                      maxLength={15}
                       value={supplierIce}
-                      onChange={(e) => setSupplierIce(e.target.value)}
+                      onChange={(e) => {
+                        setSupplierIce(e.target.value.replace(/[^0-9]/g, '').slice(0, 15));
+                        if (scanError) setScanError(null);
+                      }}
                       placeholder="001234567000089"
-                      className="w-full ps-8 pe-2.5 py-2 rounded-xl bg-white dark:bg-slate-900 border border-slate-300 dark:border-slate-700 text-slate-900 dark:text-white font-mono text-xs"
+                      className={`w-full ps-8 pe-2.5 py-2 rounded-xl bg-white dark:bg-slate-900 border text-slate-900 dark:text-white font-mono text-xs ${
+                        supplierIce.replace(/[^0-9]/g, '').length === 15
+                          ? 'border-emerald-400 dark:border-emerald-700'
+                          : 'border-slate-300 dark:border-slate-700'
+                      }`}
                     />
                   </div>
                 </div>
@@ -1840,7 +2192,9 @@ export const PurchaseInvoiceScanModal: React.FC = () => {
 
                 <div>
                   <label className="block font-bold text-slate-700 dark:text-slate-300 mb-1">
-                    {isAr ? `مجموع الفاتورة (${currencySymbol})` : `Invoice Total (${currencySymbol})`}
+                    {isAr
+                      ? `مجموع الفاتورة TTC (${currencySymbol})`
+                      : `Invoice Total TTC (${currencySymbol})`}
                   </label>
                   <input
                     type="number"
@@ -1855,6 +2209,26 @@ export const PurchaseInvoiceScanModal: React.FC = () => {
                   />
                 </div>
               </div>
+
+              {extractedTaxInfo && (extractedTaxInfo.totalHt || extractedTaxInfo.tvaAmount) && (
+                <div className="flex flex-wrap items-center gap-2 pt-0.5 text-[11px]">
+                  {extractedTaxInfo.totalHt !== undefined && (
+                    <span className="px-2.5 py-1 rounded-lg bg-white dark:bg-slate-900 border border-emerald-200 dark:border-emerald-800 font-bold text-slate-700 dark:text-slate-200 tabular-nums">
+                      Total HT: {extractedTaxInfo.totalHt.toFixed(2)} {currencySymbol}
+                    </span>
+                  )}
+                  {extractedTaxInfo.tvaAmount !== undefined && (
+                    <span className="px-2.5 py-1 rounded-lg bg-white dark:bg-slate-900 border border-emerald-200 dark:border-emerald-800 font-bold text-slate-700 dark:text-slate-200 tabular-nums">
+                      TVA: {extractedTaxInfo.tvaAmount.toFixed(2)} {currencySymbol}
+                    </span>
+                  )}
+                  {extractedTaxInfo.totalTtc !== undefined && (
+                    <span className="px-2.5 py-1 rounded-lg bg-emerald-600 text-white font-black tabular-nums">
+                      Total TTC: {extractedTaxInfo.totalTtc.toFixed(2)} {currencySymbol}
+                    </span>
+                  )}
+                </div>
+              )}
 
               <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 pt-1 text-xs items-center">
                 <div className="flex flex-wrap items-center gap-2">
