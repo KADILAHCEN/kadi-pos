@@ -11,6 +11,14 @@ import { AddCategoryModal } from '../inventory/AddCategoryModal';
 import { WeeklyTopProductsWidget } from './WeeklyTopProductsWidget';
 import { bluetoothScanner, ScannedBarcodePayload } from '../../utils/bluetoothScanner';
 import { playSound } from '../../utils/audio';
+import { PriceAlertAdvisor } from '../alerts/PriceAlertAdvisor';
+import {
+  auditOldStockPrices,
+  markPriceAlertFixed,
+  OldStockPriceIssue,
+  parseMoroccanNumber,
+  recordPriceAlert
+} from '../../utils/priceAlerts';
 import {
   Search,
   Barcode,
@@ -30,7 +38,8 @@ import {
   Calendar,
   ScanLine,
   BookOpen,
-  Ear
+  Ear,
+  Wrench
 } from 'lucide-react';
 
 interface ProductGridProps {
@@ -99,6 +108,14 @@ export const ProductGrid: React.FC<ProductGridProps> = ({ onOpenBarcodeScanner }
   // Quick Expiry filter state (تصفية المنتجات المنتهية أو القريبة من الانتهاء)
   const [showOnlyExpiring, setShowOnlyExpiring] = useState(false);
 
+  // Quick Negative / Loss Price filter state (تصفية المنتجات اللي فيها خسارة أو بلا ربح)
+  const [showOnlyPriceIssues, setShowOnlyPriceIssues] = useState(false);
+
+  // Quick Price Fix Modal state (نافذة تصحيح الأثمنة السلبية)
+  const [quickFixIssue, setQuickFixIssue] = useState<OldStockPriceIssue | null>(null);
+  const [quickFixCostInput, setQuickFixCostInput] = useState<string>('');
+  const [quickFixPriceInput, setQuickFixPriceInput] = useState<string>('');
+
   // High-capacity pagination state (handles 2,000+ to 10,000+ items smoothly at 60fps)
   const [visibleCount, setVisibleCount] = useState<number>(36);
 
@@ -124,10 +141,26 @@ export const ProductGrid: React.FC<ProductGridProps> = ({ onOpenBarcodeScanner }
     };
   }, []);
 
-  // Reset pagination when category, search, or expiry filter changes
+  // Reset pagination when category, search, or filters change
   useEffect(() => {
     setVisibleCount(36);
-  }, [selectedCategoryId, searchQuery, showOnlyExpiring]);
+  }, [selectedCategoryId, searchQuery, showOnlyExpiring, showOnlyPriceIssues]);
+
+  // Audit all products for loss / zero-profit / decimal-mismatch price issues
+  const priceIssues = useMemo(() => auditOldStockPrices(products), [products]);
+  const priceIssuesByProductId = useMemo(() => {
+    const map = new Map<string, OldStockPriceIssue>();
+    for (const issue of priceIssues) {
+      map.set(issue.product.id, issue);
+    }
+    return map;
+  }, [priceIssues]);
+
+  useEffect(() => {
+    if (priceIssues.length === 0 && showOnlyPriceIssues) {
+      setShowOnlyPriceIssues(false);
+    }
+  }, [priceIssues.length, showOnlyPriceIssues]);
 
   // Count expiring soon or expired products
   const expiringCount = useMemo(() => {
@@ -151,6 +184,10 @@ export const ProductGrid: React.FC<ProductGridProps> = ({ onOpenBarcodeScanner }
       const matchesCat = selectedCategoryId === 'cat-all' || prod.categoryId === selectedCategoryId;
       if (!matchesCat) return false;
 
+      if (showOnlyPriceIssues && !priceIssuesByProductId.has(prod.id)) {
+        return false;
+      }
+
       // Expiry filter
       if (showOnlyExpiring) {
         if (!prod.expiryDate) return false;
@@ -168,7 +205,7 @@ export const ProductGrid: React.FC<ProductGridProps> = ({ onOpenBarcodeScanner }
         prod.barcode.toLowerCase().includes(query)
       );
     });
-  }, [products, selectedCategoryId, searchQuery, showOnlyExpiring]);
+  }, [products, selectedCategoryId, searchQuery, showOnlyExpiring, showOnlyPriceIssues, priceIssuesByProductId]);
 
   const displayedProducts = useMemo(() => {
     return filteredProducts.slice(0, visibleCount);
@@ -251,6 +288,17 @@ export const ProductGrid: React.FC<ProductGridProps> = ({ onOpenBarcodeScanner }
 
     if (Math.abs(cleanPrice - buyModalProduct.price) > 0.001) {
       updateProduct(buyModalProduct.id, { price: cleanPrice });
+      if (buyModalProduct.costPrice > 0 && cleanPrice <= buyModalProduct.costPrice) {
+        recordPriceAlert({
+          productId: buyModalProduct.id,
+          productName: buyModalProduct.name,
+          costPrice: buyModalProduct.costPrice,
+          sellPrice: cleanPrice,
+          type: cleanPrice < buyModalProduct.costPrice ? 'loss' : 'zero_profit'
+        });
+      } else {
+        markPriceAlertFixed(buyModalProduct.id);
+      }
     }
 
     if (settings.enableSoundEffects !== false) {
@@ -268,6 +316,69 @@ export const ProductGrid: React.FC<ProductGridProps> = ({ onOpenBarcodeScanner }
     setBuyQtyInput('');
     setBuyPriceInput('');
     setBuyModalError(null);
+  };
+
+  const openQuickFixModal = (issue: OldStockPriceIssue) => {
+    setQuickFixIssue(issue);
+    setQuickFixCostInput(String(issue.product.costPrice));
+    setQuickFixPriceInput(String(issue.product.price));
+  };
+
+  const handleConfirmQuickFix = (useSuggested = false) => {
+    if (!quickFixIssue) return;
+    const nextPrice = useSuggested
+      ? quickFixIssue.suggestedPrice
+      : Number(parseMoroccanNumber(quickFixPriceInput).toFixed(2));
+    const nextCost = useSuggested
+      ? quickFixIssue.suggestedCostPrice
+      : Number(parseMoroccanNumber(quickFixCostInput).toFixed(2));
+
+    updateProduct(quickFixIssue.product.id, {
+      price: nextPrice,
+      costPrice: nextCost
+    });
+
+    if (nextCost > 0 && nextPrice <= nextCost) {
+      recordPriceAlert({
+        productId: quickFixIssue.product.id,
+        productName: quickFixIssue.product.name,
+        costPrice: nextCost,
+        sellPrice: nextPrice,
+        type: nextPrice < nextCost ? 'loss' : 'zero_profit'
+      });
+    } else {
+      markPriceAlertFixed(quickFixIssue.product.id);
+    }
+
+    if (settings.enableSoundEffects !== false) playSound('success');
+    setBarcodeToast(
+      isAr
+        ? `✅ تم تصحيح ثمن "${quickFixIssue.product.name}" إلى ${nextPrice.toFixed(2)} ${currencySymbol}`
+        : `✅ Updated "${quickFixIssue.product.name}" to ${nextPrice.toFixed(2)} ${currencySymbol}`
+    );
+    setTimeout(() => setBarcodeToast(null), 2800);
+    setQuickFixIssue(null);
+  };
+
+  const handleFixAllLossProducts = () => {
+    if (priceIssues.length === 0) return;
+    let fixedCount = 0;
+    for (const issue of priceIssues) {
+      updateProduct(issue.product.id, {
+        price: issue.suggestedPrice,
+        costPrice: issue.suggestedCostPrice
+      });
+      markPriceAlertFixed(issue.product.id);
+      fixedCount++;
+    }
+    if (settings.enableSoundEffects !== false) playSound('success');
+    setBarcodeToast(
+      isAr
+        ? `🛠️ تم تصحيح ${fixedCount} منتوجات اللي فيهم خسارة بنجاح!`
+        : `🛠️ Fixed ${fixedCount} loss-priced products successfully!`
+    );
+    setTimeout(() => setBarcodeToast(null), 3200);
+    setShowOnlyPriceIssues(false);
   };
 
   const handleScannedBarcode = (code: string, _speedMs?: number) => {
@@ -548,8 +659,54 @@ export const ProductGrid: React.FC<ProductGridProps> = ({ onOpenBarcodeScanner }
               </span>
             )}
           </button>
+
+          {/* Negative / Loss Price Filter Chip */}
+          {priceIssues.length > 0 && (
+            <button
+              type="button"
+              onClick={() => setShowOnlyPriceIssues((prev) => !prev)}
+              className={`relative h-8 flex items-center gap-1 px-2 rounded-lg border transition-all shrink-0 select-none text-[11px] font-extrabold whitespace-nowrap ${
+                showOnlyPriceIssues
+                  ? 'border-rose-600 bg-rose-600 text-white shadow-xs'
+                  : 'border-rose-300 dark:border-rose-800 bg-rose-50 dark:bg-rose-950/40 text-rose-700 dark:text-rose-300 hover:bg-rose-100'
+              }`}
+              title={isAr ? 'عرض المنتجات اللي فيهم خسارة أو بلا ربح فقط' : 'Filter loss/zero-profit products'}
+            >
+              <AlertTriangle className="w-3 h-3" />
+              <span>{isAr ? 'أثمنة سلبية' : 'Loss Price'}</span>
+              <span className={`px-1 rounded-full text-[9px] font-black tabular-nums ${showOnlyPriceIssues ? 'bg-white text-rose-700' : 'bg-rose-600 text-white'}`}>
+                {priceIssues.length}
+              </span>
+            </button>
+          )}
         </div>
       </div>
+
+      {/* Bulk Fix Negative / Loss Prices Action Bar on Sales Screen */}
+      {priceIssues.length > 0 && (
+        <div className="mb-1.5 shrink-0 px-2.5 py-1.5 rounded-xl bg-rose-50 dark:bg-rose-950/45 border border-rose-300 dark:border-rose-800/80 flex items-center justify-between gap-2 flex-wrap">
+          <div className="flex items-center gap-1.5 text-[11px] font-extrabold text-rose-800 dark:text-rose-200">
+            <AlertTriangle className="w-3.5 h-3.5 text-rose-600 dark:text-rose-400 shrink-0" />
+            <span>
+              {isAr
+                ? `كاين ${priceIssues.length} منتج بأثمنة فيها خسارة أو بلا ربح`
+                : `${priceIssues.length} products selling at loss or zero profit`}
+            </span>
+          </div>
+          <button
+            type="button"
+            onClick={handleFixAllLossProducts}
+            className="px-2.5 py-1 rounded-lg bg-rose-600 hover:bg-rose-700 text-white text-[11px] font-black flex items-center gap-1 shadow-2xs transition-all active:scale-95 whitespace-nowrap"
+          >
+            <Wrench className="w-3 h-3 shrink-0" />
+            <span>
+              {isAr
+                ? '🛠️ صحح جميع المنتجات اللي فيهم خسارة'
+                : `Fix All Loss Products (${priceIssues.length})`}
+            </span>
+          </button>
+        </div>
+      )}
 
       {/* Quick Weekly Top 5 Best-Selling Products Dashboard Widget */}
       <WeeklyTopProductsWidget onQuickAddProduct={handleProductClick} />
@@ -768,8 +925,8 @@ export const ProductGrid: React.FC<ProductGridProps> = ({ onOpenBarcodeScanner }
                       </div>
                     </div>
 
-                    {/* Price and Profit Margin % */}
-                    <div className="pt-2 border-t border-slate-100 dark:border-slate-800/80 flex items-end justify-between">
+                    {/* Price and Profit Margin % / Negative Price Correction Pill */}
+                    <div className="pt-2 border-t border-slate-100 dark:border-slate-800/80 flex items-end justify-between gap-1">
                       <div>
                         <div className="text-sm sm:text-base font-extrabold text-slate-900 dark:text-white tabular-nums">
                           {prod.price.toFixed(2)}{' '}
@@ -779,12 +936,49 @@ export const ProductGrid: React.FC<ProductGridProps> = ({ onOpenBarcodeScanner }
                         </div>
                       </div>
 
-                      {/* Profit margin badge */}
-                      <div className="text-right rtl:text-left">
-                        <span className="inline-block px-1.5 py-0.5 text-[10px] font-bold text-emerald-700 dark:text-emerald-400 bg-emerald-50 dark:bg-emerald-950/60 rounded tabular-nums" title={`${t.cost}: ${prod.costPrice} ${currencySymbol}`}>
-                          +{profitMargin}%
-                        </span>
-                      </div>
+                      {/* Profit margin / Loss correction badge */}
+                      {(() => {
+                        const prodIssue = priceIssuesByProductId.get(prod.id);
+                        if (prodIssue) {
+                          const isZeroProfit = prodIssue.reason === 'zero_profit';
+                          return (
+                            <button
+                              type="button"
+                              onClick={(e) => {
+                                e.stopPropagation();
+                                openQuickFixModal(prodIssue);
+                              }}
+                              className={`px-2 py-0.5 text-[10px] font-black text-white rounded-full shadow-2xs flex items-center gap-1 transition-transform active:scale-95 tabular-nums ${
+                                isZeroProfit
+                                  ? 'bg-amber-500 hover:bg-amber-600'
+                                  : 'bg-rose-600 hover:bg-rose-700'
+                              }`}
+                              title={prodIssue.message}
+                            >
+                              <AlertTriangle className="w-2.5 h-2.5 shrink-0" />
+                              <span>
+                                {isZeroProfit
+                                  ? isAr
+                                    ? 'بلا ربح · صلح'
+                                    : '0% · Fix'
+                                  : isAr
+                                  ? `خسارة ${profit.toFixed(1)} · صلح`
+                                  : `${profit.toFixed(1)} · Fix`}
+                              </span>
+                            </button>
+                          );
+                        }
+                        return (
+                          <div className="text-right rtl:text-left">
+                            <span
+                              className="inline-block px-1.5 py-0.5 text-[10px] font-bold text-emerald-700 dark:text-emerald-400 bg-emerald-50 dark:bg-emerald-950/60 rounded tabular-nums"
+                              title={`${t.cost}: ${prod.costPrice} ${currencySymbol}`}
+                            >
+                              +{profitMargin}%
+                            </span>
+                          </div>
+                        );
+                      })()}
                     </div>
 
                     {/* Quick Restock Button ("شريت +") */}
@@ -1020,6 +1214,105 @@ export const ProductGrid: React.FC<ProductGridProps> = ({ onOpenBarcodeScanner }
         onClose={() => setDeletingProduct(null)}
         onConfirm={(id) => deleteProduct(id)}
       />
+
+      {/* Quick Negative / Loss Price Correction Modal */}
+      {quickFixIssue && (
+        <div
+          className="fixed inset-0 z-50 bg-slate-950/65 backdrop-blur-xs flex items-center justify-center p-4"
+          onClick={() => setQuickFixIssue(null)}
+        >
+          <div
+            onClick={(e) => e.stopPropagation()}
+            className="w-full max-w-md bg-white dark:bg-slate-900 rounded-3xl border border-slate-200 dark:border-slate-800 shadow-2xl p-5 space-y-4 animate-in fade-in zoom-in-95 duration-150"
+          >
+            <div className="flex items-start justify-between gap-2">
+              <div>
+                <h3 className="text-base font-black text-slate-900 dark:text-white">
+                  {isAr
+                    ? `تصحيح ثمن: ${quickFixIssue.product.name}`
+                    : `Fix Price: ${quickFixIssue.product.name}`}
+                </h3>
+                <p className="text-xs font-bold text-rose-600 dark:text-rose-400 mt-0.5">
+                  {quickFixIssue.message}
+                </p>
+              </div>
+              <button
+                type="button"
+                onClick={() => setQuickFixIssue(null)}
+                className="p-1 rounded-lg text-slate-400 hover:text-slate-600 dark:hover:text-slate-200"
+              >
+                <XCircle className="w-5 h-5" />
+              </button>
+            </div>
+
+            <div className="grid grid-cols-2 gap-3 text-xs">
+              <div>
+                <label className="block font-bold text-slate-700 dark:text-slate-300 mb-1">
+                  {isAr ? `ثمن الشراء (${currencySymbol})` : `Cost (${currencySymbol})`}
+                </label>
+                <input
+                  type="text"
+                  inputMode="decimal"
+                  value={quickFixCostInput}
+                  onChange={(e) => setQuickFixCostInput(e.target.value)}
+                  className="w-full px-3 py-2 rounded-xl border border-slate-300 dark:border-slate-700 bg-slate-50 dark:bg-slate-800 text-sm font-mono font-bold text-slate-900 dark:text-white"
+                />
+              </div>
+              <div>
+                <label className="block font-bold text-slate-700 dark:text-slate-300 mb-1">
+                  {isAr ? `ثمن البيع (${currencySymbol})` : `Sell Price (${currencySymbol})`}
+                </label>
+                <input
+                  type="text"
+                  inputMode="decimal"
+                  value={quickFixPriceInput}
+                  onChange={(e) => setQuickFixPriceInput(e.target.value)}
+                  className="w-full px-3 py-2 rounded-xl border border-slate-300 dark:border-slate-700 bg-slate-50 dark:bg-slate-800 text-sm font-mono font-bold text-slate-900 dark:text-white"
+                />
+              </div>
+            </div>
+
+            <PriceAlertAdvisor
+              costPrice={parseMoroccanNumber(quickFixCostInput)}
+              sellPrice={parseMoroccanNumber(quickFixPriceInput)}
+              currencySymbol={currencySymbol}
+              isAr={isAr}
+              onApplyChoice={(patch) => {
+                if (typeof patch.price === 'number') setQuickFixPriceInput(String(patch.price));
+                if (typeof patch.costPrice === 'number') setQuickFixCostInput(String(patch.costPrice));
+              }}
+            />
+
+            <div className="flex flex-col gap-2 pt-1">
+              <button
+                type="button"
+                onClick={() => handleConfirmQuickFix(true)}
+                className="w-full min-h-[42px] px-4 py-2 rounded-xl bg-emerald-600 hover:bg-emerald-700 text-white text-xs font-black shadow-sm transition-all active:scale-95"
+              >
+                {isAr
+                  ? `✅ نعم، صحح تلقائياً (${quickFixIssue.fixLabel})`
+                  : `✅ Auto-Fix (${quickFixIssue.fixLabel})`}
+              </button>
+              <div className="flex items-center gap-2">
+                <button
+                  type="button"
+                  onClick={() => handleConfirmQuickFix(false)}
+                  className="flex-1 min-h-[40px] px-3 py-2 rounded-xl bg-slate-900 dark:bg-slate-700 hover:bg-slate-800 text-white text-xs font-extrabold transition-colors"
+                >
+                  {isAr ? 'حفظ الأثمنة المكتوبة' : 'Save Entered Prices'}
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setQuickFixIssue(null)}
+                  className="px-4 min-h-[40px] py-2 rounded-xl border border-slate-200 dark:border-slate-700 text-xs font-bold text-slate-600 dark:text-slate-300 hover:bg-slate-100 dark:hover:bg-slate-800"
+                >
+                  {isAr ? 'إلغاء' : 'Cancel'}
+                </button>
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
 
       {/* Add Category Modal (إضافة وإدارة الأصناف) */}
       <AddCategoryModal
