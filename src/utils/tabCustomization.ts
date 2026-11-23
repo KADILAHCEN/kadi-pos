@@ -306,6 +306,7 @@ export interface PosTabDefinition {
   id:
     | 'home_summary'
     | 'pos'
+    | 'branch_stock'
     | 'bourse'
     | 'inventory'
     | 'orders'
@@ -355,6 +356,18 @@ export const POS_TAB_CATALOG: PosTabDefinition[] = [
     shortLabelFr: 'Caisse',
     shortLabelEn: 'POS',
     defaultIcon: 'store',
+    defaultColor: 'emerald',
+    showInTopNav: true
+  },
+  {
+    id: 'branch_stock',
+    labelAr: 'مخزون الفروع',
+    labelFr: 'Stock Branches',
+    labelEn: 'Branch Stock',
+    shortLabelAr: 'الفروع',
+    shortLabelFr: 'Branches',
+    shortLabelEn: 'Branches',
+    defaultIcon: 'boxes',
     defaultColor: 'emerald',
     showInTopNav: true
   },

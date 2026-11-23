@@ -121,6 +121,7 @@ import {
 export type AppTabId =
   | 'home_summary'
   | 'pos'
+  | 'branch_stock'
   | 'bourse'
   | 'inventory'
   | 'orders'
@@ -552,8 +553,8 @@ function normalizeStoreSettings(raw: unknown): StoreSettings {
 }
 
 export const PosProvider: React.FC<{ children: ReactNode }> = ({ children }) => {
-  // Navigation State — Opens directly on 'فين مشى المحال' Home Summary Page
-  const [currentTab, setCurrentTab] = useState<AppTabId>('home_summary');
+  // Navigation State — Opens directly on main POS sales screen
+  const [currentTab, setCurrentTab] = useState<AppTabId>('pos');
 
   // Activity Log State (سجل العمليات والنشاطات الرقابية)
   const [activityLogs, setActivityLogs] = useState<ActivityLogItem[]>(() =>

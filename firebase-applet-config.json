@@ -1,12 +1,12 @@
 {
-  "projectId": "gen-lang-client-0309270006",
-  "appId": "1:235379761612:web:6a04cd13278ac32e20fd69",
-  "apiKey": "AIzaSyA918evpWSK9cAdl1P1pfopuYn-20wHTww",
-  "authDomain": "gen-lang-client-0309270006.firebaseapp.com",
+  "projectId": "kadi-pos",
+  "appId": "1:110404757345:web:0cf453780a8603e81e0720",
+  "apiKey": "AIzaSyDx5gyCHWzI_sjNQTOQ39wfPufvdJigfao",
+  "authDomain": "kadi-pos.firebaseapp.com",
   "firestoreDatabaseId": "ai-studio-kadipos-128c1990-d21a-4176-9184-a82ee8be4a2e",
-  "storageBucket": "gen-lang-client-0309270006.firebasestorage.app",
-  "messagingSenderId": "235379761612",
+  "storageBucket": "kadi-pos.firebasestorage.app",
+  "messagingSenderId": "110404757345",
   "measurementId": "",
-  "oAuthClientId": "235379761612-i620pddtdk70c62lgf7o7aft98k3rsen.apps.googleusercontent.com",
+  "oAuthClientId": "110404757345-hn4a5udiushi7rkoa2ij9orbg0f0hgag.apps.googleusercontent.com",
   "recaptchaSiteKey": ""
 }

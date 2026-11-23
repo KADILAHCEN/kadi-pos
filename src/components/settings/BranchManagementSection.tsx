@@ -19,6 +19,7 @@ import {
   FileText,
   AlertCircle
 } from 'lucide-react';
+import { getBranchKeyFromPosBranchId, saveBranchKey } from '../../utils/branchRtdbSync';
 
 export const BranchManagementSection: React.FC = () => {
   const {
@@ -356,7 +357,10 @@ export const BranchManagementSection: React.FC = () => {
                 ) : (
                   <button
                     type="button"
-                    onClick={() => setActiveBranchId(b.id)}
+                    onClick={() => {
+                      saveBranchKey(getBranchKeyFromPosBranchId(b.id));
+                      setActiveBranchId(b.id);
+                    }}
                     className="w-full py-1.5 px-3 rounded-xl border border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-800 hover:bg-emerald-50 hover:border-emerald-400 dark:hover:bg-slate-700 text-slate-700 dark:text-slate-200 text-xs font-bold transition-colors"
                   >
                     {isAr ? 'التبديل والبيع من هذا الفرع' : 'Switch to this branch'}

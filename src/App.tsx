@@ -74,6 +74,7 @@ import {
 import { OfflineIndicator } from './components/pwa/OfflineIndicator';
 import { PinGateModal } from './components/auth/PinGateModal';
 import { AppErrorBoundary } from './components/AppErrorBoundary';
+import { BranchInventoryView } from './components/branches/BranchInventoryView';
 
 const PosMainContent: React.FC = () => {
   const {
@@ -703,6 +704,7 @@ const PosMainContent: React.FC = () => {
         )}
 
         {currentTab === 'home_summary' && <FinMchaElMhalView onNavigate={handleProtectedTab} />}
+        {currentTab === 'branch_stock' && <BranchInventoryView />}
         {currentTab === 'bourse' && <BourseHanoutView />}
         {currentTab === 'inventory' && <InventoryView />}
         {currentTab === 'orders' && <OrdersView />}
