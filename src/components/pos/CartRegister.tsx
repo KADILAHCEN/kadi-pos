@@ -1,7 +1,7 @@
-import React, { useState, useRef } from 'react';
+import React, { useState, useRef, useMemo, useEffect } from 'react';
 import { usePos } from '../../context/PosContext';
 import { getT } from '../../utils/translations';
-import { CartItem } from '../../types';
+import { CartItem, Order } from '../../types';
 import { PriceOverrideModal } from './PriceOverrideModal';
 import {
   User,
@@ -17,27 +17,35 @@ import {
   X,
   CreditCard,
   Sliders,
-  Monitor
+  Monitor,
+  Banknote,
+  BookOpen,
+  Receipt
 } from 'lucide-react';
 import { playSound } from '../../utils/audio';
 
 interface CartRegisterProps {
   onOpenCheckout: () => void;
   onOpenHeldTickets: () => void;
+  onQuickCheckoutSuccess?: (order: Order) => void;
 }
 
 export const CartRegister: React.FC<CartRegisterProps> = ({
   onOpenCheckout,
-  onOpenHeldTickets
+  onOpenHeldTickets,
+  onQuickCheckoutSuccess
 }) => {
   const {
     cart,
     products,
+    orders,
     updateCartItemQuantity,
     setCartItemQuantity,
     removeCartItem,
     clearCart,
     overrideCartItemPrice,
+    completeCheckout,
+    setCurrentTab,
     settings,
     cartSubtotal,
     cartDiscountTotal,
@@ -114,6 +122,72 @@ export const CartRegister: React.FC<CartRegisterProps> = ({
   // Held ticket title input
   const [holdTitle, setHoldTitle] = useState('');
   const [showHoldModal, setShowHoldModal] = useState(false);
+
+  // Quick Credit Checkout modal & Today's sales summary drawer
+  const [showQuickCreditModal, setShowQuickCreditModal] = useState(false);
+  const [quickCreditCustName, setQuickCreditCustName] = useState('');
+  const [quickCreditCustPhone, setQuickCreditCustPhone] = useState('');
+  const [quickCreditSearch, setQuickCreditSearch] = useState('');
+  const [pendingQuickCredit, setPendingQuickCredit] = useState(false);
+  const [showTodaySalesList, setShowTodaySalesList] = useState(false);
+
+  const todaySalesSummary = useMemo(() => {
+    const todayStr = new Date().toDateString();
+    const todayOrders = orders.filter(
+      (o) => o.status === 'completed' && new Date(o.date).toDateString() === todayStr
+    );
+    const total = todayOrders.reduce((sum, o) => sum + o.grandTotal, 0);
+    return {
+      total,
+      count: todayOrders.length,
+      recentOrders: todayOrders.slice(0, 5)
+    };
+  }, [orders]);
+
+  useEffect(() => {
+    if (!pendingQuickCredit || !selectedCustomer || cart.length === 0) return;
+    setPendingQuickCredit(false);
+    const order = completeCheckout('credit', undefined, 0);
+    if (order) {
+      if (settings.enableSoundEffects !== false) playSound('success');
+      onQuickCheckoutSuccess?.(order);
+    }
+  }, [pendingQuickCredit, selectedCustomer, cart.length, completeCheckout, onQuickCheckoutSuccess, settings.enableSoundEffects]);
+
+  const handleInstantCashCheckout = () => {
+    if (cart.length === 0) return;
+    const order = completeCheckout('cash', undefined, cartGrandTotal);
+    if (order) {
+      if (settings.enableSoundEffects !== false) playSound('success');
+      onQuickCheckoutSuccess?.(order);
+    }
+  };
+
+  const handleInstantCreditCheckout = () => {
+    if (cart.length === 0) return;
+    if (selectedCustomer) {
+      const order = completeCheckout('credit', undefined, 0);
+      if (order) {
+        if (settings.enableSoundEffects !== false) playSound('success');
+        onQuickCheckoutSuccess?.(order);
+      }
+      return;
+    }
+    setQuickCreditCustName('');
+    setQuickCreditCustPhone('');
+    setQuickCreditSearch('');
+    setShowQuickCreditModal(true);
+  };
+
+  const handleConfirmQuickCreditNewCustomer = (e: React.FormEvent) => {
+    e.preventDefault();
+    const name = quickCreditCustName.trim();
+    if (!name) return;
+    const phone = quickCreditCustPhone.trim() || '-';
+    addCustomer({ name, phone });
+    setShowQuickCreditModal(false);
+    setPendingQuickCredit(true);
+  };
 
   const handleApplyOrderDiscount = () => {
     const val = parseFloat(discountVal) || 0;
@@ -243,6 +317,73 @@ export const CartRegister: React.FC<CartRegisterProps> = ({
             >
               <Trash2 className="w-4 h-4" />
             </button>
+          )}
+        </div>
+
+        {/* Today's Sales Quick KPI & Recent Invoices Bar */}
+        <div className="relative">
+          <button
+            type="button"
+            onClick={() => setShowTodaySalesList((prev) => !prev)}
+            className="w-full px-2.5 py-1.5 rounded-xl bg-emerald-50/80 dark:bg-emerald-950/40 border border-emerald-200/80 dark:border-emerald-800/60 flex items-center justify-between text-[11px] hover:bg-emerald-100/70 dark:hover:bg-emerald-900/40 transition-colors"
+          >
+            <div className="flex items-center gap-1.5 font-extrabold text-emerald-800 dark:text-emerald-300">
+              <Receipt className="w-3.5 h-3.5 text-emerald-600 dark:text-emerald-400 shrink-0" />
+              <span>{isAr ? 'مبيعات اليوم:' : isFr ? "Ventes du jour:" : "Today's Sales:"}</span>
+              <span className="font-mono font-black tabular-nums">
+                {todaySalesSummary.total.toFixed(2)} {currencySymbol}
+              </span>
+            </div>
+            <div className="flex items-center gap-1 text-[10px] font-bold text-emerald-700 dark:text-emerald-300">
+              <span className="px-1.5 py-0.5 rounded-md bg-white/80 dark:bg-slate-800 tabular-nums">
+                {todaySalesSummary.count} {isAr ? 'فاتورة' : 'inv'}
+              </span>
+              <ChevronDown className={`w-3 h-3 transition-transform ${showTodaySalesList ? 'rotate-180' : ''}`} />
+            </div>
+          </button>
+
+          {showTodaySalesList && (
+            <div className="mt-1.5 p-2 rounded-xl bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-700 shadow-lg space-y-1.5 text-[11px]">
+              {todaySalesSummary.recentOrders.length === 0 ? (
+                <div className="text-center py-2 text-slate-400 font-semibold">
+                  {isAr ? 'لا توجد مبيعات مسجلة اليوم بعد' : 'No sales recorded today yet'}
+                </div>
+              ) : (
+                todaySalesSummary.recentOrders.map((ord) => (
+                  <div
+                    key={ord.id}
+                    className="flex items-center justify-between py-1 px-1.5 rounded-lg bg-slate-50 dark:bg-slate-800/70"
+                  >
+                    <div className="min-w-0 truncate">
+                      <span className="font-bold text-slate-800 dark:text-slate-200">{ord.orderNumber}</span>
+                      <span className="text-slate-400 mx-1">·</span>
+                      <span className="text-slate-500 dark:text-slate-400">
+                        {ord.paymentMethod === 'credit'
+                          ? isAr
+                            ? `كريدي (${ord.customerName || 'زبون'})`
+                            : 'Credit'
+                          : isAr
+                          ? 'كاش'
+                          : 'Cash'}
+                      </span>
+                    </div>
+                    <span className="font-mono font-black text-emerald-700 dark:text-emerald-400 tabular-nums shrink-0">
+                      {ord.grandTotal.toFixed(2)} {currencySymbol}
+                    </span>
+                  </div>
+                ))
+              )}
+              <button
+                type="button"
+                onClick={() => {
+                  setShowTodaySalesList(false);
+                  setCurrentTab('orders');
+                }}
+                className="w-full py-1 text-center text-[11px] font-black text-emerald-700 dark:text-emerald-400 hover:underline"
+              >
+                {isAr ? 'عرض كل مبيعات اليوم ➔' : 'View all orders ➔'}
+              </button>
+            </div>
           )}
         </div>
       </div>
@@ -545,17 +686,38 @@ export const CartRegister: React.FC<CartRegisterProps> = ({
             </button>
           </div>
 
-          {/* Big Charge Button */}
+          {/* 1-Tap Quick Checkout Buttons (خلص كاش / سجل في الكريدي) */}
+          <div className="grid grid-cols-2 gap-2 pt-0.5">
+            <button
+              type="button"
+              onClick={handleInstantCashCheckout}
+              className="py-3 px-3 rounded-xl font-black text-sm text-white bg-emerald-600 hover:bg-emerald-700 active:scale-[0.98] transition-all flex items-center justify-center gap-1.5 shadow-md shadow-emerald-600/20"
+            >
+              <Banknote className="w-4 h-4 shrink-0" />
+              <span>{isAr ? 'خلص كاش' : isFr ? 'Cash Rapide' : 'Quick Cash'}</span>
+            </button>
+
+            <button
+              type="button"
+              onClick={handleInstantCreditCheckout}
+              className="py-3 px-3 rounded-xl font-black text-sm text-white bg-amber-600 hover:bg-amber-700 active:scale-[0.98] transition-all flex items-center justify-center gap-1.5 shadow-md shadow-amber-600/20"
+            >
+              <BookOpen className="w-4 h-4 shrink-0" />
+              <span>{isAr ? 'سجل في الكريدي' : isFr ? 'À Crédit' : 'Save Credit'}</span>
+            </button>
+          </div>
+
+          {/* Full Detailed Checkout Button (Split / Card / Change / Loyalty) */}
           <button
             type="button"
             onClick={onOpenCheckout}
-            className="w-full py-3.5 px-4 rounded-xl font-extrabold text-base text-white bg-emerald-600 hover:bg-emerald-700 active:scale-[0.99] transition-all flex items-center justify-between shadow-lg shadow-emerald-600/20"
+            className="w-full py-2.5 px-4 rounded-xl font-extrabold text-xs sm:text-sm text-slate-700 dark:text-slate-200 bg-white dark:bg-slate-800 border border-slate-200 dark:border-slate-700 hover:border-emerald-500 active:scale-[0.99] transition-all flex items-center justify-between"
           >
             <div className="flex items-center gap-2">
-              <CreditCard className="w-5 h-5" />
-              <span>{t.charge}</span>
+              <CreditCard className="w-4 h-4 text-emerald-600 dark:text-emerald-400" />
+              <span>{isAr ? 'دفع مفصل / طرق أخرى (بطاقة، نقط...)' : t.charge}</span>
             </div>
-            <span className="tabular-nums font-mono text-lg tracking-wide">
+            <span className="tabular-nums font-mono text-sm font-black tracking-wide text-emerald-700 dark:text-emerald-400">
               {cartGrandTotal.toFixed(2)} {currencySymbol}
             </span>
           </button>
@@ -735,6 +897,102 @@ export const CartRegister: React.FC<CartRegisterProps> = ({
         onResetPrice={handleResetPriceOverride}
         language={language}
       />
+
+      {/* Quick Credit Customer Selection / Creation Modal */}
+      {showQuickCreditModal && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-slate-950/60 backdrop-blur-xs">
+          <div className="w-full max-w-sm bg-white dark:bg-slate-900 rounded-2xl p-5 shadow-2xl border border-slate-200 dark:border-slate-800 space-y-4">
+            <div className="flex items-center justify-between">
+              <h3 className="font-black text-sm text-slate-900 dark:text-white flex items-center gap-2">
+                <BookOpen className="w-4 h-4 text-amber-500" />
+                <span>{isAr ? 'تسجيل الفاتورة في الكريدي' : 'Record Credit Sale'}</span>
+              </h3>
+              <button
+                type="button"
+                onClick={() => setShowQuickCreditModal(false)}
+                className="text-slate-400 hover:text-slate-600"
+              >
+                <X className="w-4 h-4" />
+              </button>
+            </div>
+
+            <div className="p-2.5 rounded-xl bg-amber-50 dark:bg-amber-950/40 border border-amber-200 dark:border-amber-800 flex items-center justify-between text-xs font-black">
+              <span className="text-amber-800 dark:text-amber-300">{isAr ? 'مبلغ الكريدي:' : 'Credit Amount:'}</span>
+              <span className="font-mono text-amber-700 dark:text-amber-300">
+                {cartGrandTotal.toFixed(2)} {currencySymbol}
+              </span>
+            </div>
+
+            {customers.length > 0 && (
+              <div className="space-y-1.5">
+                <input
+                  type="text"
+                  value={quickCreditSearch}
+                  onChange={(e) => setQuickCreditSearch(e.target.value)}
+                  placeholder={isAr ? 'ابحث عن زبون مسجل...' : 'Search existing customer...'}
+                  className="w-full px-3 py-1.5 text-xs bg-slate-50 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 rounded-xl"
+                />
+                <div className="max-h-36 overflow-y-auto space-y-1">
+                  {customers
+                    .filter((c) => {
+                      const q = quickCreditSearch.trim().toLowerCase();
+                      if (!q) return true;
+                      return c.name.toLowerCase().includes(q) || c.phone.includes(q);
+                    })
+                    .slice(0, 8)
+                    .map((c) => (
+                      <button
+                        key={c.id}
+                        type="button"
+                        onClick={() => {
+                          setSelectedCustomer(c);
+                          setShowQuickCreditModal(false);
+                          setPendingQuickCredit(true);
+                        }}
+                        className="w-full px-3 py-2 text-xs text-start rounded-xl bg-slate-50 dark:bg-slate-800 hover:bg-amber-50 dark:hover:bg-amber-950/50 border border-slate-200 dark:border-slate-700 flex items-center justify-between transition-colors"
+                      >
+                        <div>
+                          <div className="font-bold text-slate-900 dark:text-white">{c.name}</div>
+                          <div className="text-[10px] text-slate-400">{c.phone}</div>
+                        </div>
+                        <span className="text-[11px] font-black text-amber-600 dark:text-amber-400">
+                          {isAr ? 'سجل عليه ➔' : 'Select'}
+                        </span>
+                      </button>
+                    ))}
+                </div>
+              </div>
+            )}
+
+            <form onSubmit={handleConfirmQuickCreditNewCustomer} className="pt-2 border-t border-slate-200 dark:border-slate-800 space-y-2.5">
+              <div className="text-[11px] font-extrabold text-slate-600 dark:text-slate-400">
+                {isAr ? 'أو سجل زبون جديد فوراً:' : 'Or create quick customer:'}
+              </div>
+              <input
+                type="text"
+                required
+                value={quickCreditCustName}
+                onChange={(e) => setQuickCreditCustName(e.target.value)}
+                placeholder={isAr ? 'اسم الزبون (مثال: الحاج محمد)' : 'Customer name'}
+                className="w-full px-3 py-2 text-xs bg-slate-50 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 rounded-xl"
+              />
+              <input
+                type="tel"
+                value={quickCreditCustPhone}
+                onChange={(e) => setQuickCreditCustPhone(e.target.value)}
+                placeholder={isAr ? 'رقم الهاتف (اختياري)' : 'Phone (optional)'}
+                className="w-full px-3 py-2 text-xs bg-slate-50 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 rounded-xl font-mono"
+              />
+              <button
+                type="submit"
+                className="w-full py-2.5 rounded-xl font-black text-xs text-white bg-amber-600 hover:bg-amber-700 transition-colors"
+              >
+                {isAr ? 'حفظ الزبون وتسجيل الكريدي' : 'Save & Record Credit'}
+              </button>
+            </form>
+          </div>
+        </div>
+      )}
     </div>
   );
 };

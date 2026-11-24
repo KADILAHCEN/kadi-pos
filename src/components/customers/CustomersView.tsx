@@ -904,9 +904,9 @@ export const CustomersView: React.FC = () => {
                             <button
                               type="button"
                               onClick={() => openCreatePaymentModal(cust)}
-                              className="px-2.5 py-1.5 rounded-xl bg-emerald-600 hover:bg-emerald-700 text-white text-[11px] font-bold"
+                              className="px-2.5 py-1.5 rounded-xl bg-emerald-600 hover:bg-emerald-700 text-white text-[11px] font-black"
                             >
-                              {isAr ? 'دفع' : 'Pay'}
+                              {isAr ? 'خلص' : 'Pay'}
                             </button>
                           )}
                           <button
@@ -1057,7 +1057,7 @@ export const CustomersView: React.FC = () => {
                               title={isAr ? 'إنشاء دفع الدين وتسديد الكريدي' : 'Settle Debt'}
                             >
                               <Check className="w-3.5 h-3.5 stroke-[3]" />
-                              <span>{isAr ? 'دفع الدين' : 'Settle'}</span>
+                              <span>{isAr ? 'خلص الدين' : 'Settle'}</span>
                             </button>
                           ) : (
                             <button

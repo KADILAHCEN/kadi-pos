@@ -69,7 +69,8 @@ export const Navbar: React.FC = () => {
     closeEmergencySession,
     shopEarRequests,
     isOnline,
-    cloudSyncState
+    cloudSyncState,
+    signInCloudSync
   } = usePos();
 
   const arrivedShopEarCount = shopEarRequests.filter((r) => r.status === 'arrived').length;
@@ -86,6 +87,7 @@ export const Navbar: React.FC = () => {
   const [showPaletteDropdown, setShowPaletteDropdown] = useState(false);
   const [showPinModal, setShowPinModal] = useState(false);
   const [pendingTab, setPendingTab] = useState<typeof currentTab | null>(null);
+  const [isSigningInGoogle, setIsSigningInGoogle] = useState(false);
   const [loggedPriceAlertsCount, setLoggedPriceAlertsCount] = useState(() => loadPriceAlerts().length);
 
   useEffect(() => {
@@ -288,60 +290,96 @@ export const Navbar: React.FC = () => {
 
       {/* Zone 3: Shift Status & Utilities */}
       <div className="flex flex-nowrap items-center justify-end gap-1.5 sm:gap-2 shrink-0">
-        {/* Live Firestore Multi-Device Sync Indicator */}
+        {/* Live Firestore Multi-Device Sync Indicator + 1-Tap Google Sign-In */}
         {(() => {
           const isCloudSynced =
             isOnline &&
             cloudSyncState.isSignedIn &&
             (cloudSyncState.status === 'synced' || cloudSyncState.status === 'syncing');
           const count = cloudSyncState.activeDevicesCount;
+          const shortEmail = cloudSyncState.userEmail ? cloudSyncState.userEmail.split('@')[0] : '';
           const label = isCloudSynced
-            ? `متصل ومزامن مع ${count} أجهزة ✅`
-            : 'غير متصل ⚠️';
+            ? isAr
+              ? `متصل (${shortEmail || count}) · تزامن خدام ✅`
+              : `Synced (${count}) ✅`
+            : !isOnline
+            ? isAr
+              ? 'أوفلاين ⚠️'
+              : 'Offline ⚠️'
+            : isAr
+            ? 'غير متصل ⚠️'
+            : 'Not signed in ⚠️';
           return (
-            <button
-              type="button"
-              onClick={() => {
-                setShowKPanel(false);
-                setShowBranchDropdown(false);
-                setShowUserDropdown(false);
-                setShowPaletteDropdown(false);
-                try {
-                  sessionStorage.setItem('kadi_settings_subtab', 'devices');
-                } catch {
-                  // ignore
+            <div className="flex items-center gap-1 shrink-0">
+              <button
+                type="button"
+                onClick={() => {
+                  setShowKPanel(false);
+                  setShowBranchDropdown(false);
+                  setShowUserDropdown(false);
+                  setShowPaletteDropdown(false);
+                  try {
+                    sessionStorage.setItem('kadi_settings_subtab', 'devices');
+                  } catch {
+                    // ignore
+                  }
+                  handleTabClick('settings');
+                  window.setTimeout(() => {
+                    window.dispatchEvent(new CustomEvent('kadi:open-connected-devices'));
+                  }, 40);
+                }}
+                title={
+                  isCloudSynced
+                    ? isAr
+                      ? `متصل: ${cloudSyncState.userEmail || cloudSyncState.deviceName} · متزامن مع ${count} أجهزة`
+                      : `Synced live across ${count} devices`
+                    : !isOnline
+                    ? isAr
+                      ? 'لا يوجد إنترنت — العمل محفوظ محلياً. اضغط لإدارة الأجهزة'
+                      : 'Offline — working from local cache'
+                    : isAr
+                    ? 'غير متصل بالسحابة — سجل الدخول بـ Google لتفعيل المزامنة'
+                    : 'Click to connect Google & enable live Firestore sync'
                 }
-                handleTabClick('settings');
-                window.setTimeout(() => {
-                  window.dispatchEvent(new CustomEvent('kadi:open-connected-devices'));
-                }, 40);
-              }}
-              title={
-                isCloudSynced
-                  ? isAr
-                    ? `المزامنة الفورية نشطة (${cloudSyncState.deviceName})`
-                    : `Synced live across ${count} devices`
-                  : !isOnline
-                  ? isAr
-                    ? 'لا يوجد إنترنت — العمل من localStorage. اضغط لإدارة الأجهزة'
-                    : 'Offline — working from localStorage'
-                  : isAr
-                  ? 'اضغط لربط حساب Google وتفعيل المزامنة الفورية عبر Firestore'
-                  : 'Click to connect Google & enable live Firestore sync'
-              }
-              className={`flex items-center gap-1.5 px-2.5 py-1 text-[11px] font-extrabold rounded-lg border transition-colors whitespace-nowrap shrink-0 ${
-                isCloudSynced
-                  ? 'bg-emerald-50 dark:bg-emerald-950/60 border-emerald-200 dark:border-emerald-800 text-emerald-700 dark:text-emerald-300 hover:bg-emerald-100'
-                  : 'bg-amber-50 dark:bg-amber-950/60 border-amber-300 dark:border-amber-800 text-amber-800 dark:text-amber-300 hover:bg-amber-100'
-              }`}
-            >
-              {isCloudSynced ? (
-                <Wifi className="w-3.5 h-3.5 text-emerald-600 dark:text-emerald-400 shrink-0" />
-              ) : (
-                <WifiOff className="w-3.5 h-3.5 text-amber-600 dark:text-amber-400 shrink-0" />
+                className={`flex items-center gap-1.5 px-2.5 py-1 text-[11px] font-extrabold rounded-lg border transition-colors whitespace-nowrap shrink-0 ${
+                  isCloudSynced
+                    ? 'bg-emerald-50 dark:bg-emerald-950/60 border-emerald-200 dark:border-emerald-800 text-emerald-700 dark:text-emerald-300 hover:bg-emerald-100'
+                    : 'bg-amber-50 dark:bg-amber-950/60 border-amber-300 dark:border-amber-800 text-amber-800 dark:text-amber-300 hover:bg-amber-100'
+                }`}
+              >
+                {isCloudSynced ? (
+                  <Wifi className="w-3.5 h-3.5 text-emerald-600 dark:text-emerald-400 shrink-0" />
+                ) : (
+                  <WifiOff className="w-3.5 h-3.5 text-amber-600 dark:text-amber-400 shrink-0" />
+                )}
+                <span>{label}</span>
+              </button>
+
+              {isOnline && !cloudSyncState.isSignedIn && (
+                <button
+                  type="button"
+                  disabled={isSigningInGoogle}
+                  onClick={async () => {
+                    setIsSigningInGoogle(true);
+                    try {
+                      await signInCloudSync();
+                    } finally {
+                      setIsSigningInGoogle(false);
+                    }
+                  }}
+                  className="px-2.5 py-1 text-[11px] font-black rounded-lg bg-rose-600 hover:bg-rose-700 disabled:opacity-60 text-white shadow-xs transition-colors whitespace-nowrap shrink-0"
+                  title={isAr ? 'تسجيل الدخول بحساب Google للمزامنة الفورية' : 'Sign in with Google'}
+                >
+                  {isSigningInGoogle
+                    ? isAr
+                      ? 'جاري الدخول...'
+                      : 'Signing in...'
+                    : isAr
+                    ? 'دخول بـ Google'
+                    : 'Google Login'}
+                </button>
               )}
-              <span>{label}</span>
-            </button>
+            </div>
           );
         })()}
 

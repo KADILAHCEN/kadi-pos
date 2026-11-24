@@ -1,13 +1,19 @@
 import { getApps, initializeApp, FirebaseApp } from 'firebase/app';
 import {
+  browserLocalPersistence,
   getAuth,
   GoogleAuthProvider,
+  setPersistence,
   signInWithPopup,
   signOut,
   User
 } from 'firebase/auth';
 import {
+  Firestore,
   getFirestore,
+  initializeFirestore,
+  persistentLocalCache,
+  persistentMultipleTabManager,
   doc,
   getDocFromServer
 } from 'firebase/firestore';
@@ -23,9 +29,26 @@ export function getFirebaseApp(): FirebaseApp {
   return appInstance;
 }
 
+function createPersistentFirestore(firebaseApp: FirebaseApp): Firestore {
+  try {
+    return initializeFirestore(
+      firebaseApp,
+      {
+        localCache: persistentLocalCache({
+          tabManager: persistentMultipleTabManager()
+        })
+      },
+      firebaseConfig.firestoreDatabaseId
+    );
+  } catch {
+    return getFirestore(firebaseApp, firebaseConfig.firestoreDatabaseId);
+  }
+}
+
 export const app = getFirebaseApp();
-export const db = getFirestore(app, firebaseConfig.firestoreDatabaseId);
+export const db = createPersistentFirestore(app);
 export const auth = getAuth(app);
+void setPersistence(auth, browserLocalPersistence).catch(() => {});
 export const activeFirebaseConfig = firebaseConfig;
 
 const syncGoogleProvider = new GoogleAuthProvider();

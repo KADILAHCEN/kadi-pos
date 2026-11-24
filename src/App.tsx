@@ -646,6 +646,7 @@ const PosMainContent: React.FC = () => {
               <CartRegister
                 onOpenCheckout={() => setShowCheckout(true)}
                 onOpenHeldTickets={() => setShowHeldTickets(true)}
+                onQuickCheckoutSuccess={handleCheckoutSuccess}
               />
             </div>
 
@@ -695,6 +696,7 @@ const PosMainContent: React.FC = () => {
                         setShowMobileCart(false);
                         setShowHeldTickets(true);
                       }}
+                      onQuickCheckoutSuccess={handleCheckoutSuccess}
                     />
                   </div>
                 </div>

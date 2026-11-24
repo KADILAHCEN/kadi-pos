@@ -140,6 +140,7 @@ export const InventoryView: React.FC = () => {
     supplierInvoices,
     settings,
     setCurrentTab,
+    exportDatabaseJson,
     currencySymbol,
     language
   } = usePos();
@@ -963,6 +964,20 @@ export const InventoryView: React.FC = () => {
               <span>{isAr ? 'تصدير CSV' : 'Export CSV'}</span>
             </button>
 
+            <button
+              type="button"
+              onClick={() => {
+                exportDatabaseJson();
+                setProductToast(isAr ? '💾 تم تحميل النسخة الاحتياطية JSON بنجاح' : '💾 JSON backup downloaded');
+                setTimeout(() => setProductToast(null), 3200);
+              }}
+              className="px-3 py-2 text-xs font-black rounded-xl bg-slate-900 hover:bg-slate-800 dark:bg-slate-100 dark:hover:bg-white text-white dark:text-slate-900 transition-colors flex items-center gap-1.5 shadow-2xs shrink-0"
+              title={isAr ? 'تحميل نسخة احتياطية كاملة لجميع البيانات والسلع' : 'Download full JSON backup'}
+            >
+              <Download className="w-3.5 h-3.5" />
+              <span>{isAr ? 'تحميل نسخة احتياطية' : 'Download Backup'}</span>
+            </button>
+
             {selectedProductIds.size > 0 && (
               <button
                 onClick={() => setShowBulkModal(true)}
@@ -1445,6 +1460,30 @@ export const InventoryView: React.FC = () => {
                               title={isAr ? 'تعديل بيانات المنتج (الاسم، السعر، الفئة، الصورة، الباركود)' : 'Edit Product'}
                             >
                               <Pencil className="w-3.5 h-3.5" />
+                            </button>
+                            <button
+                              type="button"
+                              onClick={() => {
+                                adjustStock(p.id, 10, isAr ? 'توريد سريع (+10)' : 'Quick restock (+10)', 'restock');
+                                setProductToast(isAr ? `✅ تزادت +10 لـ "${p.name}"` : `✅ Added +10 to "${p.name}"`);
+                                setTimeout(() => setProductToast(null), 2200);
+                              }}
+                              className="px-2 py-1 text-[11px] font-black rounded-lg bg-sky-50 dark:bg-sky-950/60 text-sky-700 dark:text-sky-300 hover:bg-sky-100 transition-colors"
+                              title={isAr ? 'زيادة سريعة +10 للمخزون' : 'Quick +10 stock'}
+                            >
+                              +10
+                            </button>
+                            <button
+                              type="button"
+                              onClick={() => {
+                                adjustStock(p.id, 50, isAr ? 'توريد سريع (+50)' : 'Quick restock (+50)', 'restock');
+                                setProductToast(isAr ? `✅ تزادت +50 لـ "${p.name}"` : `✅ Added +50 to "${p.name}"`);
+                                setTimeout(() => setProductToast(null), 2200);
+                              }}
+                              className="px-2 py-1 text-[11px] font-black rounded-lg bg-indigo-50 dark:bg-indigo-950/60 text-indigo-700 dark:text-indigo-300 hover:bg-indigo-100 transition-colors"
+                              title={isAr ? 'زيادة سريعة +50 للمخزون' : 'Quick +50 stock'}
+                            >
+                              +50
                             </button>
                             <button
                               type="button"
