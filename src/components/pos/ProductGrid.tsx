@@ -11,6 +11,7 @@ import { AddCategoryModal } from '../inventory/AddCategoryModal';
 import { WeeklyTopProductsWidget } from './WeeklyTopProductsWidget';
 import { bluetoothScanner, ScannedBarcodePayload } from '../../utils/bluetoothScanner';
 import { playSound } from '../../utils/audio';
+import { parseScaleBarcode } from '../../utils/scaleBarcode';
 import { PriceAlertAdvisor } from '../alerts/PriceAlertAdvisor';
 import {
   auditOldStockPrices,
@@ -448,6 +449,27 @@ export const ProductGrid: React.FC<ProductGridProps> = ({ onOpenBarcodeScanner }
 
   const handleScannedBarcode = (code: string, _speedMs?: number) => {
     const clean = code.trim();
+    const scaleParsed = parseScaleBarcode(clean, products, settings.scaleBarcodeConfig);
+    if (scaleParsed?.product) {
+      const targetProd = scaleParsed.product;
+      const remaining = getRemainingStock(targetProd);
+      if (remaining <= 0 || scaleParsed.quantity > remaining) {
+        showNafedSnackBar(isAr ? targetProd.name : targetProd.nameEn || targetProd.name);
+        return;
+      }
+      if (settings.bluetoothSoundFeedback !== false) {
+        playSound('beep');
+      }
+      addToCart(targetProd, undefined, undefined, scaleParsed.quantity);
+      setBarcodeToast(
+        isAr
+          ? `⚖️ الميزان: ${targetProd.name} (${scaleParsed.quantity.toFixed(3)} ${targetProd.unitType === 'liter' ? 'لتر' : 'كغ'})`
+          : `⚖️ Scale: ${targetProd.name} (${scaleParsed.quantity.toFixed(3)})`
+      );
+      setTimeout(() => setBarcodeToast(null), 2600);
+      return;
+    }
+
     const matched = products.find(
       (p) => p.barcode === clean || p.sku.toLowerCase() === clean.toLowerCase()
     );
@@ -562,7 +584,21 @@ export const ProductGrid: React.FC<ProductGridProps> = ({ onOpenBarcodeScanner }
             onChange={(e) => setSearchQuery(e.target.value)}
             onKeyDown={(e) => {
               if (e.key === 'Enter' && searchQuery.trim()) {
-                const q = searchQuery.trim().toLowerCase();
+                const rawQ = searchQuery.trim();
+                const scaleParsed = parseScaleBarcode(rawQ, products, settings.scaleBarcodeConfig);
+                if (scaleParsed?.product) {
+                  e.preventDefault();
+                  const remaining = getRemainingStock(scaleParsed.product);
+                  if (remaining <= 0 || scaleParsed.quantity > remaining) {
+                    showNafedSnackBar(isAr ? scaleParsed.product.name : scaleParsed.product.nameEn || scaleParsed.product.name);
+                  } else {
+                    addToCart(scaleParsed.product, undefined, undefined, scaleParsed.quantity);
+                    if (settings.enableSoundEffects !== false) playSound('beep');
+                  }
+                  setSearchQuery('');
+                  return;
+                }
+                const q = rawQ.toLowerCase();
                 const exactMatch = products.find(
                   (p) => p.barcode.toLowerCase() === q || p.sku.toLowerCase() === q
                 );
@@ -1037,6 +1073,19 @@ export const ProductGrid: React.FC<ProductGridProps> = ({ onOpenBarcodeScanner }
                             {currencySymbol}
                           </span>
                         </div>
+                        {prod.wholesaleMinQty && prod.wholesalePrice ? (
+                          <div className="text-[10px] font-bold text-blue-700 dark:text-blue-400 tabular-nums">
+                            {isAr
+                              ? `جملة +${prod.wholesaleMinQty}: ${prod.wholesalePrice.toFixed(2)} ${currencySymbol}`
+                              : `WS +${prod.wholesaleMinQty}: ${prod.wholesalePrice.toFixed(2)}`}
+                          </div>
+                        ) : prod.semiWholesaleMinQty && prod.semiWholesalePrice ? (
+                          <div className="text-[10px] font-bold text-blue-700 dark:text-blue-400 tabular-nums">
+                            {isAr
+                              ? `نصف جملة +${prod.semiWholesaleMinQty}: ${prod.semiWholesalePrice.toFixed(2)} ${currencySymbol}`
+                              : `S-WS +${prod.semiWholesaleMinQty}: ${prod.semiWholesalePrice.toFixed(2)}`}
+                          </div>
+                        ) : null}
                       </div>
 
                       {/* Profit margin / Loss correction badge */}

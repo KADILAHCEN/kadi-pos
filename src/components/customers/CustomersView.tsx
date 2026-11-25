@@ -483,45 +483,40 @@ export const CustomersView: React.FC = () => {
       ) : (
         <div className="flex-1 flex flex-col h-full overflow-hidden p-4 sm:p-6">
       {/* Top Header & Navigation Segmented Controls */}
-      <div className="flex flex-wrap items-center justify-between gap-4 mb-4 shrink-0">
-        <div>
-          <div className="flex items-center gap-2.5">
-            <div className="w-10 h-10 rounded-2xl bg-amber-500/15 text-amber-600 dark:text-amber-400 flex items-center justify-center font-extrabold shadow-2xs">
-              <BookOpen className="w-5 h-5" />
-            </div>
-            <div>
-              <h2 className="text-xl font-black text-slate-900 dark:text-white flex items-center gap-2">
-                <span>{isAr ? 'كناش الكريدي والعملاء' : 'Credit Ledger & Customers'}</span>
-                <span className="text-[11px] font-bold px-2 py-0.5 rounded-full bg-amber-100 dark:bg-amber-950 text-amber-800 dark:text-amber-300">
-                  {isAr ? 'دفتر الحسابات والديون' : 'Moroccan Ledger'}
-                </span>
-              </h2>
-              <p className="text-xs text-slate-500 dark:text-slate-400">
-                {isAr
-                  ? 'إدارة ديون الزبناء، تقييد الكريدي الجديد، تسديد الدفعات، والبحث السريع بالاسم ورقم الهاتف'
-                  : 'Manage customer credit debts, record payments, and fast search by name or phone'}
-              </p>
-            </div>
+      <div className="flex flex-wrap items-center justify-between gap-4 mb-5 shrink-0">
+        <div className="flex items-center gap-3">
+          <div className="w-11 h-11 rounded-2xl bg-amber-50 dark:bg-amber-950/60 border border-amber-200 dark:border-amber-800/70 text-amber-700 dark:text-amber-400 flex items-center justify-center shrink-0">
+            <BookOpen className="w-5 h-5" />
+          </div>
+          <div>
+            <h2 className="text-xl sm:text-2xl font-extrabold text-slate-900 dark:text-white tracking-normal leading-snug">
+              {isAr ? 'كناش الكريدي والعملاء' : 'Credit Ledger & Customers'}
+            </h2>
+            <p className="text-xs sm:text-sm text-slate-600 dark:text-slate-300 mt-0.5 leading-relaxed">
+              {isAr
+                ? 'إدارة ديون الزبناء، تقييد الكريدي، تسديد الدفعات، والبحث السريع بالاسم أو الهاتف'
+                : 'Manage customer credit debts, record payments, and search by name or phone'}
+            </p>
           </div>
         </div>
 
-        {/* Action Controls: Tabs & Add Button */}
-        <div className="flex flex-wrap items-center gap-2.5">
+        {/* Action Controls: Tabs & Clean Semantic Action Hierarchy */}
+        <div className="flex flex-wrap items-center gap-2">
           {/* Segmented Control */}
-          <div className="flex items-center p-1 bg-slate-200/80 dark:bg-slate-800 rounded-2xl">
+          <div className="flex items-center p-1 bg-slate-200/80 dark:bg-slate-800 rounded-xl">
             <button
               type="button"
               onClick={() => setActiveTab('ledger')}
-              className={`px-3.5 py-1.5 text-xs font-bold rounded-xl transition-all flex items-center gap-1.5 ${
+              className={`min-h-[36px] px-3.5 py-1.5 text-xs font-bold rounded-lg transition-all flex items-center gap-1.5 ${
                 activeTab === 'ledger'
                   ? 'bg-white dark:bg-slate-900 text-slate-900 dark:text-white shadow-xs'
-                  : 'text-slate-600 dark:text-slate-400 hover:text-slate-900 dark:hover:text-white'
+                  : 'text-slate-600 dark:text-slate-300 hover:text-slate-900 dark:hover:text-white'
               }`}
             >
-              <BookOpen className="w-3.5 h-3.5 text-amber-500" />
+              <BookOpen className="w-3.5 h-3.5 text-amber-600 dark:text-amber-400" />
               <span>{isAr ? 'كناش الكريدي' : 'Credit Ledger'}</span>
               {metrics.debtorsCount > 0 && (
-                <span className="px-1.5 py-0.2 rounded-full text-[10px] bg-amber-500 text-white font-black">
+                <span className="px-1.5 py-0.5 rounded-md text-xs bg-amber-100 dark:bg-amber-950 text-amber-800 dark:text-amber-300 font-bold tabular-nums">
                   {metrics.debtorsCount}
                 </span>
               )}
@@ -530,70 +525,70 @@ export const CustomersView: React.FC = () => {
             <button
               type="button"
               onClick={() => setActiveTab('loyalty')}
-              className={`px-3.5 py-1.5 text-xs font-bold rounded-xl transition-all flex items-center gap-1.5 ${
+              className={`min-h-[36px] px-3.5 py-1.5 text-xs font-bold rounded-lg transition-all flex items-center gap-1.5 ${
                 activeTab === 'loyalty'
                   ? 'bg-white dark:bg-slate-900 text-slate-900 dark:text-white shadow-xs'
-                  : 'text-slate-600 dark:text-slate-400 hover:text-slate-900 dark:hover:text-white'
+                  : 'text-slate-600 dark:text-slate-300 hover:text-slate-900 dark:hover:text-white'
               }`}
             >
-              <Users className="w-3.5 h-3.5 text-emerald-600" />
+              <Users className="w-3.5 h-3.5 text-emerald-600 dark:text-emerald-400" />
               <span>{isAr ? 'العملاء والولاء' : 'Loyalty & All'}</span>
-              <span className="text-[10px] text-slate-400">({customers.length})</span>
+              <span className="text-xs text-slate-500 dark:text-slate-400 tabular-nums">({customers.length})</span>
             </button>
           </div>
 
-          {/* Export Credit Ledger File & Send via Gmail */}
+          {/* Secondary Utility: Export Credit Ledger File & Send via Gmail */}
           <button
             type="button"
             onClick={() => setShowCreditGmailModal(true)}
             disabled={customers.length === 0}
-            className="px-3.5 py-2 text-xs font-extrabold rounded-xl bg-rose-50 dark:bg-rose-950/50 border border-rose-200 dark:border-rose-800 text-rose-700 dark:text-rose-300 hover:bg-rose-100 disabled:opacity-45 disabled:cursor-not-allowed transition-all flex items-center gap-1.5"
+            className="min-h-[40px] px-3.5 py-2 text-xs font-semibold rounded-xl bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-700 text-slate-700 dark:text-slate-200 hover:bg-slate-100 dark:hover:bg-slate-800 disabled:opacity-45 disabled:cursor-not-allowed transition-colors flex items-center gap-1.5"
             title={isAr ? 'حفظ كناش الكريدي في ملف وإرساله إلى Gmail' : 'Export Credit Ledger to File & Gmail'}
           >
-            <Mail className="w-3.5 h-3.5" />
-            <span>{isAr ? 'كناش الكريدي ➔ Gmail' : 'Ledger ➔ Gmail'}</span>
+            <Mail className="w-4 h-4 text-rose-600 dark:text-rose-400" />
+            <span>{isAr ? 'تصدير Gmail' : 'Ledger ➔ Gmail'}</span>
           </button>
 
-          {/* Bulk WhatsApp Reminders CTA */}
+          {/* Secondary Utility: Bulk WhatsApp Reminders */}
           <button
             type="button"
             onClick={() => setShowBulkReminderModal(true)}
             disabled={debtorsList.length === 0}
-            className="px-3.5 py-2 text-xs font-extrabold rounded-xl bg-emerald-50 dark:bg-emerald-950/50 border border-emerald-200 dark:border-emerald-800 text-emerald-700 dark:text-emerald-300 hover:bg-emerald-100 disabled:opacity-45 disabled:cursor-not-allowed transition-all flex items-center gap-1.5"
+            className="min-h-[40px] px-3.5 py-2 text-xs font-semibold rounded-xl bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-700 text-slate-700 dark:text-slate-200 hover:bg-slate-100 dark:hover:bg-slate-800 disabled:opacity-45 disabled:cursor-not-allowed transition-colors flex items-center gap-1.5"
             title={isAr ? 'إرسال تذكير واتساب لأصحاب الديون والسقف المتجاوز' : 'WhatsApp Reminders'}
           >
-            <Send className="w-3.5 h-3.5" />
-            <span>{isAr ? `تذكير واتساب (${debtorsList.length})` : `WA Remind (${debtorsList.length})`}</span>
+            <Send className="w-4 h-4 text-emerald-600 dark:text-emerald-400" />
+            <span className="tabular-nums">{isAr ? `واتساب (${debtorsList.length})` : `WA Remind (${debtorsList.length})`}</span>
           </button>
 
-          {/* Create Debt Payment CTA (إنشاء دفع الدين) */}
+          {/* Primary Payment CTA: Create Debt Payment (Emerald = Settlement/Cash In) */}
           <button
             type="button"
             onClick={() => openCreatePaymentModal()}
             disabled={debtorsList.length === 0}
-            className="px-3.5 py-2 text-xs font-extrabold rounded-xl bg-amber-500 hover:bg-amber-600 disabled:opacity-45 disabled:cursor-not-allowed text-white transition-all shadow-xs flex items-center gap-1.5 active:scale-95"
+            className="min-h-[40px] px-4 py-2 text-xs font-bold rounded-xl bg-emerald-600 hover:bg-emerald-700 disabled:opacity-45 disabled:cursor-not-allowed text-white transition-all shadow-xs flex items-center gap-1.5 active:scale-95"
             title={isAr ? 'إنشاء وتسجيل دفع الدين لأي زبون' : 'Create Debt Payment'}
           >
             <DollarSign className="w-4 h-4" />
-            <span>{isAr ? '+ إنشاء دفع الدين' : '+ Debt Payment'}</span>
+            <span>{isAr ? 'تسجيل دفع الدين' : '+ Debt Payment'}</span>
           </button>
 
-          {/* Add New Customer / Account */}
+          {/* Primary Ledger CTA: Add New Customer */}
           <button
             type="button"
             onClick={() => setShowAddCustomerModal(true)}
-            className="px-4 py-2 text-xs font-extrabold rounded-xl bg-emerald-600 hover:bg-emerald-700 text-white transition-all shadow-xs flex items-center gap-1.5 active:scale-95"
+            className="min-h-[40px] px-4 py-2 text-xs font-bold rounded-xl bg-slate-900 hover:bg-slate-800 dark:bg-slate-100 dark:hover:bg-white text-white dark:text-slate-900 transition-all shadow-xs flex items-center gap-1.5 active:scale-95"
             title={isAr ? 'إضافة زبون جديد في الكناش' : 'Add new customer'}
           >
             <Plus className="w-4 h-4" />
-            <span>{isAr ? '+ إضافة زبون جديد' : '+ Add Customer'}</span>
+            <span>{isAr ? 'إضافة زبون' : '+ Add Customer'}</span>
           </button>
         </div>
       </div>
 
       {/* Payment Confirmation Toast */}
       {paymentToast && (
-        <div className="mb-3 px-4 py-2.5 rounded-2xl bg-emerald-600 text-white text-xs font-bold flex items-center justify-between gap-2 shadow-sm shrink-0">
+        <div className="mb-4 px-4 py-3 rounded-2xl bg-emerald-600 text-white text-xs sm:text-sm font-semibold flex items-center justify-between gap-2 shadow-sm shrink-0">
           <div className="flex items-center gap-2">
             <CheckCircle2 className="w-4 h-4 shrink-0" />
             <span>{paymentToast}</span>
@@ -601,7 +596,7 @@ export const CustomersView: React.FC = () => {
           <button
             type="button"
             onClick={() => setPaymentToast(null)}
-            className="text-white/80 hover:text-white"
+            className="text-white/80 hover:text-white p-1"
           >
             <X className="w-4 h-4" />
           </button>
@@ -611,26 +606,28 @@ export const CustomersView: React.FC = () => {
       {/* Summary KPI Cards for Credit Ledger */}
       <div className="grid grid-cols-2 lg:grid-cols-4 gap-3 mb-4 shrink-0">
         {/* Total Credit in Market */}
-        <div className="p-4 rounded-3xl bg-amber-50/80 dark:bg-amber-950/30 border border-amber-200 dark:border-amber-900/60 shadow-2xs">
-          <div className="flex items-center justify-between">
-            <span className="text-xs font-bold text-amber-800 dark:text-amber-300">
+        <div className="p-4 rounded-2xl bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 shadow-2xs">
+          <div className="flex items-center justify-between gap-2">
+            <span className="text-xs font-semibold text-slate-600 dark:text-slate-300">
               {isAr ? 'إجمالي الكريدي المعلق' : 'Total Outstanding Debt'}
             </span>
-            <AlertTriangle className="w-4 h-4 text-amber-600" />
+            <span className="w-7 h-7 rounded-lg bg-amber-50 dark:bg-amber-950/60 text-amber-600 dark:text-amber-400 flex items-center justify-center shrink-0">
+              <AlertTriangle className="w-4 h-4" />
+            </span>
           </div>
-          <div className="text-xl sm:text-2xl font-black text-amber-600 dark:text-amber-400 mt-1 tabular-nums">
+          <div className="text-xl sm:text-2xl font-extrabold text-amber-700 dark:text-amber-400 mt-1.5 tabular-nums">
             {metrics.totalDebt.toFixed(2)}{' '}
-            <span className="text-xs font-sans text-amber-700 dark:text-amber-500">
+            <span className="text-xs font-bold text-amber-700/80 dark:text-amber-400/80">
               {currencySymbol}
             </span>
           </div>
-          <div className="text-[11px] text-amber-700/80 dark:text-amber-400/80 mt-1 flex items-center justify-between gap-2">
-            <span>{isAr ? `في ذمة ${metrics.debtorsCount} زبون` : `${metrics.debtorsCount} debtors`}</span>
+          <div className="text-xs text-slate-600 dark:text-slate-400 mt-1.5 flex items-center justify-between gap-2">
+            <span className="tabular-nums">{isAr ? `في ذمة ${metrics.debtorsCount} زبون` : `${metrics.debtorsCount} debtors`}</span>
             {metrics.overLimitCount > 0 && (
               <button
                 type="button"
                 onClick={() => setStatusFilter('over_limit')}
-                className="px-1.5 py-0.5 rounded bg-rose-600 text-white text-[10px] font-black"
+                className="px-2 py-0.5 rounded-md bg-rose-50 dark:bg-rose-950/60 border border-rose-200 dark:border-rose-800 text-rose-700 dark:text-rose-300 text-xs font-bold tabular-nums hover:bg-rose-100"
               >
                 {isAr ? `${metrics.overLimitCount} تجاوز السقف` : `${metrics.overLimitCount} over`}
               </button>
@@ -645,76 +642,83 @@ export const CustomersView: React.FC = () => {
             setStatusFilter('debtors');
             setShowDebtorsDetailsModal(true);
           }}
-          className={`text-start p-4 rounded-3xl border transition-all cursor-pointer shadow-2xs ${
+          className={`text-start p-4 rounded-2xl border transition-all cursor-pointer shadow-2xs ${
             statusFilter === 'debtors'
-              ? 'bg-rose-50 dark:bg-rose-950/40 border-rose-400 ring-2 ring-rose-500/20'
+              ? 'bg-rose-50/60 dark:bg-rose-950/30 border-rose-400 ring-2 ring-rose-500/20'
               : 'bg-white dark:bg-slate-900 border-slate-200 dark:border-slate-800 hover:border-rose-300 dark:hover:border-rose-700'
           }`}
           title={isAr ? 'اضغط لعرض تفاصيل الزبناء اللي عليهم الدين وإنشاء دفع الدين' : 'Click to view debtor details & create payment'}
         >
-          <div className="flex items-center justify-between">
-            <span className="text-xs font-extrabold text-rose-700 dark:text-rose-300">
-              {isAr ? 'عليهم الدين' : 'Debtors'}
+          <div className="flex items-center justify-between gap-2">
+            <span className="text-xs font-semibold text-slate-600 dark:text-slate-300">
+              {isAr ? 'الزبناء المدينون' : 'Debtors'}
             </span>
-            <Users className="w-4 h-4 text-rose-500" />
+            <span className="w-7 h-7 rounded-lg bg-rose-50 dark:bg-rose-950/60 text-rose-600 dark:text-rose-400 flex items-center justify-center shrink-0">
+              <Users className="w-4 h-4" />
+            </span>
           </div>
-          <div className="flex items-baseline gap-2 mt-1">
-            <span className="text-xl sm:text-2xl font-black text-rose-600 dark:text-rose-400 tabular-nums">
+          <div className="flex items-baseline gap-2 mt-1.5">
+            <span className="text-xl sm:text-2xl font-extrabold text-rose-600 dark:text-rose-400 tabular-nums">
               {metrics.debtorsCount}
             </span>
-            <span className="text-xs font-bold text-rose-500/90 dark:text-rose-400/90 tabular-nums font-mono">
-              ({metrics.totalDebt.toFixed(2)} {currencySymbol})
+            <span className="text-xs font-bold text-slate-600 dark:text-slate-300 tabular-nums">
+              ({metrics.totalDebt.toFixed(0)} {currencySymbol})
             </span>
           </div>
-          <div className="text-[11px] font-semibold text-rose-600/80 dark:text-rose-400/80 mt-1">
-            {isAr ? 'اضغط للتفاصيل ودفع الدين ←' : 'Click for details & payment →'}
+          <div className="text-xs font-semibold text-rose-700 dark:text-rose-400 mt-1.5">
+            {isAr ? 'عرض القائمة وتسجيل الدفع ←' : 'View list & record payment →'}
           </div>
         </button>
 
         {/* Settled Customers Count */}
-        <div
+        <button
+          type="button"
           onClick={() => setStatusFilter(statusFilter === 'settled' ? 'all' : 'settled')}
-          className={`p-4 rounded-3xl border transition-all cursor-pointer shadow-2xs ${
+          className={`text-start p-4 rounded-2xl border transition-all cursor-pointer shadow-2xs ${
             statusFilter === 'settled'
-              ? 'bg-emerald-50 dark:bg-emerald-950/40 border-emerald-400 ring-2 ring-emerald-500/20'
-              : 'bg-white dark:bg-slate-900 border-slate-200 dark:border-slate-800 hover:border-slate-300'
+              ? 'bg-emerald-50/60 dark:bg-emerald-950/30 border-emerald-400 ring-2 ring-emerald-500/20'
+              : 'bg-white dark:bg-slate-900 border-slate-200 dark:border-slate-800 hover:border-emerald-300 dark:hover:border-emerald-700'
           }`}
           title={isAr ? 'انقر لتصفية الزبناء الخالصين' : 'Click to filter settled customers'}
         >
-          <div className="flex items-center justify-between">
-            <span className="text-xs font-bold text-slate-600 dark:text-slate-400">
-              {isAr ? 'الزبناء الخالصين (0 د.م)' : 'Settled Customers'}
+          <div className="flex items-center justify-between gap-2">
+            <span className="text-xs font-semibold text-slate-600 dark:text-slate-300">
+              {isAr ? 'الزبناء الخالصون' : 'Settled Customers'}
             </span>
-            <CheckCircle2 className="w-4 h-4 text-emerald-600" />
+            <span className="w-7 h-7 rounded-lg bg-emerald-50 dark:bg-emerald-950/60 text-emerald-600 dark:text-emerald-400 flex items-center justify-center shrink-0">
+              <CheckCircle2 className="w-4 h-4" />
+            </span>
           </div>
-          <div className="text-xl sm:text-2xl font-black text-emerald-600 dark:text-emerald-400 mt-1 tabular-nums">
+          <div className="text-xl sm:text-2xl font-extrabold text-emerald-700 dark:text-emerald-400 mt-1.5 tabular-nums">
             {metrics.settledCount}
           </div>
-          <div className="text-[11px] text-slate-400 mt-1">
-            {isAr ? 'حسابهم خالص تماماً' : 'Zero debt balance'}
+          <div className="text-xs text-slate-500 dark:text-slate-400 mt-1.5">
+            {isAr ? 'حسابهم خالص (0.00 د.م)' : 'Zero debt balance'}
           </div>
-        </div>
+        </button>
 
         {/* Total Collections + Collection Rate */}
-        <div className="p-4 rounded-3xl bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 shadow-2xs">
-          <div className="flex items-center justify-between">
-            <span className="text-xs font-bold text-slate-600 dark:text-slate-400">
+        <div className="p-4 rounded-2xl bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 shadow-2xs">
+          <div className="flex items-center justify-between gap-2">
+            <span className="text-xs font-semibold text-slate-600 dark:text-slate-300">
               {isAr ? 'التحصيل ونسبة الاستخلاص' : 'Collected & Rate'}
             </span>
-            <TrendingUp className="w-4 h-4 text-emerald-600" />
+            <span className="w-7 h-7 rounded-lg bg-emerald-50 dark:bg-emerald-950/60 text-emerald-600 dark:text-emerald-400 flex items-center justify-center shrink-0">
+              <TrendingUp className="w-4 h-4" />
+            </span>
           </div>
-          <div className="flex items-baseline justify-between gap-2 mt-1">
-            <div className="text-xl sm:text-2xl font-black text-slate-900 dark:text-white tabular-nums">
+          <div className="flex items-baseline justify-between gap-2 mt-1.5">
+            <div className="text-xl sm:text-2xl font-extrabold text-slate-900 dark:text-white tabular-nums">
               {metrics.totalPaymentsReceived.toFixed(0)}{' '}
-              <span className="text-xs font-sans text-slate-400">{currencySymbol}</span>
+              <span className="text-xs font-bold text-slate-500 dark:text-slate-400">{currencySymbol}</span>
             </div>
-            <span className="px-2 py-0.5 rounded-lg bg-emerald-50 dark:bg-emerald-950/60 text-emerald-700 dark:text-emerald-300 text-xs font-black font-mono tabular-nums">
+            <span className="px-2 py-0.5 rounded-lg bg-emerald-50 dark:bg-emerald-950/60 border border-emerald-200 dark:border-emerald-800 text-emerald-700 dark:text-emerald-300 text-xs font-bold font-mono tabular-nums">
               {metrics.collectionRatePct}%
             </span>
           </div>
-          <div className="w-full h-1.5 bg-slate-100 dark:bg-slate-800 rounded-full overflow-hidden mt-2">
+          <div className="w-full h-1.5 bg-slate-100 dark:bg-slate-800 rounded-full overflow-hidden mt-2.5">
             <div
-              className="h-full bg-emerald-500 transition-all"
+              className="h-full bg-emerald-600 transition-all"
               style={{ width: `${metrics.collectionRatePct}%` }}
             />
           </div>
@@ -722,10 +726,10 @@ export const CustomersView: React.FC = () => {
       </div>
 
       {/* Prominent Search, Filters, Sort & View Mode Toolbar */}
-      <div className="bg-white dark:bg-slate-900 rounded-3xl p-3 border border-slate-200 dark:border-slate-800 shadow-xs mb-4 shrink-0 flex flex-wrap items-center justify-between gap-3">
+      <div className="bg-white dark:bg-slate-900 rounded-2xl p-3 border border-slate-200 dark:border-slate-800 shadow-2xs mb-4 shrink-0 flex flex-wrap items-center justify-between gap-3">
         {/* Instant Search input */}
         <div className="relative flex-1 min-w-[230px]">
-          <Search className="absolute start-3.5 top-1/2 -translate-y-1/2 w-4 h-4 text-emerald-600 dark:text-emerald-400 pointer-events-none" />
+          <Search className="absolute start-3.5 top-1/2 -translate-y-1/2 w-4 h-4 text-slate-400 pointer-events-none" />
           <input
             type="text"
             value={searchQuery}
@@ -735,13 +739,13 @@ export const CustomersView: React.FC = () => {
                 ? 'ابحث بالاسم، رقم الهاتف، أو الملاحظات...'
                 : 'Search ledger by name, phone, or notes...'
             }
-            className="w-full py-2.5 ps-10 pe-10 text-xs sm:text-sm font-semibold bg-slate-50 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 rounded-2xl focus:outline-hidden focus:border-emerald-500 text-slate-900 dark:text-white transition-all shadow-2xs"
+            className="w-full py-2.5 ps-10 pe-10 text-xs sm:text-sm font-medium bg-slate-50 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 rounded-xl focus:outline-hidden focus:border-emerald-500 text-slate-900 dark:text-white transition-colors"
           />
           {searchQuery && (
             <button
               type="button"
               onClick={() => setSearchQuery('')}
-              className="absolute end-3 top-1/2 -translate-y-1/2 text-xs font-black text-slate-400 hover:text-slate-600 dark:hover:text-slate-200 bg-slate-200 dark:bg-slate-700 rounded-full w-5 h-5 flex items-center justify-center transition-colors"
+              className="absolute end-3 top-1/2 -translate-y-1/2 text-xs font-bold text-slate-500 hover:text-slate-700 dark:text-slate-300 dark:hover:text-white bg-slate-200 dark:bg-slate-700 rounded-full w-5 h-5 flex items-center justify-center transition-colors"
             >
               ×
             </button>
@@ -758,21 +762,31 @@ export const CustomersView: React.FC = () => {
             { id: 'settled' as const, label: isAr ? 'خالصين' : 'Settled', count: metrics.settledCount }
           ].map((chip) => {
             const isSelected = statusFilter === chip.id;
+            const activeClass =
+              chip.id === 'over_limit' || chip.id === 'overdue'
+                ? 'bg-rose-600 text-white shadow-xs'
+                : chip.id === 'debtors'
+                ? 'bg-amber-600 text-white shadow-xs'
+                : 'bg-emerald-600 text-white shadow-xs';
             return (
               <button
                 key={chip.id}
                 type="button"
                 onClick={() => setStatusFilter(chip.id)}
-                className={`px-3 py-1.5 rounded-xl text-xs font-bold transition-all shrink-0 flex items-center gap-1.5 ${
+                className={`min-h-[36px] px-3 py-1.5 rounded-xl text-xs font-semibold transition-all shrink-0 flex items-center gap-1.5 ${
                   isSelected
-                    ? chip.id === 'debtors' || chip.id === 'over_limit' || chip.id === 'overdue'
-                      ? 'bg-rose-600 text-white shadow-xs'
-                      : 'bg-emerald-600 text-white shadow-xs'
-                    : 'bg-slate-100 dark:bg-slate-800 text-slate-600 dark:text-slate-400 hover:bg-slate-200 dark:hover:bg-slate-700'
+                    ? activeClass
+                    : 'bg-slate-100 dark:bg-slate-800 text-slate-700 dark:text-slate-300 hover:bg-slate-200 dark:hover:bg-slate-700'
                 }`}
               >
                 <span>{chip.label}</span>
-                <span className={`px-1.5 py-0.2 rounded-full text-[10px] font-black ${isSelected ? 'bg-white/20 text-white' : 'bg-slate-200 dark:bg-slate-700 text-slate-700 dark:text-slate-300'}`}>
+                <span
+                  className={`px-1.5 py-0.5 rounded-md text-xs font-bold tabular-nums ${
+                    isSelected
+                      ? 'bg-white/20 text-white'
+                      : 'bg-slate-200 dark:bg-slate-700 text-slate-700 dark:text-slate-200'
+                  }`}
+                >
                   {chip.count}
                 </span>
               </button>
@@ -782,14 +796,14 @@ export const CustomersView: React.FC = () => {
 
         {/* Sort & View Toggle */}
         <div className="flex items-center gap-2 shrink-0">
-          <div className="flex items-center gap-1 bg-slate-100 dark:bg-slate-800 rounded-xl px-2.5 py-1.5 border border-slate-200 dark:border-slate-700">
-            <ArrowUpDown className="w-3.5 h-3.5 text-slate-400" />
+          <div className="flex items-center gap-1.5 bg-slate-100 dark:bg-slate-800 rounded-xl px-3 min-h-[36px] border border-slate-200 dark:border-slate-700">
+            <ArrowUpDown className="w-3.5 h-3.5 text-slate-500 dark:text-slate-400" />
             <select
               value={sortBy}
               onChange={(e) =>
                 setSortBy(e.target.value as 'debt_desc' | 'overdue' | 'recent' | 'over_limit' | 'name')
               }
-              className="bg-transparent text-xs font-bold text-slate-700 dark:text-slate-200 focus:outline-hidden"
+              className="bg-transparent text-xs font-semibold text-slate-800 dark:text-slate-200 focus:outline-hidden"
             >
               <option value="debt_desc" className="bg-white dark:bg-slate-900">
                 {isAr ? 'الأعلى ديناً' : 'Highest Debt'}
@@ -820,7 +834,7 @@ export const CustomersView: React.FC = () => {
               }`}
               title={isAr ? 'عرض بطاقات' : 'Cards View'}
             >
-              <LayoutGrid className="w-3.5 h-3.5" />
+              <LayoutGrid className="w-4 h-4" />
             </button>
             <button
               type="button"
@@ -832,7 +846,7 @@ export const CustomersView: React.FC = () => {
               }`}
               title={isAr ? 'عرض جدول الكناش المضغوط' : 'Compact Ledger Table'}
             >
-              <List className="w-3.5 h-3.5" />
+              <List className="w-4 h-4" />
             </button>
           </div>
         </div>
@@ -841,14 +855,14 @@ export const CustomersView: React.FC = () => {
       {/* Main Customers List / Cards / Table */}
       <div className="flex-1 overflow-y-auto">
         {filteredCustomers.length === 0 ? (
-          <div className="flex flex-col items-center justify-center h-64 text-center p-6 bg-white dark:bg-slate-900 rounded-3xl border border-slate-200 dark:border-slate-800 text-slate-400">
-            <Search className="w-10 h-10 mb-2 stroke-1 text-slate-300 dark:text-slate-600" />
-            <p className="text-sm font-bold text-slate-700 dark:text-slate-300">
+          <div className="flex flex-col items-center justify-center h-64 text-center p-6 bg-white dark:bg-slate-900 rounded-2xl border border-slate-200 dark:border-slate-800">
+            <Search className="w-10 h-10 mb-2 stroke-1 text-slate-400 dark:text-slate-500" />
+            <p className="text-sm font-bold text-slate-800 dark:text-slate-200">
               {searchQuery
                 ? (isAr ? `لا يوجد زبون مطابق للبحث: "${searchQuery}"` : `No customer matches: "${searchQuery}"`)
                 : (isAr ? 'لا يوجد زبناء في هذه الفئة' : 'No customers in this category')}
             </p>
-            <p className="text-xs text-slate-400 mt-1">
+            <p className="text-xs text-slate-500 dark:text-slate-400 mt-1">
               {isAr ? 'تأكد من كتابة الاسم أو رقم الهاتف أو أضف زبوناً جديداً' : 'Check name or phone, or add a new customer'}
             </p>
             <button
@@ -858,23 +872,23 @@ export const CustomersView: React.FC = () => {
                 setStatusFilter('all');
                 setShowAddCustomerModal(true);
               }}
-              className="mt-3.5 px-4 py-2 text-xs font-bold bg-emerald-600 hover:bg-emerald-700 text-white rounded-xl shadow-xs flex items-center gap-1.5"
+              className="mt-4 min-h-[40px] px-4 py-2 text-xs font-bold bg-emerald-600 hover:bg-emerald-700 text-white rounded-xl shadow-xs flex items-center gap-1.5"
             >
-              <Plus className="w-3.5 h-3.5" />
+              <Plus className="w-4 h-4" />
               <span>{isAr ? 'إضافة زبون جديد الآن' : 'Add New Customer'}</span>
             </button>
           </div>
         ) : viewMode === 'table' ? (
-          <div className="bg-white dark:bg-slate-900 rounded-3xl border border-slate-200 dark:border-slate-800 overflow-x-auto shadow-2xs mb-4">
+          <div className="bg-white dark:bg-slate-900 rounded-2xl border border-slate-200 dark:border-slate-800 overflow-x-auto shadow-2xs mb-4">
             <table className="w-full text-xs text-start">
-              <thead className="bg-slate-50 dark:bg-slate-800/80 text-slate-500 dark:text-slate-400 font-bold border-b border-slate-200 dark:border-slate-800">
+              <thead className="bg-slate-50 dark:bg-slate-800/80 text-slate-700 dark:text-slate-300 font-semibold border-b border-slate-200 dark:border-slate-800">
                 <tr>
-                  <th className="py-3 px-4 text-start">{isAr ? 'الزبون' : 'Customer'}</th>
-                  <th className="py-3 px-3 text-start">{isAr ? 'الهاتف' : 'Phone'}</th>
-                  <th className="py-3 px-3 text-start">{isAr ? 'آخر حركة' : 'Activity'}</th>
-                  <th className="py-3 px-3 text-start">{isAr ? 'نسبة السداد' : 'Repayment'}</th>
-                  <th className="py-3 px-3 text-end">{isAr ? 'الدين الحالي / السقف' : 'Balance / Limit'}</th>
-                  <th className="py-3 px-4 text-end">{isAr ? 'إجراءات سريعة' : 'Quick Actions'}</th>
+                  <th className="py-3.5 px-4 text-start">{isAr ? 'الزبون' : 'Customer'}</th>
+                  <th className="py-3.5 px-3 text-start">{isAr ? 'الهاتف' : 'Phone'}</th>
+                  <th className="py-3.5 px-3 text-start">{isAr ? 'آخر حركة' : 'Activity'}</th>
+                  <th className="py-3.5 px-3 text-start">{isAr ? 'نسبة السداد' : 'Repayment'}</th>
+                  <th className="py-3.5 px-3 text-end">{isAr ? 'الدين الحالي / السقف' : 'Balance / Limit'}</th>
+                  <th className="py-3.5 px-4 text-end">{isAr ? 'إجراءات سريعة' : 'Quick Actions'}</th>
                 </tr>
               </thead>
               <tbody className="divide-y divide-slate-100 dark:divide-slate-800">
@@ -890,23 +904,23 @@ export const CustomersView: React.FC = () => {
                         <button
                           type="button"
                           onClick={() => setSelectedCustomerPageId(cust.id)}
-                          className="font-black text-slate-900 dark:text-white hover:text-emerald-600 dark:hover:text-emerald-400 flex items-center gap-1.5 text-start"
+                          className="text-sm font-bold text-slate-900 dark:text-white hover:text-emerald-600 dark:hover:text-emerald-400 flex items-center gap-1.5 text-start"
                         >
                           <span>{cust.name}</span>
-                          <ExternalLink className="w-3 h-3 text-slate-400" />
+                          <ExternalLink className="w-3.5 h-3.5 text-slate-400" />
                         </button>
                         {cust.notes && (
-                          <div className="text-[11px] text-slate-400 truncate max-w-[200px]">
+                          <div className="text-xs text-slate-500 dark:text-slate-400 truncate max-w-[220px] mt-0.5">
                             {cust.notes}
                           </div>
                         )}
                       </td>
-                      <td className="py-3 px-3 font-mono font-semibold text-slate-600 dark:text-slate-300 whitespace-nowrap">
+                      <td className="py-3 px-3 font-mono tabular-nums font-medium text-slate-700 dark:text-slate-300 whitespace-nowrap">
                         {cust.phone}
                       </td>
-                      <td className="py-3 px-3 text-[11px] text-slate-500 dark:text-slate-400 whitespace-nowrap">
+                      <td className="py-3 px-3 text-xs text-slate-600 dark:text-slate-300 whitespace-nowrap">
                         <div>{formatLastActivity(cStats?.latestTxDate)}</div>
-                        <div className="text-[10px] text-slate-400">
+                        <div className="text-xs text-slate-500 dark:text-slate-400 tabular-nums">
                           {cStats?.txCount || 0} {isAr ? 'حركات' : 'txs'}
                         </div>
                       </td>
@@ -914,29 +928,29 @@ export const CustomersView: React.FC = () => {
                         <div className="flex items-center gap-2">
                           <div className="w-16 h-1.5 bg-slate-200 dark:bg-slate-700 rounded-full overflow-hidden">
                             <div
-                              className="h-full bg-emerald-500"
+                              className="h-full bg-emerald-600"
                               style={{ width: `${cStats?.repaymentRate ?? 100}%` }}
                             />
                           </div>
-                          <span className="font-mono text-[11px] font-bold text-slate-600 dark:text-slate-300">
+                          <span className="font-mono text-xs font-semibold text-slate-700 dark:text-slate-300 tabular-nums">
                             {cStats?.repaymentRate ?? 100}%
                           </span>
                         </div>
                       </td>
-                      <td className="py-3 px-3 text-end font-mono tabular-nums whitespace-nowrap">
+                      <td className="py-3 px-3 text-end tabular-nums whitespace-nowrap">
                         <div
-                          className={`font-black text-sm ${
+                          className={`font-extrabold text-sm ${
                             cStats?.isOverLimit
                               ? 'text-rose-600 dark:text-rose-400'
                               : hasDebt
-                              ? 'text-amber-600 dark:text-amber-400'
-                              : 'text-emerald-600 dark:text-emerald-400'
+                              ? 'text-amber-700 dark:text-amber-400'
+                              : 'text-emerald-700 dark:text-emerald-400'
                           }`}
                         >
                           {cust.balance.toFixed(2)} {currencySymbol}
                         </div>
                         {cust.creditLimit ? (
-                          <div className="text-[10px] text-slate-400">
+                          <div className="text-xs text-slate-500 dark:text-slate-400">
                             {isAr ? 'السقف:' : 'Max:'} {cust.creditLimit.toFixed(0)} {currencySymbol}
                           </div>
                         ) : null}
@@ -946,16 +960,16 @@ export const CustomersView: React.FC = () => {
                           <button
                             type="button"
                             onClick={() => setSelectedCustomerPageId(cust.id)}
-                            className="px-2.5 py-1.5 rounded-xl bg-slate-900 dark:bg-slate-700 hover:bg-slate-800 text-white text-[11px] font-bold flex items-center gap-1"
+                            className="min-h-[34px] px-2.5 py-1.5 rounded-lg bg-slate-100 dark:bg-slate-800 hover:bg-slate-200 dark:hover:bg-slate-700 text-slate-800 dark:text-slate-100 text-xs font-semibold flex items-center gap-1"
                           >
-                            <BookOpen className="w-3 h-3" />
+                            <BookOpen className="w-3.5 h-3.5 text-slate-600 dark:text-slate-300" />
                             <span>{isAr ? 'صفحة الزبون' : 'Page'}</span>
                           </button>
                           {hasDebt && (
                             <button
                               type="button"
                               onClick={() => openCreatePaymentModal(cust)}
-                              className="px-2.5 py-1.5 rounded-xl bg-emerald-600 hover:bg-emerald-700 text-white text-[11px] font-black"
+                              className="min-h-[34px] px-3 py-1.5 rounded-lg bg-emerald-600 hover:bg-emerald-700 text-white text-xs font-bold"
                             >
                               {isAr ? 'خلص' : 'Pay'}
                             </button>
@@ -967,16 +981,16 @@ export const CustomersView: React.FC = () => {
                               setNewDebtAmount(0);
                               setNewDebtNotes('');
                             }}
-                            className="px-2 py-1.5 rounded-xl bg-amber-100 dark:bg-amber-950/60 text-amber-800 dark:text-amber-300 text-[11px] font-bold"
+                            className="min-h-[34px] px-2.5 py-1.5 rounded-lg bg-amber-50 dark:bg-amber-950/50 border border-amber-300 dark:border-amber-700 text-amber-800 dark:text-amber-300 hover:bg-amber-100 text-xs font-bold"
                             title={isAr ? 'تقييد كريدي جديد' : 'Add debt'}
                           >
-                            +
+                            + {isAr ? 'دين' : 'Debt'}
                           </button>
                           {hasDebt && (
                             <button
                               type="button"
                               onClick={() => openWhatsAppModal(cust)}
-                              className="p-1.5 rounded-xl bg-emerald-50 dark:bg-emerald-950/60 text-emerald-700 dark:text-emerald-300"
+                              className="min-h-[34px] p-2 rounded-lg bg-emerald-50 dark:bg-emerald-950/50 border border-emerald-200 dark:border-emerald-800 text-emerald-700 dark:text-emerald-300 hover:bg-emerald-100"
                               title={isAr ? 'واتساب' : 'WhatsApp'}
                             >
                               <Send className="w-3.5 h-3.5" />
@@ -991,25 +1005,24 @@ export const CustomersView: React.FC = () => {
             </table>
           </div>
         ) : (
-          <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4 pb-4">
+          <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4 pb-6">
             {filteredCustomers.map((cust) => {
               const hasDebt = cust.balance > 0;
               const cStats = customerStatsMap.get(cust.id);
+              const isCriticalAlert = Boolean(cStats?.isOverLimit || cStats?.isOverdue);
 
               return (
                 <div
                   key={cust.id}
-                  className={`rounded-3xl p-5 border transition-all flex flex-col justify-between shadow-2xs ${
-                    cStats?.isOverLimit
-                      ? 'bg-white dark:bg-slate-900 border-rose-300 dark:border-rose-900/70 hover:shadow-md'
-                      : hasDebt
-                      ? 'bg-white dark:bg-slate-900 border-amber-300/80 dark:border-amber-900/60 hover:shadow-md'
-                      : 'bg-white dark:bg-slate-900 border-slate-200 dark:border-slate-800 hover:border-slate-300'
+                  className={`rounded-2xl p-5 bg-white dark:bg-slate-900 border transition-all flex flex-col justify-between shadow-2xs hover:shadow-sm ${
+                    isCriticalAlert
+                      ? 'border-rose-300 dark:border-rose-800/80'
+                      : 'border-slate-200 dark:border-slate-800 hover:border-slate-300 dark:hover:border-slate-700'
                   }`}
                 >
                   {/* Top Customer Info */}
                   <div>
-                    <div className="flex items-start justify-between gap-3 mb-3">
+                    <div className="flex items-start justify-between gap-3 mb-3.5">
                       <div className="min-w-0">
                         <button
                           type="button"
@@ -1017,96 +1030,88 @@ export const CustomersView: React.FC = () => {
                           className="group flex items-center gap-1.5 text-start"
                           title={isAr ? 'فتح الصفحة الخاصة للزبون في كناش الكريدي' : 'Open customer page'}
                         >
-                          <h4 className="font-black text-sm sm:text-base text-slate-900 dark:text-white group-hover:text-emerald-600 dark:group-hover:text-emerald-400 truncate transition-colors">
+                          <h4 className="font-bold text-base text-slate-900 dark:text-white group-hover:text-emerald-600 dark:group-hover:text-emerald-400 truncate transition-colors">
                             {cust.name}
                           </h4>
                           <ExternalLink className="w-3.5 h-3.5 text-slate-400 group-hover:text-emerald-500 shrink-0" />
                         </button>
 
-                        {/* Phone Number with Click-to-Call + Last activity */}
-                        <div className="flex flex-wrap items-center gap-x-3 gap-y-1 text-xs text-slate-600 dark:text-slate-400 mt-1">
+                        {/* Phone Number + Last Activity */}
+                        <div className="flex flex-wrap items-center gap-x-3 gap-y-1 text-xs text-slate-600 dark:text-slate-300 mt-1">
                           <a
                             href={`tel:${cust.phone}`}
-                            className="inline-flex items-center gap-1 font-mono font-semibold hover:underline hover:text-emerald-600"
+                            className="inline-flex items-center gap-1 font-mono tabular-nums font-semibold hover:underline hover:text-emerald-600 dark:hover:text-emerald-400"
                             title={isAr ? 'اتصال بالهاتف' : 'Call'}
                           >
                             <Phone className="w-3.5 h-3.5 text-emerald-600 dark:text-emerald-400 shrink-0" />
                             <span>{cust.phone}</span>
                           </a>
-                          <span className="inline-flex items-center gap-1 text-[10px] text-slate-400">
-                            <Clock className="w-3 h-3" />
+                          <span className="inline-flex items-center gap-1 text-xs text-slate-500 dark:text-slate-400">
+                            <Clock className="w-3.5 h-3.5" />
                             <span>{formatLastActivity(cStats?.latestTxDate)}</span>
                           </span>
                         </div>
 
                         {cust.notes && (
-                          <div className="text-[11px] text-slate-400 mt-1 line-clamp-1 italic">
+                          <p className="text-xs text-slate-600 dark:text-slate-300 mt-1.5 line-clamp-1 leading-relaxed">
                             {cust.notes}
-                          </div>
+                          </p>
                         )}
                       </div>
 
-                      {/* Status Badge */}
-                      <div className="flex flex-col items-end gap-1">
+                      {/* Single Clean Semantic Status Badge */}
+                      <div className="shrink-0">
                         {cStats?.isOverLimit ? (
-                          <span className="px-2.5 py-1 rounded-xl text-[10px] font-extrabold bg-rose-100 text-rose-800 dark:bg-rose-950/80 dark:text-rose-300 border border-rose-300 dark:border-rose-800 flex items-center gap-1 shrink-0">
-                            <ShieldAlert className="w-3 h-3 text-rose-600" />
+                          <span className="px-2.5 py-1 rounded-lg text-xs font-semibold bg-rose-50 text-rose-700 dark:bg-rose-950/70 dark:text-rose-300 border border-rose-200 dark:border-rose-800 inline-flex items-center gap-1">
+                            <ShieldAlert className="w-3.5 h-3.5 text-rose-600 dark:text-rose-400" />
                             <span>{isAr ? 'تجاوز السقف' : 'Over Limit'}</span>
                           </span>
                         ) : cStats?.isOverdue ? (
-                          <span className="px-2.5 py-1 rounded-xl text-[10px] font-extrabold bg-rose-100 text-rose-800 dark:bg-rose-950/80 dark:text-rose-300 border border-rose-300 dark:border-rose-800 flex items-center gap-1 shrink-0 tabular-nums">
-                            <Clock className="w-3 h-3 text-rose-600" />
+                          <span className="px-2.5 py-1 rounded-lg text-xs font-semibold bg-rose-50 text-rose-700 dark:bg-rose-950/70 dark:text-rose-300 border border-rose-200 dark:border-rose-800 inline-flex items-center gap-1 tabular-nums">
+                            <Clock className="w-3.5 h-3.5 text-rose-600 dark:text-rose-400" />
                             <span>
-                              {isAr ? `متأخر (${cStats.daysInactive} يوم)` : `Overdue (${cStats.daysInactive}d)`}
+                              {isAr ? `متأخر (${cStats.daysInactive} ي)` : `Overdue (${cStats.daysInactive}d)`}
                             </span>
                           </span>
                         ) : hasDebt ? (
-                          <span className="px-2.5 py-1 rounded-xl text-[10px] font-extrabold bg-amber-100 text-amber-800 dark:bg-amber-950/80 dark:text-amber-300 border border-amber-300 dark:border-amber-800 flex items-center gap-1 shrink-0">
-                            <AlertTriangle className="w-3 h-3 text-amber-600" />
+                          <span className="px-2.5 py-1 rounded-lg text-xs font-semibold bg-amber-50 text-amber-800 dark:bg-amber-950/70 dark:text-amber-300 border border-amber-200 dark:border-amber-800 inline-flex items-center gap-1">
+                            <AlertTriangle className="w-3.5 h-3.5 text-amber-600 dark:text-amber-400" />
                             <span>{isAr ? 'عليه كريدي' : 'Debt Due'}</span>
                           </span>
                         ) : (
-                          <span className="px-2.5 py-1 rounded-xl text-[10px] font-extrabold bg-emerald-50 text-emerald-700 dark:bg-emerald-950/60 dark:text-emerald-300 border border-emerald-200 dark:border-emerald-800 flex items-center gap-1 shrink-0">
-                            <CheckCircle2 className="w-3 h-3 text-emerald-600" />
+                          <span className="px-2.5 py-1 rounded-lg text-xs font-semibold bg-emerald-50 text-emerald-700 dark:bg-emerald-950/60 dark:text-emerald-300 border border-emerald-200 dark:border-emerald-800 inline-flex items-center gap-1">
+                            <CheckCircle2 className="w-3.5 h-3.5 text-emerald-600 dark:text-emerald-400" />
                             <span>{isAr ? 'خالص' : 'Settled'}</span>
                           </span>
                         )}
                       </div>
                     </div>
 
-                    {/* Prominent Credit Ledger Box */}
-                    <div
-                      className={`p-3.5 rounded-2xl mb-3 space-y-2 border ${
-                        cStats?.isOverLimit
-                          ? 'bg-rose-500/10 border-rose-300 dark:border-rose-800'
-                          : hasDebt
-                          ? 'bg-amber-500/10 border-amber-200 dark:border-amber-800/80'
-                          : 'bg-slate-50 dark:bg-slate-800/50 border-slate-200 dark:border-slate-800'
-                      }`}
-                    >
-                      <div className="flex items-center justify-between gap-2">
+                    {/* Clean Unboxed Balance & Primary Actions Section */}
+                    <div className="pt-3.5 border-t border-slate-100 dark:border-slate-800 space-y-3 mb-3.5">
+                      <div className="flex items-center justify-between gap-3">
                         <div>
-                          <div className="text-[10px] font-bold text-slate-500 dark:text-slate-400 uppercase tracking-wider flex items-center gap-1.5">
-                            <span>{isAr ? 'رصيد الكريدي المستحق' : 'Outstanding Credit'}</span>
+                          <div className="text-xs font-medium text-slate-600 dark:text-slate-300">
+                            {isAr ? 'رصيد الكريدي المستحق' : 'Outstanding Credit'}
                           </div>
                           <div
-                            className={`text-xl sm:text-2xl font-black tabular-nums ${
+                            className={`text-2xl font-extrabold tabular-nums mt-0.5 ${
                               cStats?.isOverLimit
                                 ? 'text-rose-600 dark:text-rose-400'
                                 : hasDebt
-                                ? 'text-amber-600 dark:text-amber-400'
-                                : 'text-slate-700 dark:text-slate-300'
+                                ? 'text-amber-700 dark:text-amber-400'
+                                : 'text-emerald-700 dark:text-emerald-400'
                             }`}
                           >
                             {cust.balance.toFixed(2)}{' '}
-                            <span className="text-xs font-sans text-slate-500">
+                            <span className="text-xs font-bold text-slate-500 dark:text-slate-400">
                               {currencySymbol}
                             </span>
                           </div>
                         </div>
 
-                        {/* Fast Action: Settle + Add Debt */}
-                        <div className="flex items-center gap-1.5">
+                        {/* Semantically Distinct Fast Actions: Amber (+Debt) vs Emerald (Settle) */}
+                        <div className="flex items-center gap-1.5 shrink-0">
                           <button
                             type="button"
                             onClick={() => {
@@ -1114,7 +1119,7 @@ export const CustomersView: React.FC = () => {
                               setNewDebtAmount(0);
                               setNewDebtNotes('');
                             }}
-                            className="px-2.5 py-1.5 text-xs font-black rounded-xl bg-white dark:bg-slate-900 border border-amber-300 dark:border-amber-700 hover:bg-amber-50 dark:hover:bg-amber-950/40 text-amber-800 dark:text-amber-300 transition-colors flex items-center gap-1"
+                            className="min-h-[38px] px-3 py-1.5 text-xs font-bold rounded-xl bg-amber-50 dark:bg-amber-950/50 border border-amber-300 dark:border-amber-700 hover:bg-amber-100 dark:hover:bg-amber-900/50 text-amber-800 dark:text-amber-300 transition-colors flex items-center gap-1"
                             title={isAr ? 'تقييد كريدي جديد على الحساب' : 'Record Credit'}
                           >
                             <Plus className="w-3.5 h-3.5" />
@@ -1124,144 +1129,124 @@ export const CustomersView: React.FC = () => {
                             <button
                               type="button"
                               onClick={() => openCreatePaymentModal(cust)}
-                              className="px-3 py-1.5 text-xs font-black rounded-xl bg-amber-500 hover:bg-amber-600 text-white shadow-xs transition-all active:scale-95 flex items-center gap-1"
+                              className="min-h-[38px] px-3.5 py-1.5 text-xs font-bold rounded-xl bg-emerald-600 hover:bg-emerald-700 text-white shadow-xs transition-all active:scale-95 flex items-center gap-1"
                               title={isAr ? 'إنشاء دفع الدين وتسديد الكريدي' : 'Settle Debt'}
                             >
-                              <Check className="w-3.5 h-3.5 stroke-[3]" />
+                              <Check className="w-3.5 h-3.5 stroke-[2.5]" />
                               <span>{isAr ? 'خلص' : 'Settle'}</span>
                             </button>
                           )}
                         </div>
                       </div>
 
-                      {/* Credit Limit bar & inline editor trigger */}
-                      <div className="pt-1.5 border-t border-slate-200/70 dark:border-slate-700/60 flex items-center justify-between gap-2 text-[10px]">
-                        <span className="text-slate-500 font-semibold">
-                          {cust.creditLimit && cust.creditLimit > 0
-                            ? `${isAr ? 'السقف:' : 'Limit:'} ${cust.creditLimit.toFixed(0)} ${currencySymbol} (${Math.min(999, cStats?.limitUsagePct || 0)}%)`
-                            : isAr
-                            ? 'بدون سقف محدد'
-                            : 'No limit set'}
-                        </span>
-                        <button
-                          type="button"
-                          onClick={() => {
-                            setCreditLimitModalCustomer(cust);
-                            setDraftCreditLimit(cust.creditLimit ? String(cust.creditLimit) : '');
-                          }}
-                          className="text-emerald-700 dark:text-emerald-400 font-bold hover:underline"
-                        >
-                          {cust.creditLimit ? (isAr ? 'تعديل السقف' : 'Edit Limit') : isAr ? '+ تحديد السقف' : '+ Set Limit'}
-                        </button>
-                      </div>
-
-                      {/* Repayment mini-bar */}
-                      {cStats && cStats.txCount > 0 && (
-                        <div className="space-y-1">
-                          <div className="flex items-center justify-between text-[10px] text-slate-500 dark:text-slate-400">
-                            <span>{isAr ? 'نسبة السداد والالتزام' : 'Repayment rate'}</span>
-                            <span className="font-mono font-bold text-emerald-600 dark:text-emerald-400">
-                              {cStats.repaymentRate}% ({cStats.txCount} {isAr ? 'حركة' : 'txs'})
-                            </span>
-                          </div>
-                          <div className="w-full h-1 bg-slate-200 dark:bg-slate-700 rounded-full overflow-hidden">
-                            <div
-                              className="h-full bg-emerald-500 transition-all"
-                              style={{ width: `${cStats.repaymentRate}%` }}
-                            />
-                          </div>
+                      {/* Credit Limit & Repayment Rate */}
+                      <div className="space-y-1.5 text-xs">
+                        <div className="flex items-center justify-between gap-2 text-slate-600 dark:text-slate-300">
+                          <span className="tabular-nums font-medium">
+                            {cust.creditLimit && cust.creditLimit > 0
+                              ? `${isAr ? 'السقف:' : 'Limit:'} ${cust.creditLimit.toFixed(0)} ${currencySymbol} (${Math.min(999, cStats?.limitUsagePct || 0)}%)`
+                              : isAr
+                              ? 'بدون سقف محدد'
+                              : 'No limit set'}
+                          </span>
+                          <button
+                            type="button"
+                            onClick={() => {
+                              setCreditLimitModalCustomer(cust);
+                              setDraftCreditLimit(cust.creditLimit ? String(cust.creditLimit) : '');
+                            }}
+                            className="text-emerald-700 dark:text-emerald-400 font-semibold hover:underline"
+                          >
+                            {cust.creditLimit ? (isAr ? 'تعديل السقف' : 'Edit Limit') : isAr ? '+ تحديد السقف' : '+ Set Limit'}
+                          </button>
                         </div>
-                      )}
+
+                        {cStats && cStats.txCount > 0 && (
+                          <div className="space-y-1">
+                            <div className="flex items-center justify-between text-xs text-slate-600 dark:text-slate-300">
+                              <span>{isAr ? 'نسبة السداد والالتزام' : 'Repayment rate'}</span>
+                              <span className="font-mono font-bold text-emerald-700 dark:text-emerald-400 tabular-nums">
+                                {cStats.repaymentRate}% ({cStats.txCount})
+                              </span>
+                            </div>
+                            <div className="w-full h-1.5 bg-slate-100 dark:bg-slate-800 rounded-full overflow-hidden">
+                              <div
+                                className="h-full bg-emerald-600 transition-all"
+                                style={{ width: `${cStats.repaymentRate}%` }}
+                              />
+                            </div>
+                          </div>
+                        )}
+                      </div>
                     </div>
 
-                    {/* Secondary Metrics: Loyalty Points & Purchases */}
-                    <div className="grid grid-cols-2 gap-2 text-[11px] p-2.5 rounded-xl bg-slate-50 dark:bg-slate-800/40 text-slate-600 dark:text-slate-400 mb-3 font-medium">
-                      <div className="flex items-center justify-between gap-1">
-                        <span>{t.points}:</span>
-                        <span className="font-bold text-emerald-600 dark:text-emerald-400 tabular-nums">
-                          {cust.points} pts · {((cust.points || 0) * (settings.loyaltyPointValue ?? 1)).toFixed(0)} {currencySymbol}
+                    {/* Quiet Summary Strip: Loyalty Points & Orders */}
+                    <div className="flex items-center justify-between gap-3 pt-2.5 border-t border-slate-100 dark:border-slate-800 text-xs text-slate-600 dark:text-slate-300 mb-3">
+                      <div className="tabular-nums">
+                        <span className="text-slate-500 dark:text-slate-400">{t.points}: </span>
+                        <span className="font-bold text-emerald-700 dark:text-emerald-400">
+                          {cust.points} ({((cust.points || 0) * (settings.loyaltyPointValue ?? 1)).toFixed(0)} {currencySymbol})
                         </span>
                       </div>
-                      <div className="flex items-center justify-between">
-                        <span>{isAr ? 'المشتريات' : 'Orders'}:</span>
-                        <span className="font-bold text-slate-900 dark:text-white tabular-nums">
+                      <div className="tabular-nums">
+                        <span className="text-slate-500 dark:text-slate-400">{isAr ? 'المشتريات' : 'Orders'}: </span>
+                        <span className="font-bold text-slate-900 dark:text-white">
                           {cust.ordersCount} ({cust.totalSpent.toFixed(0)} {currencySymbol})
                         </span>
                       </div>
                     </div>
                   </div>
 
-                  {/* Action Toolbar for this Customer */}
-                  <div className="pt-3 border-t border-slate-100 dark:border-slate-800 flex items-center justify-between gap-1">
-                    <div className="flex flex-wrap items-center gap-1">
-                      {/* Dedicated Customer Page CTA */}
+                  {/* Clean Action Footer */}
+                  <div className="pt-3 border-t border-slate-100 dark:border-slate-800 flex items-center justify-between gap-1.5">
+                    <div className="flex flex-wrap items-center gap-1.5">
                       <button
                         type="button"
                         onClick={() => setSelectedCustomerPageId(cust.id)}
-                        className="px-2.5 py-1.5 rounded-xl text-xs font-black text-white bg-slate-900 dark:bg-slate-700 hover:bg-slate-800 dark:hover:bg-slate-600 transition-colors flex items-center gap-1"
+                        className="min-h-[36px] px-3 py-1.5 rounded-xl text-xs font-bold text-white bg-slate-900 dark:bg-slate-700 hover:bg-slate-800 dark:hover:bg-slate-600 transition-colors flex items-center gap-1.5"
                         title={isAr ? 'فتح الصفحة الكاملة للزبون في كناش الكريدي' : 'Open Customer Page'}
                       >
                         <BookOpen className="w-3.5 h-3.5 text-amber-400" />
                         <span>{isAr ? 'صفحة الزبون' : 'Page'}</span>
                       </button>
 
-                      {/* Print Itemized Debt Invoice */}
                       <button
                         type="button"
                         onClick={() => setDebtInvoiceCustomer(cust)}
-                        className="px-2 py-1.5 rounded-xl text-xs font-bold text-amber-800 dark:text-amber-300 bg-amber-50 dark:bg-amber-950/50 hover:bg-amber-100 border border-amber-200 dark:border-amber-800 transition-colors flex items-center gap-1"
+                        className="min-h-[36px] px-2.5 py-1.5 rounded-xl text-xs font-semibold text-slate-700 dark:text-slate-200 bg-slate-100 dark:bg-slate-800 hover:bg-slate-200 dark:hover:bg-slate-700 transition-colors flex items-center gap-1"
                         title={isAr ? 'طبع فاتورة الدين بتفاصيل المشتريات' : 'Print Debt Invoice'}
                       >
-                        <Printer className="w-3.5 h-3.5 text-amber-600 dark:text-amber-400" />
+                        <Printer className="w-4 h-4 text-slate-600 dark:text-slate-300" />
                       </button>
 
-                      {/* Direct WhatsApp Reminder */}
                       {hasDebt && (
                         <button
                           type="button"
                           onClick={() => openWhatsAppModal(cust)}
-                          className="px-2 py-1.5 rounded-xl text-xs font-bold text-emerald-700 dark:text-emerald-300 bg-emerald-50 dark:bg-emerald-950/50 hover:bg-emerald-100 border border-emerald-200 dark:border-emerald-800 transition-colors flex items-center gap-1"
+                          className="min-h-[36px] px-2.5 py-1.5 rounded-xl text-xs font-semibold text-emerald-700 dark:text-emerald-300 bg-emerald-50 dark:bg-emerald-950/50 hover:bg-emerald-100 border border-emerald-200 dark:border-emerald-800 transition-colors flex items-center gap-1"
                           title={isAr ? 'إرسال تذكير بالكريدي عبر واتساب' : 'Send WhatsApp Reminder'}
                         >
-                          <Send className="w-3.5 h-3.5 text-emerald-600" />
+                          <Send className="w-4 h-4" />
                         </button>
                       )}
 
-                      {/* Quick Statement modal */}
                       <button
                         type="button"
                         onClick={() => setStatementCustomer(cust)}
-                        className="px-2 py-1.5 rounded-xl text-xs font-bold text-slate-600 dark:text-slate-300 bg-slate-100 dark:bg-slate-800 hover:bg-slate-200 dark:hover:bg-slate-700 transition-colors"
+                        className="min-h-[36px] px-2.5 py-1.5 rounded-xl text-xs font-semibold text-slate-600 dark:text-slate-300 bg-slate-100 dark:bg-slate-800 hover:bg-slate-200 dark:hover:bg-slate-700 transition-colors"
                         title={isAr ? 'كشف حساب سريع' : 'Quick Ledger'}
                       >
-                        <History className="w-3.5 h-3.5" />
+                        <History className="w-4 h-4" />
                       </button>
-
-                      {/* Add new debt */}
-                      {hasDebt && (
-                        <button
-                          type="button"
-                          onClick={() => {
-                            setAddDebtModalCustomer(cust);
-                            setNewDebtAmount(0);
-                            setNewDebtNotes('');
-                          }}
-                          className="px-2 py-1.5 rounded-xl text-xs font-bold text-slate-600 hover:text-slate-900 dark:text-slate-400 hover:bg-slate-100 dark:hover:bg-slate-800 transition-colors"
-                          title={isAr ? 'تقييد كريدي جديد' : 'Add Debt'}
-                        >
-                          <Plus className="w-3.5 h-3.5" />
-                        </button>
-                      )}
                     </div>
 
-                    {/* Delete Customer */}
                     <button
                       type="button"
                       onClick={() => setDeletingCustomer(cust)}
-                      className="p-1.5 text-slate-400 hover:text-rose-600 rounded-lg hover:bg-rose-50 dark:hover:bg-rose-950/40 transition-colors"
+                      className="min-h-[36px] px-2 py-1.5 text-slate-400 hover:text-rose-600 rounded-xl hover:bg-rose-50 dark:hover:bg-rose-950/40 transition-colors"
                       title={isAr ? 'حذف العميل' : 'Delete'}
                     >
-                      <Trash2 className="w-3.5 h-3.5" />
+                      <Trash2 className="w-4 h-4" />
                     </button>
                   </div>
                 </div>
@@ -1318,29 +1303,29 @@ export const CustomersView: React.FC = () => {
 
             {/* Summary Strip */}
             <div className="grid grid-cols-3 gap-2.5 shrink-0">
-              <div className="p-3 rounded-2xl bg-rose-50/80 dark:bg-rose-950/30 border border-rose-200 dark:border-rose-900/60">
-                <div className="text-[11px] font-bold text-rose-700 dark:text-rose-300">
+              <div className="p-3.5 rounded-2xl bg-white dark:bg-slate-800/70 border border-slate-200 dark:border-slate-700">
+                <div className="text-xs font-semibold text-slate-600 dark:text-slate-300">
                   {isAr ? 'إجمالي الدين المعلق' : 'Total Debt'}
                 </div>
-                <div className="text-base sm:text-lg font-black text-rose-600 dark:text-rose-400 font-mono tabular-nums mt-0.5">
+                <div className="text-base sm:text-lg font-extrabold text-rose-600 dark:text-rose-400 tabular-nums mt-0.5">
                   {metrics.totalDebt.toFixed(2)} {currencySymbol}
                 </div>
               </div>
 
-              <div className="p-3 rounded-2xl bg-amber-50/80 dark:bg-amber-950/30 border border-amber-200 dark:border-amber-900/60">
-                <div className="text-[11px] font-bold text-amber-800 dark:text-amber-300">
+              <div className="p-3.5 rounded-2xl bg-white dark:bg-slate-800/70 border border-slate-200 dark:border-slate-700">
+                <div className="text-xs font-semibold text-slate-600 dark:text-slate-300">
                   {isAr ? 'عدد اللي عليهم الدين' : 'Debtors Count'}
                 </div>
-                <div className="text-base sm:text-lg font-black text-amber-600 dark:text-amber-400 font-mono tabular-nums mt-0.5">
+                <div className="text-base sm:text-lg font-extrabold text-amber-700 dark:text-amber-400 tabular-nums mt-0.5">
                   {debtorsList.length}
                 </div>
               </div>
 
-              <div className="p-3 rounded-2xl bg-emerald-50/80 dark:bg-emerald-950/30 border border-emerald-200 dark:border-emerald-900/60">
-                <div className="text-[11px] font-bold text-emerald-700 dark:text-emerald-300">
+              <div className="p-3.5 rounded-2xl bg-white dark:bg-slate-800/70 border border-slate-200 dark:border-slate-700">
+                <div className="text-xs font-semibold text-slate-600 dark:text-slate-300">
                   {isAr ? 'الدفعات المحصلة' : 'Collected'}
                 </div>
-                <div className="text-base sm:text-lg font-black text-emerald-600 dark:text-emerald-400 font-mono tabular-nums mt-0.5">
+                <div className="text-base sm:text-lg font-extrabold text-emerald-700 dark:text-emerald-400 tabular-nums mt-0.5">
                   {metrics.totalPaymentsReceived.toFixed(2)} {currencySymbol}
                 </div>
               </div>
@@ -1355,13 +1340,13 @@ export const CustomersView: React.FC = () => {
                   value={debtorsModalSearch}
                   onChange={(e) => setDebtorsModalSearch(e.target.value)}
                   placeholder={isAr ? 'ابحث في قائمة المدينين بالاسم أو الهاتف...' : 'Search debtors by name or phone...'}
-                  className="w-full py-2 ps-10 pe-9 text-xs font-semibold bg-slate-50 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 rounded-xl text-slate-900 dark:text-white focus:outline-hidden focus:border-rose-500"
+                  className="w-full py-2.5 ps-10 pe-9 text-xs sm:text-sm font-medium bg-slate-50 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 rounded-xl text-slate-900 dark:text-white focus:outline-hidden focus:border-emerald-500"
                 />
                 {debtorsModalSearch && (
                   <button
                     type="button"
                     onClick={() => setDebtorsModalSearch('')}
-                    className="absolute end-3 top-1/2 -translate-y-1/2 text-slate-400 hover:text-slate-600 text-xs font-bold"
+                    className="absolute end-3 top-1/2 -translate-y-1/2 text-slate-500 hover:text-slate-700 dark:text-slate-300 text-xs font-bold"
                   >
                     ×
                   </button>
@@ -1396,31 +1381,31 @@ export const CustomersView: React.FC = () => {
                   return (
                     <div
                       key={cust.id}
-                      className="p-4 rounded-2xl bg-slate-50/70 dark:bg-slate-800/50 border border-slate-200 dark:border-slate-700/80 space-y-3"
+                      className="p-4 rounded-2xl bg-white dark:bg-slate-800/40 border border-slate-200 dark:border-slate-700/80 space-y-3"
                     >
                       {/* Top row: Customer & Balance */}
                       <div className="flex flex-wrap items-start justify-between gap-3">
                         <div className="min-w-0">
                           <div className="flex items-center gap-2">
-                            <h4 className="font-black text-sm text-slate-900 dark:text-white">
+                            <h4 className="font-bold text-sm sm:text-base text-slate-900 dark:text-white">
                               {cust.name}
                             </h4>
-                            <span className="text-[11px] font-mono font-bold text-slate-500 dark:text-slate-400">
+                            <span className="text-xs font-mono tabular-nums font-medium text-slate-600 dark:text-slate-300">
                               {cust.phone}
                             </span>
                           </div>
                           {cust.notes && (
-                            <p className="text-[11px] text-slate-500 dark:text-slate-400 mt-0.5">
+                            <p className="text-xs text-slate-600 dark:text-slate-300 mt-0.5 leading-relaxed">
                               {cust.notes}
                             </p>
                           )}
                         </div>
 
                         <div className="text-end">
-                          <div className="text-[10px] font-bold text-slate-500 dark:text-slate-400">
+                          <div className="text-xs font-medium text-slate-500 dark:text-slate-400">
                             {isAr ? 'الدين المتبقي بذمته' : 'Remaining Debt'}
                           </div>
-                          <div className="text-lg font-black text-rose-600 dark:text-rose-400 font-mono tabular-nums">
+                          <div className="text-lg font-extrabold text-amber-700 dark:text-amber-400 tabular-nums">
                             {cust.balance.toFixed(2)} {currencySymbol}
                           </div>
                         </div>
@@ -1428,16 +1413,16 @@ export const CustomersView: React.FC = () => {
 
                       {/* Debt vs Paid Stats + Progress Bar */}
                       <div className="space-y-1.5">
-                        <div className="flex flex-wrap items-center justify-between gap-2 text-[11px] text-slate-600 dark:text-slate-300">
+                        <div className="flex flex-wrap items-center justify-between gap-2 text-xs text-slate-600 dark:text-slate-300">
                           <span>
                             {isAr ? 'إجمالي الكريدي:' : 'Total Debt:'}{' '}
-                            <strong className="font-mono tabular-nums text-slate-900 dark:text-white">
+                            <strong className="tabular-nums text-slate-900 dark:text-white">
                               {baseTotal.toFixed(2)} {currencySymbol}
                             </strong>
                           </span>
                           <span>
                             {isAr ? 'المسدد سابقاً:' : 'Paid:'}{' '}
-                            <strong className="font-mono tabular-nums text-emerald-600 dark:text-emerald-400">
+                            <strong className="tabular-nums text-emerald-700 dark:text-emerald-400">
                               {totalPaid.toFixed(2)} {currencySymbol} ({paidPct}%)
                             </strong>
                           </span>
@@ -1448,7 +1433,7 @@ export const CustomersView: React.FC = () => {
                         </div>
                         <div className="w-full h-1.5 bg-slate-200 dark:bg-slate-700 rounded-full overflow-hidden">
                           <div
-                            className="h-full bg-emerald-500 transition-all duration-300"
+                            className="h-full bg-emerald-600 transition-all duration-300"
                             style={{ width: `${paidPct}%` }}
                           />
                         </div>
@@ -1456,20 +1441,20 @@ export const CustomersView: React.FC = () => {
 
                       {/* Recent Credit Movements Preview */}
                       {recentTxs.length > 0 && (
-                        <div className="bg-white dark:bg-slate-900 rounded-xl border border-slate-200/80 dark:border-slate-700/70 divide-y divide-slate-100 dark:divide-slate-800">
+                        <div className="bg-slate-50 dark:bg-slate-900/70 rounded-xl border border-slate-200/80 dark:border-slate-700/70 divide-y divide-slate-100 dark:divide-slate-800">
                           {recentTxs.map((tx) => {
                             const isDebtTx = tx.type === 'debt';
                             return (
                               <div
                                 key={tx.id}
-                                className="px-3 py-2 flex items-center justify-between gap-2 text-[11px]"
+                                className="px-3 py-2 flex items-center justify-between gap-2 text-xs"
                               >
                                 <div className="flex items-center gap-2 min-w-0">
                                   <span
-                                    className={`font-extrabold shrink-0 ${
+                                    className={`font-bold shrink-0 ${
                                       isDebtTx
                                         ? 'text-rose-600 dark:text-rose-400'
-                                        : 'text-emerald-600 dark:text-emerald-400'
+                                        : 'text-emerald-700 dark:text-emerald-400'
                                     }`}
                                   >
                                     {isDebtTx ? (isAr ? 'دين' : 'Debt') : (isAr ? 'دفع' : 'Paid')}
@@ -1477,7 +1462,7 @@ export const CustomersView: React.FC = () => {
                                   <span className="text-slate-700 dark:text-slate-300 truncate">
                                     {tx.notes || (isDebtTx ? 'تقييد دين' : 'سداد دين')}
                                   </span>
-                                  <span className="text-slate-400 font-mono shrink-0">
+                                  <span className="text-slate-500 dark:text-slate-400 font-mono shrink-0">
                                     {new Date(tx.date).toLocaleDateString('ar-MA', {
                                       month: 'short',
                                       day: 'numeric'
@@ -1485,10 +1470,10 @@ export const CustomersView: React.FC = () => {
                                   </span>
                                 </div>
                                 <span
-                                  className={`font-black font-mono tabular-nums shrink-0 ${
+                                  className={`font-bold tabular-nums shrink-0 ${
                                     isDebtTx
                                       ? 'text-rose-600 dark:text-rose-400'
-                                      : 'text-emerald-600 dark:text-emerald-400'
+                                      : 'text-emerald-700 dark:text-emerald-400'
                                   }`}
                                 >
                                   {isDebtTx ? '+' : '-'}{tx.amount.toFixed(2)} {currencySymbol}
@@ -1505,9 +1490,9 @@ export const CustomersView: React.FC = () => {
                           <button
                             type="button"
                             onClick={() => openCreatePaymentModal(cust)}
-                            className="px-3 py-1.5 text-xs font-extrabold rounded-xl bg-emerald-600 hover:bg-emerald-700 text-white shadow-xs transition-all active:scale-95 flex items-center gap-1.5"
+                            className="min-h-[36px] px-3 py-1.5 text-xs font-bold rounded-xl bg-emerald-600 hover:bg-emerald-700 text-white shadow-xs transition-all active:scale-95 flex items-center gap-1.5"
                           >
-                            <Check className="w-3.5 h-3.5 stroke-[3]" />
+                            <Check className="w-3.5 h-3.5 stroke-[2.5]" />
                             <span>{isAr ? 'إنشاء دفع الدين' : 'Create Payment'}</span>
                           </button>
 
@@ -1517,7 +1502,7 @@ export const CustomersView: React.FC = () => {
                               setShowDebtorsDetailsModal(false);
                               setSelectedCustomerPageId(cust.id);
                             }}
-                            className="px-3 py-1.5 text-xs font-black rounded-xl bg-slate-900 dark:bg-slate-700 hover:bg-slate-800 text-white flex items-center gap-1.5"
+                            className="min-h-[36px] px-3 py-1.5 text-xs font-bold rounded-xl bg-slate-900 dark:bg-slate-700 hover:bg-slate-800 text-white flex items-center gap-1.5"
                           >
                             <BookOpen className="w-3.5 h-3.5 text-amber-400" />
                             <span>{isAr ? 'صفحة الزبون' : 'Customer Page'}</span>
@@ -1526,19 +1511,19 @@ export const CustomersView: React.FC = () => {
                           <button
                             type="button"
                             onClick={() => setStatementCustomer(cust)}
-                            className="px-3 py-1.5 text-xs font-bold rounded-xl bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-700 text-slate-700 dark:text-slate-200 hover:bg-slate-100 dark:hover:bg-slate-800 flex items-center gap-1.5"
+                            className="min-h-[36px] px-3 py-1.5 text-xs font-semibold rounded-xl bg-slate-100 dark:bg-slate-800 text-slate-700 dark:text-slate-200 hover:bg-slate-200 dark:hover:bg-slate-700 flex items-center gap-1.5"
                           >
                             <History className="w-3.5 h-3.5 text-slate-500" />
-                            <span>{isAr ? 'كشف الحساب والفواتير' : 'Statement'}</span>
+                            <span>{isAr ? 'كشف الحساب' : 'Statement'}</span>
                           </button>
 
                           <button
                             type="button"
                             onClick={() => setDebtInvoiceCustomer(cust)}
-                            className="px-3 py-1.5 text-xs font-bold rounded-xl bg-amber-50 dark:bg-amber-950/60 border border-amber-200 dark:border-amber-800 text-amber-800 dark:text-amber-300 hover:bg-amber-100 dark:hover:bg-amber-900/50 flex items-center gap-1.5"
+                            className="min-h-[36px] px-3 py-1.5 text-xs font-semibold rounded-xl bg-slate-100 dark:bg-slate-800 text-slate-700 dark:text-slate-200 hover:bg-slate-200 dark:hover:bg-slate-700 flex items-center gap-1.5"
                           >
-                            <Printer className="w-3.5 h-3.5 text-amber-600 dark:text-amber-400" />
-                            <span>{isAr ? 'طبع فاتورة الدين' : 'Print Debt Invoice'}</span>
+                            <Printer className="w-3.5 h-3.5 text-slate-600 dark:text-slate-300" />
+                            <span>{isAr ? 'طبع فاتورة' : 'Print Debt Invoice'}</span>
                           </button>
 
                           <button
@@ -1548,7 +1533,7 @@ export const CustomersView: React.FC = () => {
                               setNewDebtAmount(0);
                               setNewDebtNotes('');
                             }}
-                            className="px-2.5 py-1.5 text-xs font-bold rounded-xl bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-700 text-amber-700 dark:text-amber-300 hover:bg-amber-50 dark:hover:bg-amber-950/40 flex items-center gap-1"
+                            className="min-h-[36px] px-2.5 py-1.5 text-xs font-bold rounded-xl bg-amber-50 dark:bg-amber-950/50 border border-amber-300 dark:border-amber-700 text-amber-800 dark:text-amber-300 hover:bg-amber-100 flex items-center gap-1"
                           >
                             <Plus className="w-3.5 h-3.5" />
                             <span>{isAr ? 'إضافة دين' : 'Add Debt'}</span>
@@ -1558,7 +1543,7 @@ export const CustomersView: React.FC = () => {
                         <button
                           type="button"
                           onClick={() => openWhatsAppModal(cust)}
-                          className="px-2.5 py-1.5 text-xs font-bold rounded-xl text-emerald-700 dark:text-emerald-300 bg-emerald-50 dark:bg-emerald-950/50 hover:bg-emerald-100 border border-emerald-200 dark:border-emerald-800 flex items-center gap-1"
+                          className="min-h-[36px] px-2.5 py-1.5 text-xs font-semibold rounded-xl text-emerald-700 dark:text-emerald-300 bg-emerald-50 dark:bg-emerald-950/50 hover:bg-emerald-100 border border-emerald-200 dark:border-emerald-800 flex items-center gap-1"
                         >
                           <Send className="w-3.5 h-3.5" />
                           <span>{isAr ? 'واتساب' : 'WhatsApp'}</span>
@@ -1574,7 +1559,7 @@ export const CustomersView: React.FC = () => {
               <button
                 type="button"
                 onClick={() => setShowDebtorsDetailsModal(false)}
-                className="px-5 py-2 text-xs font-bold text-slate-700 dark:text-slate-200 bg-slate-100 dark:bg-slate-800 hover:bg-slate-200 dark:hover:bg-slate-700 rounded-xl"
+                className="min-h-[38px] px-5 py-2 text-xs font-bold text-slate-700 dark:text-slate-200 bg-slate-100 dark:bg-slate-800 hover:bg-slate-200 dark:hover:bg-slate-700 rounded-xl"
               >
                 {isAr ? 'إغلاق' : 'Close'}
               </button>
@@ -1661,7 +1646,7 @@ export const CustomersView: React.FC = () => {
                 <button
                   type="button"
                   onClick={() => setSettleAmount(settleModalCustomer.balance)}
-                  className={`py-2 px-1 text-[11px] font-bold rounded-xl border transition-all text-center ${
+                  className={`py-2.5 px-1 text-xs font-bold rounded-xl border transition-all text-center ${
                     settleAmount === settleModalCustomer.balance
                       ? 'bg-emerald-600 border-emerald-600 text-white shadow-xs'
                       : 'bg-slate-50 dark:bg-slate-800 border-slate-200 dark:border-slate-700 text-slate-700 dark:text-slate-200 hover:bg-slate-100 dark:hover:bg-slate-700'
@@ -1674,7 +1659,7 @@ export const CustomersView: React.FC = () => {
                   onClick={() =>
                     setSettleAmount(Number((settleModalCustomer.balance / 2).toFixed(2)))
                   }
-                  className={`py-2 px-1 text-[11px] font-bold rounded-xl border transition-all text-center ${
+                  className={`py-2.5 px-1 text-xs font-bold rounded-xl border transition-all text-center ${
                     settleAmount === Number((settleModalCustomer.balance / 2).toFixed(2))
                       ? 'bg-emerald-600 border-emerald-600 text-white shadow-xs'
                       : 'bg-slate-50 dark:bg-slate-800 border-slate-200 dark:border-slate-700 text-slate-700 dark:text-slate-200 hover:bg-slate-100 dark:hover:bg-slate-700'
@@ -1689,7 +1674,7 @@ export const CustomersView: React.FC = () => {
                       key={val}
                       type="button"
                       onClick={() => setSettleAmount(capped)}
-                      className={`py-2 px-1 text-[11px] font-bold rounded-xl border transition-all text-center tabular-nums ${
+                      className={`py-2.5 px-1 text-xs font-bold rounded-xl border transition-all text-center tabular-nums ${
                         settleAmount === capped
                           ? 'bg-emerald-600 border-emerald-600 text-white shadow-xs'
                           : 'bg-slate-50 dark:bg-slate-800 border-slate-200 dark:border-slate-700 text-slate-700 dark:text-slate-200 hover:bg-slate-100 dark:hover:bg-slate-700'
@@ -1704,7 +1689,7 @@ export const CustomersView: React.FC = () => {
 
             {/* Exact Amount input */}
             <div>
-              <label className="block text-xs font-semibold text-slate-600 dark:text-slate-400 mb-1">
+              <label className="block text-xs font-semibold text-slate-700 dark:text-slate-300 mb-1">
                 {isAr ? 'مبلغ الدفعة الآن' : 'Amount Paid'} ({currencySymbol}) *
               </label>
               <div className="relative">
@@ -1716,15 +1701,15 @@ export const CustomersView: React.FC = () => {
                   required
                   value={settleAmount}
                   onChange={(e) => setSettleAmount(parseFloat(e.target.value) || 0)}
-                  className="w-full px-4 py-2.5 text-xl font-bold font-mono bg-white dark:bg-slate-800 border border-slate-300 dark:border-slate-700 rounded-2xl text-slate-900 dark:text-white tabular-nums focus:border-emerald-500"
+                  className="w-full px-4 py-2.5 text-xl font-extrabold bg-white dark:bg-slate-800 border border-slate-300 dark:border-slate-700 rounded-2xl text-slate-900 dark:text-white tabular-nums focus:border-emerald-500"
                 />
-                <span className="absolute end-4 top-1/2 -translate-y-1/2 font-bold text-slate-400">
+                <span className="absolute end-4 top-1/2 -translate-y-1/2 font-bold text-slate-500 dark:text-slate-400">
                   {currencySymbol}
                 </span>
               </div>
-              <div className="text-[11px] text-slate-500 dark:text-slate-400 mt-1 flex justify-between">
+              <div className="text-xs text-slate-600 dark:text-slate-400 mt-1.5 flex justify-between">
                 <span>{isAr ? 'المتبقي بعد هذا الدفع:' : 'Remaining after payment:'}</span>
-                <span className="font-bold text-slate-700 dark:text-slate-300 tabular-nums font-mono">
+                <span className="font-bold text-slate-800 dark:text-slate-200 tabular-nums">
                   {Math.max(0, Number((settleModalCustomer.balance - settleAmount).toFixed(2)))}{' '}
                   {currencySymbol}
                 </span>
@@ -1733,7 +1718,7 @@ export const CustomersView: React.FC = () => {
 
             {/* Quick Note Chips & Notes */}
             <div>
-              <label className="block text-xs font-semibold text-slate-600 dark:text-slate-400 mb-1">
+              <label className="block text-xs font-semibold text-slate-700 dark:text-slate-300 mb-1">
                 {isAr ? 'ملاحظة أو طريقة الدفع (اختياري)' : 'Payment Notes (Optional)'}
               </label>
               <div className="flex flex-wrap gap-1.5 mb-2">
@@ -1745,10 +1730,10 @@ export const CustomersView: React.FC = () => {
                     key={presetNote}
                     type="button"
                     onClick={() => setSettleNotes(presetNote)}
-                    className={`px-2.5 py-1 rounded-lg text-[11px] font-semibold border transition-colors ${
+                    className={`px-2.5 py-1.5 rounded-lg text-xs font-semibold border transition-colors ${
                       settleNotes === presetNote
                         ? 'bg-emerald-50 dark:bg-emerald-950/60 border-emerald-400 text-emerald-700 dark:text-emerald-300'
-                        : 'bg-slate-50 dark:bg-slate-800 border-slate-200 dark:border-slate-700 text-slate-600 dark:text-slate-400 hover:bg-slate-100 dark:hover:bg-slate-700'
+                        : 'bg-slate-50 dark:bg-slate-800 border-slate-200 dark:border-slate-700 text-slate-600 dark:text-slate-300 hover:bg-slate-100 dark:hover:bg-slate-700'
                     }`}
                   >
                     {presetNote}
@@ -1760,7 +1745,7 @@ export const CustomersView: React.FC = () => {
                 value={settleNotes}
                 onChange={(e) => setSettleNotes(e.target.value)}
                 placeholder={isAr ? 'مثال: دفعة نقدية بالصندوق، تسليم يدوي...' : 'e.g. Cash payment at register...'}
-                className="w-full px-3 py-2 text-xs bg-slate-50 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 rounded-xl text-slate-900 dark:text-white"
+                className="w-full px-3.5 py-2.5 text-xs bg-slate-50 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 rounded-xl text-slate-900 dark:text-white"
               />
             </div>
 
@@ -1796,33 +1781,33 @@ export const CustomersView: React.FC = () => {
           >
             <div className="flex items-center justify-between pb-3 border-b border-slate-200 dark:border-slate-800">
               <div className="flex items-center gap-2.5">
-                <div className="w-9 h-9 rounded-xl bg-amber-500 text-white flex items-center justify-center shadow-xs">
-                  <Plus className="w-5 h-5 stroke-[3]" />
+                <div className="w-9 h-9 rounded-xl bg-amber-600 text-white flex items-center justify-center shadow-xs">
+                  <Plus className="w-5 h-5 stroke-[2.5]" />
                 </div>
                 <div>
-                  <h3 className="font-extrabold text-slate-900 dark:text-white text-base">
+                  <h3 className="font-bold text-slate-900 dark:text-white text-base">
                     {isAr ? 'تقييد كريدي جديد على الحساب' : 'Record Credit Purchase'}
                   </h3>
-                  <p className="text-xs text-slate-500">
-                    {addDebtModalCustomer.name} · {addDebtModalCustomer.phone}
+                  <p className="text-xs text-slate-600 dark:text-slate-400">
+                    {addDebtModalCustomer.name} · <span className="font-mono">{addDebtModalCustomer.phone}</span>
                   </p>
                 </div>
               </div>
               <button
                 type="button"
                 onClick={() => setAddDebtModalCustomer(null)}
-                className="w-8 h-8 rounded-xl text-slate-400 hover:text-slate-600 flex items-center justify-center"
+                className="w-8 h-8 rounded-xl text-slate-500 hover:text-slate-700 dark:text-slate-400 dark:hover:text-slate-200 flex items-center justify-center"
               >
                 <X className="w-5 h-5" />
               </button>
             </div>
 
             {/* Current Balance Banner */}
-            <div className="p-3 rounded-2xl bg-slate-50 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 flex items-center justify-between">
-              <span className="text-xs font-bold text-slate-600 dark:text-slate-400">
+            <div className="p-3.5 rounded-2xl bg-slate-50 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 flex items-center justify-between">
+              <span className="text-xs font-semibold text-slate-600 dark:text-slate-300">
                 {isAr ? 'الرصيد السابق قبل التقييد:' : 'Previous Debt:'}
               </span>
-              <span className="text-base font-black text-slate-900 dark:text-white tabular-nums">
+              <span className="text-base font-extrabold text-slate-900 dark:text-white tabular-nums">
                 {addDebtModalCustomer.balance.toFixed(2)} {currencySymbol}
               </span>
             </div>
@@ -1842,15 +1827,15 @@ export const CustomersView: React.FC = () => {
                   onChange={(e) => setNewDebtAmount(parseFloat(e.target.value) || 0)}
                   placeholder="0.00"
                   autoFocus
-                  className="w-full px-4 py-2.5 text-xl font-bold font-mono bg-white dark:bg-slate-800 border border-slate-300 dark:border-slate-700 rounded-2xl text-slate-900 dark:text-white tabular-nums focus:border-amber-500"
+                  className="w-full px-4 py-2.5 text-xl font-extrabold bg-white dark:bg-slate-800 border border-slate-300 dark:border-slate-700 rounded-2xl text-slate-900 dark:text-white tabular-nums focus:border-amber-500"
                 />
-                <span className="absolute end-4 top-1/2 -translate-y-1/2 font-bold text-slate-400">
+                <span className="absolute end-4 top-1/2 -translate-y-1/2 font-bold text-slate-500 dark:text-slate-400">
                   {currencySymbol}
                 </span>
               </div>
-              <div className="text-[11px] text-amber-600 dark:text-amber-400 font-bold mt-1 flex justify-between">
+              <div className="text-xs text-amber-700 dark:text-amber-400 font-semibold mt-1.5 flex justify-between">
                 <span>{isAr ? 'الرصيد الإجمالي الجديد:' : 'New Total Debt:'}</span>
-                <span className="tabular-nums">
+                <span className="tabular-nums font-bold">
                   {(addDebtModalCustomer.balance + (newDebtAmount || 0)).toFixed(2)} {currencySymbol}
                 </span>
               </div>
@@ -1867,7 +1852,7 @@ export const CustomersView: React.FC = () => {
                 value={newDebtNotes}
                 onChange={(e) => setNewDebtNotes(e.target.value)}
                 placeholder={isAr ? 'مثال: أخذ 5 لتر زيت لوسيور + 2 قالب سكر + شاي...' : 'e.g. 5L Olive oil, sugar, tea...'}
-                className="w-full px-3 py-2 text-xs bg-white dark:bg-slate-800 border border-slate-300 dark:border-slate-700 rounded-xl"
+                className="w-full px-3.5 py-2.5 text-xs bg-white dark:bg-slate-800 border border-slate-300 dark:border-slate-700 rounded-xl text-slate-900 dark:text-white"
               />
             </div>
 
@@ -1875,15 +1860,15 @@ export const CustomersView: React.FC = () => {
               <button
                 type="button"
                 onClick={() => setAddDebtModalCustomer(null)}
-                className="flex-1 py-2.5 text-xs font-bold text-slate-600 dark:text-slate-300 bg-slate-100 dark:bg-slate-800 rounded-2xl hover:bg-slate-200"
+                className="flex-1 min-h-[40px] py-2.5 text-xs font-bold text-slate-700 dark:text-slate-200 bg-slate-100 dark:bg-slate-800 rounded-2xl hover:bg-slate-200 dark:hover:bg-slate-700"
               >
                 {isAr ? 'إلغاء' : 'Cancel'}
               </button>
               <button
                 type="submit"
-                className="flex-2 py-2.5 text-xs font-bold text-white bg-amber-500 hover:bg-amber-600 rounded-2xl shadow-sm transition-all active:scale-95 flex items-center justify-center gap-1.5"
+                className="flex-2 min-h-[40px] py-2.5 text-xs font-bold text-white bg-amber-600 hover:bg-amber-700 rounded-2xl shadow-sm transition-all active:scale-95 flex items-center justify-center gap-1.5"
               >
-                <Plus className="w-4 h-4 stroke-[3]" />
+                <Plus className="w-4 h-4 stroke-[2.5]" />
                 <span>{isAr ? 'تقييد في الكناش' : 'Save to Ledger'}</span>
               </button>
             </div>
@@ -2002,17 +1987,17 @@ export const CustomersView: React.FC = () => {
             </div>
 
             {/* Current Outstanding Box */}
-            <div className="p-3.5 rounded-2xl bg-amber-50 dark:bg-amber-950/40 border border-amber-200 dark:border-amber-900/60 flex items-center justify-between shrink-0">
+            <div className="p-4 rounded-2xl bg-amber-50/70 dark:bg-amber-950/35 border border-amber-200 dark:border-amber-900/60 flex flex-wrap items-center justify-between gap-3 shrink-0">
               <div>
-                <span className="text-[11px] font-bold text-amber-900 dark:text-amber-300 block">
+                <span className="text-xs font-semibold text-amber-900 dark:text-amber-300 block">
                   {isAr ? 'الرصيد الحالي المعلق في الذمة:' : 'Current Outstanding Balance:'}
                 </span>
-                <span className="text-xl font-black text-amber-600 dark:text-amber-400 tabular-nums">
+                <span className="text-xl sm:text-2xl font-extrabold text-amber-700 dark:text-amber-400 tabular-nums">
                   {statementCustomer.balance.toFixed(2)} {currencySymbol}
                 </span>
               </div>
 
-              <div className="flex gap-2">
+              <div className="flex flex-wrap gap-2">
                 {statementCustomer.balance > 0 && (
                   <button
                     type="button"
@@ -2021,15 +2006,16 @@ export const CustomersView: React.FC = () => {
                       setStatementCustomer(null);
                       openCreatePaymentModal(cust);
                     }}
-                    className="px-3 py-1.5 text-xs font-bold bg-amber-500 hover:bg-amber-600 text-white rounded-xl shadow-xs"
+                    className="min-h-[38px] px-3.5 py-1.5 text-xs font-bold bg-emerald-600 hover:bg-emerald-700 text-white rounded-xl shadow-xs flex items-center gap-1"
                   >
-                    {isAr ? 'إنشاء دفع الدين' : 'Settle Now'}
+                    <Check className="w-3.5 h-3.5" />
+                    <span>{isAr ? 'تسجيل دفع الدين' : 'Settle Now'}</span>
                   </button>
                 )}
                 <button
                   type="button"
                   onClick={() => setDebtInvoiceCustomer(statementCustomer)}
-                  className="px-3 py-1.5 text-xs font-bold bg-slate-900 dark:bg-emerald-600 hover:bg-slate-800 dark:hover:bg-emerald-700 text-white rounded-xl shadow-xs flex items-center gap-1.5"
+                  className="min-h-[38px] px-3.5 py-1.5 text-xs font-bold bg-slate-900 dark:bg-slate-700 hover:bg-slate-800 dark:hover:bg-slate-600 text-white rounded-xl shadow-xs flex items-center gap-1.5"
                 >
                   <Printer className="w-3.5 h-3.5" />
                   <span>{isAr ? 'طبع فاتورة الدين بالمشتريات' : 'Print Debt Invoice'}</span>
@@ -2040,7 +2026,7 @@ export const CustomersView: React.FC = () => {
             {/* Transactions Table */}
             <div className="flex-1 overflow-y-auto border border-slate-200 dark:border-slate-800 rounded-2xl divide-y divide-slate-100 dark:divide-slate-800">
               {selectedCustomerTransactions.length === 0 ? (
-                <div className="py-12 text-center text-slate-400 text-xs">
+                <div className="py-12 text-center text-slate-500 dark:text-slate-400 text-xs">
                   {isAr ? 'لا توجد حركات كريدي مسجلة لهذا العميل حتى الآن' : 'No credit transactions recorded yet.'}
                 </div>
               ) : (
@@ -2067,7 +2053,7 @@ export const CustomersView: React.FC = () => {
                         <div>
                           <div className="flex items-center gap-2">
                             <span
-                              className={`px-2 py-0.5 rounded text-[10px] font-black ${
+                              className={`px-2 py-0.5 rounded-md text-xs font-bold ${
                                 isDebt
                                   ? 'bg-rose-100 text-rose-800 dark:bg-rose-950 dark:text-rose-300'
                                   : 'bg-emerald-100 text-emerald-800 dark:bg-emerald-950 dark:text-emerald-300'
@@ -2075,7 +2061,7 @@ export const CustomersView: React.FC = () => {
                             >
                               {isDebt ? (isAr ? 'تقييد دين' : 'Debt') : (isAr ? 'سداد وخلاص' : 'Payment')}
                             </span>
-                            <span className="text-[11px] text-slate-400 font-mono">
+                            <span className="text-xs text-slate-500 dark:text-slate-400 font-mono">
                               {new Date(tx.date).toLocaleDateString('ar-MA', {
                                 month: 'short',
                                 day: 'numeric',
@@ -2084,18 +2070,18 @@ export const CustomersView: React.FC = () => {
                               })}
                             </span>
                           </div>
-                          <div className="text-xs text-slate-800 dark:text-slate-200 font-medium mt-1">
+                          <div className="text-xs sm:text-sm text-slate-800 dark:text-slate-200 font-medium mt-1 leading-relaxed">
                             {tx.notes || (isDebt ? (isAr ? 'أخذ سلعة على الحساب' : 'Item purchase') : (isAr ? 'سداد نقدي' : 'Cash repayment'))}
                           </div>
-                          <div className="text-[10px] text-slate-400 mt-0.5 flex flex-wrap items-center gap-2">
+                          <div className="text-xs text-slate-500 dark:text-slate-400 mt-1 flex flex-wrap items-center gap-2">
                             <span>{isAr ? 'سجلها:' : 'By:'} {tx.recordedBy || 'الكاشير'}</span>
                             {linkedOrder && (
                               <button
                                 type="button"
                                 onClick={() => setSelectedCreditOrder(linkedOrder)}
-                                className="px-2 py-0.5 rounded-md bg-blue-50 dark:bg-blue-950/60 text-blue-700 dark:text-blue-300 hover:bg-blue-100 font-bold inline-flex items-center gap-1"
+                                className="px-2 py-0.5 rounded-md bg-blue-50 dark:bg-blue-950/60 text-blue-700 dark:text-blue-300 hover:bg-blue-100 font-semibold inline-flex items-center gap-1"
                               >
-                                <FileText className="w-3 h-3" />
+                                <FileText className="w-3.5 h-3.5" />
                                 <span>{isAr ? `فاتورة مفصلة (${linkedOrder.items.length} سلع)` : 'Detailed Invoice'}</span>
                               </button>
                             )}
@@ -2106,13 +2092,13 @@ export const CustomersView: React.FC = () => {
                       {/* Amount and balance impact */}
                       <div className="text-end">
                         <div
-                          className={`text-sm font-black tabular-nums ${
-                            isDebt ? 'text-rose-600 dark:text-rose-400' : 'text-emerald-600 dark:text-emerald-400'
+                          className={`text-sm font-extrabold tabular-nums ${
+                            isDebt ? 'text-rose-600 dark:text-rose-400' : 'text-emerald-700 dark:text-emerald-400'
                           }`}
                         >
                           {isDebt ? '+' : '-'}{tx.amount.toFixed(2)} {currencySymbol}
                         </div>
-                        <div className="text-[10px] text-slate-400 mt-0.5 font-mono tabular-nums">
+                        <div className="text-xs text-slate-500 dark:text-slate-400 mt-0.5 tabular-nums">
                           {isAr ? 'الرصيد بعد العملية:' : 'New Bal:'} {tx.newBalance.toFixed(2)} {currencySymbol}
                         </div>
                       </div>
@@ -2124,8 +2110,8 @@ export const CustomersView: React.FC = () => {
 
             {selectedCustomerCreditOrders.length > 0 && (
               <div className="p-3 rounded-2xl bg-slate-50 dark:bg-slate-800/50 border border-slate-200 dark:border-slate-700 space-y-2 shrink-0">
-                <div className="text-[11px] font-bold text-slate-700 dark:text-slate-300 flex items-center gap-1.5">
-                  <FileText className="w-3.5 h-3.5 text-blue-600" />
+                <div className="text-xs font-bold text-slate-700 dark:text-slate-300 flex items-center gap-1.5">
+                  <FileText className="w-4 h-4 text-blue-600" />
                   <span>{isAr ? 'فواتير الزبون المفصلة بالمنتوجات والثمن:' : 'Customer Detailed Invoices:'}</span>
                 </div>
                 <div className="flex flex-wrap gap-1.5">
@@ -2134,11 +2120,11 @@ export const CustomersView: React.FC = () => {
                       key={ord.id}
                       type="button"
                       onClick={() => setSelectedCreditOrder(ord)}
-                      className="px-2.5 py-1 rounded-lg border border-blue-200 dark:border-blue-800 bg-white dark:bg-slate-900 text-blue-700 dark:text-blue-300 hover:bg-blue-50 text-[11px] font-bold font-mono flex items-center gap-1.5"
+                      className="px-2.5 py-1.5 rounded-lg border border-blue-200 dark:border-blue-800 bg-white dark:bg-slate-900 text-blue-700 dark:text-blue-300 hover:bg-blue-50 text-xs font-bold font-mono flex items-center gap-1.5"
                     >
                       <span>{ord.orderNumber}</span>
                       <span className="text-slate-400">·</span>
-                      <span>{ord.grandTotal.toFixed(2)} {currencySymbol}</span>
+                      <span className="tabular-nums">{ord.grandTotal.toFixed(2)} {currencySymbol}</span>
                     </button>
                   ))}
                 </div>
@@ -2418,18 +2404,18 @@ export const CustomersView: React.FC = () => {
                     <div key={c.id} className="p-3.5 flex flex-wrap items-center justify-between gap-3">
                       <div className="min-w-0">
                         <div className="flex items-center gap-2">
-                          <span className="font-black text-xs text-slate-900 dark:text-white">
+                          <span className="font-bold text-sm text-slate-900 dark:text-white">
                             {c.name}
                           </span>
                           {isOver && (
-                            <span className="px-2 py-0.5 rounded bg-rose-100 dark:bg-rose-950 text-rose-700 dark:text-rose-300 text-[10px] font-black">
+                            <span className="px-2 py-0.5 rounded-md bg-rose-50 dark:bg-rose-950 border border-rose-200 dark:border-rose-800 text-rose-700 dark:text-rose-300 text-xs font-bold">
                               {isAr ? 'تجاوز السقف!' : 'Over Limit'}
                             </span>
                           )}
                         </div>
-                        <div className="text-[11px] text-slate-500 font-mono mt-0.5">
+                        <div className="text-xs text-slate-600 dark:text-slate-300 font-mono mt-0.5">
                           {c.phone} ·{' '}
-                          <span className="font-black text-amber-600 dark:text-amber-400">
+                          <span className="font-bold text-amber-700 dark:text-amber-400">
                             {c.balance.toFixed(2)} {currencySymbol}
                           </span>
                           {c.creditLimit ? ` / ${c.creditLimit} ${currencySymbol}` : ''}
@@ -2440,7 +2426,7 @@ export const CustomersView: React.FC = () => {
                         <button
                           type="button"
                           onClick={() => navigator.clipboard.writeText(msg)}
-                          className="px-2.5 py-1.5 rounded-xl bg-slate-100 dark:bg-slate-800 text-xs font-bold text-slate-700 dark:text-slate-200 flex items-center gap-1"
+                          className="min-h-[36px] px-3 py-1.5 rounded-xl bg-slate-100 dark:bg-slate-800 text-xs font-semibold text-slate-700 dark:text-slate-200 hover:bg-slate-200 flex items-center gap-1"
                         >
                           <Copy className="w-3.5 h-3.5" />
                           <span>{isAr ? 'نسخ' : 'Copy'}</span>
@@ -2449,7 +2435,7 @@ export const CustomersView: React.FC = () => {
                           href={buildCustomerWhatsAppHref(c.phone, msg)}
                           target="_blank"
                           rel="noopener noreferrer"
-                          className="px-3 py-1.5 rounded-xl bg-emerald-600 hover:bg-emerald-700 text-white text-xs font-black flex items-center gap-1.5"
+                          className="min-h-[36px] px-3.5 py-1.5 rounded-xl bg-emerald-600 hover:bg-emerald-700 text-white text-xs font-bold flex items-center gap-1.5"
                         >
                           <Send className="w-3.5 h-3.5" />
                           <span>{isAr ? 'إرسال واتساب' : 'Send WA'}</span>

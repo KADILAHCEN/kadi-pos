@@ -52,6 +52,13 @@ export interface Product {
   availableModifiers?: ProductModifier[];
   branchStocks?: Record<string, number>; // Specific stock allocated per branch ID
   expiryDate?: string; // YYYY-MM-DD تاريخ انتهاء الصلاحية
+  scalePlu?: string; // PLU للميزان الإلكتروني (مثال: 00105)
+  boxChildProductId?: string; // ربط الكرتون بسلعة التفصيل (الحبة) لفك الكرتون تلقائياً
+  unitsPerBox?: number; // عدد الحبات داخل الكرتون الواحد
+  semiWholesaleMinQty?: number; // أقل كمية لنصف الجملة
+  semiWholesalePrice?: number; // سعر نصف الجملة
+  wholesaleMinQty?: number; // أقل كمية لسعر الجملة
+  wholesalePrice?: number; // سعر الجملة
   updatedAt?: number; // Timestamp ms for Firestore conflict merge
 }
 
@@ -114,6 +121,8 @@ export interface CartItem {
   originalPrice?: number;
   isPriceOverridden?: boolean;
   priceOverrideReason?: string;
+  baseRetailPrice?: number;
+  appliedPriceTier?: 'retail' | 'semi_wholesale' | 'wholesale';
   costPrice: number;
   quantity: number;
   unitType?: UnitType;
@@ -172,11 +181,25 @@ export interface OrderItem {
   price: number;
   costPrice: number;
   quantity: number;
+  returnedQty?: number;
   unitType?: UnitType;
   variantName?: string;
   modifiers?: string[];
   total: number;
   discount: number;
+}
+
+export interface OrderExchangeRecord {
+  id: string;
+  date: string;
+  actor: string;
+  returnedItems: { productId: string; productName: string; quantity: number; unitPrice: number; total: number }[];
+  replacementItems: { productId: string; productName: string; quantity: number; unitPrice: number; total: number }[];
+  refundedValue: number;
+  replacementValue: number;
+  netDifference: number; // positive = customer pays extra, negative = refund to customer
+  settleMethod: 'cash' | 'credit' | 'exchange_even';
+  note?: string;
 }
 
 export interface Order {
@@ -201,6 +224,7 @@ export interface Order {
   pointsRedeemed?: number;
   status: 'completed' | 'refunded' | 'partially_refunded';
   refundedAmount?: number;
+  exchanges?: OrderExchangeRecord[];
   note?: string;
   zatcaQrString?: string;
   branchId?: string;
@@ -429,6 +453,12 @@ export interface StoreSettings {
   enableLowStockAudioAlert?: boolean;
   // Anti-Theft & Loss Prevention Alert Settings (تنبيه السرقة وحماية الصندوق والمخزون)
   theftAlertSettings?: TheftAlertSettings;
+  // Scale Barcode Config (باركود الميزان الإلكتروني)
+  scaleBarcodeConfig?: {
+    enabled: boolean;
+    weightPrefixes: string[];
+    pricePrefixes: string[];
+  };
   // Custom Icons & Colors per POS Navigation Tab
   tabCustomizations?: Record<string, { icon?: string; color?: string }>;
 }
@@ -605,6 +635,18 @@ export interface SupplierInvoice {
   createdAt: string;
 }
 
+export interface SupplierProfile {
+  id: string;
+  name: string;
+  phone?: string;
+  ice?: string;
+  category?: string;
+  address?: string;
+  notes?: string;
+  createdAt: string;
+  updatedAt?: string;
+}
+
 // =========================
 // Moroccan CPU Tax, AMO & CNSS Retirement (ضرائبي CPU)
 // =========================
@@ -726,6 +768,8 @@ export interface FirestoreSyncState {
   hasPendingWrites: boolean;
   lastSyncedAtIso: string | null;
   storeExistsInCloud: boolean;
+  storeDocId: string;
+  customStoreDocId: string | null;
   lastError: string | null;
 }
 

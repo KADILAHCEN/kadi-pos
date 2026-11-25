@@ -23,9 +23,13 @@ import {
   RefreshCw,
   Database,
   MessageCircle,
-  FileSpreadsheet
+  FileSpreadsheet,
+  ArrowLeftRight,
+  Landmark
 } from 'lucide-react';
 import { exportOrdersToExcel, exportOrdersToPdf } from '../../utils/exportReports';
+import { ReturnExchangeModal } from './ReturnExchangeModal';
+import { AccountingTvaExportModal } from '../cpu/AccountingTvaExportModal';
 
 export const OrdersView: React.FC = () => {
   const {
@@ -50,6 +54,8 @@ export const OrdersView: React.FC = () => {
   const [receiptViewMode, setReceiptViewMode] = useState<'thermal' | 'detailed'>('thermal');
   const [pdfFeedback, setPdfFeedback] = useState<{ ok: boolean; msg: string } | null>(null);
   const [refundConfirmOrder, setRefundConfirmOrder] = useState<Order | null>(null);
+  const [exchangeOrder, setExchangeOrder] = useState<Order | null>(null);
+  const [showAccountingExportModal, setShowAccountingExportModal] = useState(false);
 
   const handleDirectDownloadPdf = (order: Order) => {
     try {
@@ -315,6 +321,17 @@ export const OrdersView: React.FC = () => {
             <Download className="w-3.5 h-3.5 text-emerald-600 dark:text-emerald-400" />
             <span>{isAr ? 'تصدير CSV' : 'Export CSV'}</span>
           </button>
+
+          {/* Accounting TVA + ICE Export Modal Trigger */}
+          <button
+            type="button"
+            onClick={() => setShowAccountingExportModal(true)}
+            className="px-3.5 py-2 text-xs font-black rounded-xl border border-indigo-200 dark:border-indigo-800 bg-indigo-50 dark:bg-indigo-950/60 hover:bg-indigo-100 text-indigo-700 dark:text-indigo-300 transition-colors flex items-center gap-1.5 shadow-2xs shrink-0 whitespace-nowrap"
+            title={isAr ? 'تصدير كشف المحاسبة والضريبة على القيمة المضافة TVA وفواتير ICE' : 'Export Accounting TVA & ICE Report'}
+          >
+            <Landmark className="w-3.5 h-3.5" />
+            <span>{isAr ? 'تصدير المحاسبة TVA' : 'Accounting TVA'}</span>
+          </button>
         </div>
       </div>
 
@@ -357,6 +374,7 @@ export const OrdersView: React.FC = () => {
               ) : (
                 filteredOrders.map((o) => {
                   const isRefunded = o.status === 'refunded';
+                  const isPartiallyRefunded = o.status === 'partially_refunded';
                   const totalItems = o.items.reduce((sum, it) => sum + it.quantity, 0);
 
                   return (
@@ -402,6 +420,11 @@ export const OrdersView: React.FC = () => {
                         {isRefunded && (
                           <span className="mr-1 text-[10px] text-rose-500 font-bold">
                             ({isAr ? 'مسترجع' : 'Refunded'})
+                          </span>
+                        )}
+                        {isPartiallyRefunded && (
+                          <span className="mr-1 inline-block px-1.5 py-0.5 rounded-md bg-amber-100 dark:bg-amber-950/60 text-amber-800 dark:text-amber-300 text-[10px] font-bold">
+                            {isAr ? 'إرجاع / تبديل جزئي' : 'Partial Return/Exch'}
                           </span>
                         )}
                       </td>
@@ -462,13 +485,24 @@ export const OrdersView: React.FC = () => {
                             <Printer className="w-4 h-4" />
                           </button>
                           {!isRefunded && (
-                            <button
-                              onClick={() => handleRefund(o)}
-                              className="p-1.5 rounded-lg text-slate-500 dark:text-slate-300 hover:text-rose-600 dark:hover:text-rose-400 hover:bg-rose-50 dark:hover:bg-rose-950/50 transition-colors"
-                              title={isAr ? 'استرجاع الفاتورة' : 'Refund Order'}
-                            >
-                              <RotateCcw className="w-4 h-4" />
-                            </button>
+                            <>
+                              <button
+                                type="button"
+                                onClick={() => setExchangeOrder(o)}
+                                className="px-2 py-1 rounded-lg bg-amber-50 dark:bg-amber-950/50 text-amber-700 dark:text-amber-300 hover:bg-amber-100 transition-colors text-[11px] font-bold flex items-center gap-1 whitespace-nowrap"
+                                title={isAr ? 'إرجاع جزئي أو استبدال سلع داخل الفاتورة' : 'Partial Return / Exchange'}
+                              >
+                                <ArrowLeftRight className="w-3.5 h-3.5" />
+                                <span>{isAr ? 'إرجاع / تبديل' : 'Return/Exch'}</span>
+                              </button>
+                              <button
+                                onClick={() => handleRefund(o)}
+                                className="p-1.5 rounded-lg text-slate-500 dark:text-slate-300 hover:text-rose-600 dark:hover:text-rose-400 hover:bg-rose-50 dark:hover:bg-rose-950/50 transition-colors"
+                                title={isAr ? 'استرجاع الفاتورة بالكامل' : 'Full Refund'}
+                              >
+                                <RotateCcw className="w-4 h-4" />
+                              </button>
+                            </>
                           )}
                         </div>
                       </td>
@@ -535,6 +569,24 @@ export const OrdersView: React.FC = () => {
           </div>
         </div>
       )}
+
+      {/* Item-Level Partial Return & Exchange Modal */}
+      <ReturnExchangeModal
+        order={exchangeOrder}
+        isOpen={!!exchangeOrder}
+        onClose={() => setExchangeOrder(null)}
+        onSuccess={(message) => {
+          if (settings.enableSoundEffects) playSound('success');
+          setPdfFeedback({ ok: true, msg: message });
+          setTimeout(() => setPdfFeedback(null), 4500);
+        }}
+      />
+
+      {/* Accounting TVA & ICE Export Modal */}
+      <AccountingTvaExportModal
+        isOpen={showAccountingExportModal}
+        onClose={() => setShowAccountingExportModal(false)}
+      />
     </div>
   );
 };

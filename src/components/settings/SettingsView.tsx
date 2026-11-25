@@ -2909,6 +2909,93 @@ export const SettingsView: React.FC = () => {
           </div>
         </div>
 
+        {/* Electronic Scale EAN-13 Barcode Configuration (باركود الميزان الإلكتروني) */}
+        <div className="p-6 rounded-3xl bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 shadow-xs space-y-4">
+          <div className="flex flex-wrap items-center justify-between gap-2">
+            <h3 className="font-black text-sm text-slate-900 dark:text-white flex items-center gap-2">
+              <Scale className="w-4 h-4 text-emerald-600" />
+              <span>{isAr ? 'باركود الميزان الإلكتروني (EAN-13 للوزن والثمن)' : 'Electronic Scale Barcode (EAN-13 Weight & Price)'}</span>
+            </h3>
+            <label className="inline-flex items-center gap-2 text-xs font-bold text-slate-700 dark:text-slate-300 cursor-pointer">
+              <input
+                type="checkbox"
+                checked={settings.scaleBarcodeConfig?.enabled ?? true}
+                onChange={(e) =>
+                  updateSettings({
+                    scaleBarcodeConfig: {
+                      enabled: e.target.checked,
+                      weightPrefixes: settings.scaleBarcodeConfig?.weightPrefixes ?? ['20', '21', '25', '26'],
+                      pricePrefixes: settings.scaleBarcodeConfig?.pricePrefixes ?? ['22', '23', '24', '27', '28', '29']
+                    }
+                  })
+                }
+                className="w-4 h-4 accent-emerald-600 rounded"
+              />
+              <span>{isAr ? 'تفعيل قراءة باركود الميزان تلقائياً' : 'Enable Auto Scale Parsing'}</span>
+            </label>
+          </div>
+
+          <p className="text-xs text-slate-500 dark:text-slate-400 leading-relaxed">
+            {isAr
+              ? 'قراءة ملصقات الميزان (13 رقماً: بادئة 2x + رمز PLU من 5 أرقام + الوزن بالغرام أو الثمن بالسنتيم). اربط كل سلعة برمز PLU الخاص بها لإضافتها بالسلة تلقائياً.'
+              : 'Decode 13-digit scale barcodes (2-digit prefix + 5-digit PLU + weight/price). Match products by PLU for instant cart addition.'}
+          </p>
+
+          <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+            <div>
+              <label className="block text-xs font-bold text-slate-700 dark:text-slate-300 mb-1">
+                {isAr ? 'بادئات الوزن بالغرام (مفصولة بفاصلة)' : 'Weight Prefixes (grams)'}
+              </label>
+              <input
+                type="text"
+                dir="ltr"
+                value={(settings.scaleBarcodeConfig?.weightPrefixes ?? ['20', '21', '25', '26']).join(',')}
+                onChange={(e) => {
+                  const arr = e.target.value
+                    .split(/[,\s]+/)
+                    .map((s) => s.replace(/\D/g, '').slice(0, 2))
+                    .filter((s) => s.length === 2);
+                  updateSettings({
+                    scaleBarcodeConfig: {
+                      enabled: settings.scaleBarcodeConfig?.enabled ?? true,
+                      weightPrefixes: arr.length > 0 ? arr : ['20', '21', '25', '26'],
+                      pricePrefixes: settings.scaleBarcodeConfig?.pricePrefixes ?? ['22', '23', '24', '27', '28', '29']
+                    }
+                  });
+                }}
+                placeholder="20,21,25,26"
+                className="w-full px-3 py-2 text-xs font-mono bg-slate-50 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 rounded-xl text-slate-900 dark:text-white"
+              />
+            </div>
+
+            <div>
+              <label className="block text-xs font-bold text-slate-700 dark:text-slate-300 mb-1">
+                {isAr ? 'بادئات الثمن الإجمالي (مفصولة بفاصلة)' : 'Price Prefixes (centimes)'}
+              </label>
+              <input
+                type="text"
+                dir="ltr"
+                value={(settings.scaleBarcodeConfig?.pricePrefixes ?? ['22', '23', '24', '27', '28', '29']).join(',')}
+                onChange={(e) => {
+                  const arr = e.target.value
+                    .split(/[,\s]+/)
+                    .map((s) => s.replace(/\D/g, '').slice(0, 2))
+                    .filter((s) => s.length === 2);
+                  updateSettings({
+                    scaleBarcodeConfig: {
+                      enabled: settings.scaleBarcodeConfig?.enabled ?? true,
+                      weightPrefixes: settings.scaleBarcodeConfig?.weightPrefixes ?? ['20', '21', '25', '26'],
+                      pricePrefixes: arr.length > 0 ? arr : ['22', '23', '24', '27', '28', '29']
+                    }
+                  });
+                }}
+                placeholder="22,23,24,27,28,29"
+                className="w-full px-3 py-2 text-xs font-mono bg-slate-50 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 rounded-xl text-slate-900 dark:text-white"
+              />
+            </div>
+          </div>
+        </div>
+
         {/* Save button */}
         <button
           type="submit"

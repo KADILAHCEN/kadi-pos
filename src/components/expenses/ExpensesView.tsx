@@ -1,6 +1,6 @@
 import React, { useMemo, useState } from 'react';
 import { usePos } from '../../context/PosContext';
-import { Expense, ExpenseCategory, SupplierInvoice } from '../../types';
+import { Expense, ExpenseCategory, SupplierInvoice, SupplierProfile } from '../../types';
 import {
   EXPENSE_CATEGORIES,
   computeExpenseMetrics,
@@ -28,7 +28,11 @@ import {
   FileText,
   Phone,
   Clock,
-  Camera
+  Camera,
+  Building2,
+  MessageCircle,
+  CreditCard,
+  Users
 } from 'lucide-react';
 
 const CategoryIcon: React.FC<{ category: ExpenseCategory; className?: string }> = ({
@@ -59,6 +63,11 @@ export const ExpensesView: React.FC = () => {
     addSupplierInvoice,
     paySupplierInvoice,
     deleteSupplierInvoice,
+    suppliers,
+    addSupplier,
+    updateSupplier,
+    deleteSupplier,
+    paySupplierBalanceFIFO,
     orders,
     currencySymbol,
     language,
@@ -103,6 +112,194 @@ export const ExpensesView: React.FC = () => {
   const [supStatusFilter, setSupStatusFilter] = useState<'all' | 'unpaid' | 'partial' | 'paid' | 'ice_archive'>('all');
   const [payDraftMap, setPayDraftMap] = useState<Record<string, string>>({});
   const [supConfirmDeleteId, setSupConfirmDeleteId] = useState<string | null>(null);
+
+  // Suppliers Directory & FIFO Payment State
+  const [dirSearch, setDirSearch] = useState('');
+  const [showSupplierModal, setShowSupplierModal] = useState(false);
+  const [editingSupplier, setEditingSupplier] = useState<SupplierProfile | null>(null);
+  const [dirSupName, setDirSupName] = useState('');
+  const [dirSupPhone, setDirSupPhone] = useState('');
+  const [dirSupIce, setDirSupIce] = useState('');
+  const [dirSupCategory, setDirSupCategory] = useState('');
+  const [dirSupAddress, setDirSupAddress] = useState('');
+  const [dirSupNotes, setDirSupNotes] = useState('');
+  const [fifoPayTarget, setFifoPayTarget] = useState<{
+    name: string;
+    ice?: string;
+    remainingDebt: number;
+  } | null>(null);
+  const [fifoPayAmount, setFifoPayAmount] = useState('');
+  const [confirmDeleteSupplierId, setConfirmDeleteSupplierId] = useState<string | null>(null);
+
+  const supplierDirectoryList = useMemo(() => {
+    interface DirEntry {
+      key: string;
+      name: string;
+      phone?: string;
+      ice?: string;
+      category?: string;
+      address?: string;
+      notes?: string;
+      profile?: SupplierProfile;
+      totalPurchases: number;
+      totalPaid: number;
+      remainingDebt: number;
+      invoicesCount: number;
+      overdueCount: number;
+    }
+
+    const map = new Map<string, DirEntry>();
+
+    const makeKey = (name: string, ice?: string) => {
+      const cleanIce = (ice || '').trim().toLowerCase();
+      if (cleanIce) return `ice:${cleanIce}`;
+      return `name:${name.trim().toLowerCase()}`;
+    };
+
+    suppliers.forEach((profile) => {
+      const key = makeKey(profile.name, profile.ice);
+      map.set(key, {
+        key,
+        name: profile.name,
+        phone: profile.phone,
+        ice: profile.ice,
+        category: profile.category,
+        address: profile.address,
+        notes: profile.notes,
+        profile,
+        totalPurchases: 0,
+        totalPaid: 0,
+        remainingDebt: 0,
+        invoicesCount: 0,
+        overdueCount: 0
+      });
+    });
+
+    supplierInvoices.forEach((inv) => {
+      const invNameLower = inv.supplierName.trim().toLowerCase();
+      const invIceLower = (inv.supplierIce || '').trim().toLowerCase();
+      let matchedKey: string | undefined;
+
+      for (const [k, entry] of map.entries()) {
+        if (
+          (invIceLower && entry.ice && entry.ice.trim().toLowerCase() === invIceLower) ||
+          entry.name.trim().toLowerCase() === invNameLower
+        ) {
+          matchedKey = k;
+          break;
+        }
+      }
+
+      if (!matchedKey) {
+        matchedKey = makeKey(inv.supplierName, inv.supplierIce);
+        map.set(matchedKey, {
+          key: matchedKey,
+          name: inv.supplierName,
+          phone: inv.supplierPhone,
+          ice: inv.supplierIce,
+          totalPurchases: 0,
+          totalPaid: 0,
+          remainingDebt: 0,
+          invoicesCount: 0,
+          overdueCount: 0
+        });
+      }
+
+      const entry = map.get(matchedKey)!;
+      if (!entry.phone && inv.supplierPhone) entry.phone = inv.supplierPhone;
+      if (!entry.ice && inv.supplierIce) entry.ice = inv.supplierIce;
+
+      const total = Number(inv.totalAmount) || 0;
+      const paid = Number(inv.paidAmount) || 0;
+      const rem = Math.max(0, Number((total - paid).toFixed(2)));
+      entry.totalPurchases += total;
+      entry.totalPaid += paid;
+      entry.remainingDebt += rem;
+      entry.invoicesCount += 1;
+      if (rem > 0 && inv.dueDate && inv.dueDate < todayStr) {
+        entry.overdueCount += 1;
+      }
+    });
+
+    const q = dirSearch.trim().toLowerCase();
+    return Array.from(map.values())
+      .filter((entry) => {
+        if (!q) return true;
+        return (
+          entry.name.toLowerCase().includes(q) ||
+          (entry.ice || '').toLowerCase().includes(q) ||
+          (entry.phone || '').toLowerCase().includes(q) ||
+          (entry.category || '').toLowerCase().includes(q)
+        );
+      })
+      .sort((a, b) => b.remainingDebt - a.remainingDebt || b.totalPurchases - a.totalPurchases);
+  }, [suppliers, supplierInvoices, dirSearch, todayStr]);
+
+  const openNewSupplierModal = () => {
+    setEditingSupplier(null);
+    setDirSupName('');
+    setDirSupPhone('');
+    setDirSupIce('');
+    setDirSupCategory('');
+    setDirSupAddress('');
+    setDirSupNotes('');
+    setShowSupplierModal(true);
+  };
+
+  const openEditSupplierModal = (profile: SupplierProfile) => {
+    setEditingSupplier(profile);
+    setDirSupName(profile.name);
+    setDirSupPhone(profile.phone || '');
+    setDirSupIce(profile.ice || '');
+    setDirSupCategory(profile.category || '');
+    setDirSupAddress(profile.address || '');
+    setDirSupNotes(profile.notes || '');
+    setShowSupplierModal(true);
+  };
+
+  const handleSaveSupplierProfile = (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!dirSupName.trim()) return;
+    if (editingSupplier) {
+      updateSupplier(editingSupplier.id, {
+        name: dirSupName.trim(),
+        phone: dirSupPhone.trim() || undefined,
+        ice: dirSupIce.trim() || undefined,
+        category: dirSupCategory.trim() || undefined,
+        address: dirSupAddress.trim() || undefined,
+        notes: dirSupNotes.trim() || undefined
+      });
+      setToastMsg(isAr ? `تم تحديث بيانات المورد: ${dirSupName.trim()}` : `Updated supplier: ${dirSupName.trim()}`);
+    } else {
+      addSupplier({
+        name: dirSupName.trim(),
+        phone: dirSupPhone.trim() || undefined,
+        ice: dirSupIce.trim() || undefined,
+        category: dirSupCategory.trim() || undefined,
+        address: dirSupAddress.trim() || undefined,
+        notes: dirSupNotes.trim() || undefined
+      });
+      setToastMsg(isAr ? `تمت إضافة المورد للدليل: ${dirSupName.trim()}` : `Added supplier: ${dirSupName.trim()}`);
+    }
+    setShowSupplierModal(false);
+    setTimeout(() => setToastMsg(null), 3500);
+  };
+
+  const handleConfirmFifoPayment = (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!fifoPayTarget) return;
+    const amt = parseFloat(fifoPayAmount);
+    if (isNaN(amt) || amt <= 0) return;
+    const res = paySupplierBalanceFIFO(fifoPayTarget.name, amt, fifoPayTarget.ice);
+    setFifoPayTarget(null);
+    setFifoPayAmount('');
+    setToastMsg(
+      isAr
+        ? `تم تسديد ${res.appliedAmount.toFixed(2)} ${currencySymbol} أوتوماتيكياً على ${res.paidCount} فاتورة للمورد ${fifoPayTarget.name}`
+        : `Paid ${res.appliedAmount.toFixed(2)} ${currencySymbol} across ${res.paidCount} invoices (FIFO)`
+    );
+    setTimeout(() => setToastMsg(null), 4000);
+  };
 
   const supplierMetrics = useMemo(() => {
     const totalPurchased = supplierInvoices.reduce((s, inv) => s + (inv.totalAmount || 0), 0);
@@ -406,6 +603,223 @@ export const ExpensesView: React.FC = () => {
                 {supplierMetrics.unpaidCount} {isAr ? 'فاتورة تنتظر التسديد الكلي' : 'invoices pending full payment'}
               </div>
             </div>
+          </div>
+
+          {/* Dedicated Suppliers Directory & Account Statements */}
+          <div className="p-6 rounded-3xl bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 shadow-xs space-y-4">
+            <div className="flex flex-wrap items-center justify-between gap-3 pb-3 border-b border-slate-100 dark:border-slate-800">
+              <div className="flex items-center gap-2.5">
+                <div className="w-9 h-9 rounded-xl bg-indigo-50 dark:bg-indigo-950/60 text-indigo-600 dark:text-indigo-400 flex items-center justify-center shrink-0">
+                  <Users className="w-5 h-5" />
+                </div>
+                <div>
+                  <h3 className="font-extrabold text-sm text-slate-900 dark:text-white">
+                    {isAr ? 'دليل وحسابات الموردين (دفتر الموردين)' : 'Suppliers Directory & Accounts'}
+                  </h3>
+                  <p className="text-[11px] text-slate-500">
+                    {isAr
+                      ? `${supplierDirectoryList.length} مورد · تتبع الديون وتسديد الفواتير بالأقدمية FIFO`
+                      : `${supplierDirectoryList.length} suppliers · Balance ledger & FIFO batch settlement`}
+                  </p>
+                </div>
+              </div>
+
+              <div className="flex flex-wrap items-center gap-2">
+                <div className="relative">
+                  <Search className="w-3.5 h-3.5 text-slate-400 absolute start-3 top-1/2 -translate-y-1/2 pointer-events-none" />
+                  <input
+                    type="text"
+                    value={dirSearch}
+                    onChange={(e) => setDirSearch(e.target.value)}
+                    placeholder={isAr ? 'ابحث في دليل الموردين...' : 'Search suppliers directory...'}
+                    className="ps-8 pe-3 py-1.5 text-xs bg-slate-50 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 rounded-xl"
+                  />
+                </div>
+                <button
+                  type="button"
+                  onClick={openNewSupplierModal}
+                  className="px-3.5 py-2 rounded-xl bg-indigo-600 hover:bg-indigo-700 text-white text-xs font-black flex items-center gap-1.5 whitespace-nowrap"
+                >
+                  <Plus className="w-3.5 h-3.5" />
+                  <span>{isAr ? 'إضافة مورد للدليل' : 'Add Supplier'}</span>
+                </button>
+              </div>
+            </div>
+
+            {supplierDirectoryList.length === 0 ? (
+              <div className="py-8 text-center text-slate-400 border border-dashed border-slate-200 dark:border-slate-800 rounded-2xl text-xs font-semibold">
+                {isAr
+                  ? 'لا يوجد موردون مسجلون بعد. أضف مورداً جديداً أو سجل فاتورة شراء.'
+                  : 'No suppliers recorded yet.'}
+              </div>
+            ) : (
+              <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-3.5">
+                {supplierDirectoryList.map((entry) => {
+                  const cleanPhone = (entry.phone || '').replace(/[^\d+]/g, '');
+                  const waHref = cleanPhone
+                    ? `https://wa.me/${cleanPhone.replace(/^\+/, '')}?text=${encodeURIComponent(
+                        isAr
+                          ? `السلام عليكم ${entry.name}، هذا تذكير بوضعية الحساب: إجمالي المشتريات ${entry.totalPurchases.toFixed(
+                              2
+                            )} ${currencySymbol}، المؤدى ${entry.totalPaid.toFixed(
+                              2
+                            )} ${currencySymbol}، الباقي المستحق ${entry.remainingDebt.toFixed(2)} ${currencySymbol}.`
+                          : `Hello ${entry.name}, account summary: Total ${entry.totalPurchases.toFixed(
+                              2
+                            )}, Paid ${entry.totalPaid.toFixed(2)}, Remaining ${entry.remainingDebt.toFixed(2)} ${currencySymbol}.`
+                      )}`
+                    : '';
+
+                  return (
+                    <div
+                      key={entry.key}
+                      className="p-4 rounded-2xl bg-slate-50/75 dark:bg-slate-800/45 border border-slate-200 dark:border-slate-700/80 flex flex-col justify-between gap-3"
+                    >
+                      <div className="space-y-1.5">
+                        <div className="flex items-start justify-between gap-2">
+                          <div className="flex items-center gap-2 min-w-0">
+                            <Building2 className="w-4 h-4 text-indigo-600 dark:text-indigo-400 shrink-0" />
+                            <span className="font-black text-sm text-slate-900 dark:text-white truncate">
+                              {entry.name}
+                            </span>
+                          </div>
+                          {entry.remainingDebt > 0 ? (
+                            <span className="px-2 py-0.5 rounded-lg text-[10px] font-black bg-amber-100 text-amber-800 dark:bg-amber-950/70 dark:text-amber-300 font-mono tabular-nums shrink-0">
+                              {entry.remainingDebt.toFixed(2)} {currencySymbol}
+                            </span>
+                          ) : (
+                            <span className="px-2 py-0.5 rounded-lg text-[10px] font-black bg-emerald-100 text-emerald-700 dark:bg-emerald-950/70 dark:text-emerald-300 shrink-0">
+                              {isAr ? 'رصيد 0' : 'Settled'}
+                            </span>
+                          )}
+                        </div>
+
+                        <div className="flex flex-wrap items-center gap-2 text-[11px] text-slate-500 font-mono">
+                          {entry.ice && (
+                            <span className="px-1.5 py-0.5 rounded bg-emerald-50 dark:bg-emerald-950/50 text-emerald-700 dark:text-emerald-300 font-bold">
+                              ICE: {entry.ice}
+                            </span>
+                          )}
+                          {entry.phone && (
+                            <span className="inline-flex items-center gap-1">
+                              <Phone className="w-3 h-3" />
+                              {entry.phone}
+                            </span>
+                          )}
+                          {entry.category && (
+                            <span className="font-sans px-1.5 py-0.5 rounded bg-slate-200/70 dark:bg-slate-700/70 text-slate-700 dark:text-slate-200">
+                              {entry.category}
+                            </span>
+                          )}
+                        </div>
+
+                        <div className="grid grid-cols-3 gap-2 pt-1.5 text-[11px]">
+                          <div className="p-1.5 rounded-lg bg-white dark:bg-slate-900 border border-slate-200/70 dark:border-slate-700/60">
+                            <div className="text-[10px] text-slate-400">{isAr ? 'المشتريات' : 'Total'}</div>
+                            <div className="font-mono font-bold tabular-nums text-slate-800 dark:text-slate-100">
+                              {entry.totalPurchases.toFixed(0)}
+                            </div>
+                          </div>
+                          <div className="p-1.5 rounded-lg bg-white dark:bg-slate-900 border border-slate-200/70 dark:border-slate-700/60">
+                            <div className="text-[10px] text-slate-400">{isAr ? 'المؤدى' : 'Paid'}</div>
+                            <div className="font-mono font-bold tabular-nums text-emerald-600 dark:text-emerald-400">
+                              {entry.totalPaid.toFixed(0)}
+                            </div>
+                          </div>
+                          <div className="p-1.5 rounded-lg bg-white dark:bg-slate-900 border border-slate-200/70 dark:border-slate-700/60">
+                            <div className="text-[10px] text-slate-400">{isAr ? 'الفواتير' : 'Inv'}</div>
+                            <div className="font-mono font-bold tabular-nums text-slate-800 dark:text-slate-100">
+                              {entry.invoicesCount}
+                            </div>
+                          </div>
+                        </div>
+                      </div>
+
+                      <div className="flex flex-wrap items-center justify-between gap-1.5 pt-2 border-t border-slate-200 dark:border-slate-700/70">
+                        <div className="flex flex-wrap items-center gap-1.5">
+                          <button
+                            type="button"
+                            onClick={() => {
+                              setSupName(entry.name);
+                              if (entry.ice) setSupIce(entry.ice);
+                              if (entry.phone) setSupPhone(entry.phone);
+                            }}
+                            className="px-2.5 py-1 rounded-lg bg-indigo-50 dark:bg-indigo-950/60 text-indigo-700 dark:text-indigo-300 hover:bg-indigo-100 text-[11px] font-bold"
+                          >
+                            {isAr ? '+ فاتورة' : '+ Invoice'}
+                          </button>
+
+                          {entry.remainingDebt > 0 && (
+                            <button
+                              type="button"
+                              onClick={() => {
+                                setFifoPayTarget({
+                                  name: entry.name,
+                                  ice: entry.ice,
+                                  remainingDebt: entry.remainingDebt
+                                });
+                                setFifoPayAmount(entry.remainingDebt.toFixed(2));
+                              }}
+                              className="px-2.5 py-1 rounded-lg bg-emerald-600 hover:bg-emerald-700 text-white text-[11px] font-black inline-flex items-center gap-1"
+                            >
+                              <CreditCard className="w-3 h-3" />
+                              <span>{isAr ? 'تسديد FIFO' : 'Pay FIFO'}</span>
+                            </button>
+                          )}
+
+                          {waHref && (
+                            <a
+                              href={waHref}
+                              target="_blank"
+                              rel="noopener noreferrer"
+                              className="px-2.5 py-1 rounded-lg bg-green-600 hover:bg-green-700 text-white text-[11px] font-bold inline-flex items-center gap-1"
+                              title={isAr ? 'إرسال كشف الحساب عبر واتساب' : 'Send statement via WhatsApp'}
+                            >
+                              <MessageCircle className="w-3 h-3" />
+                              <span>{isAr ? 'واتساب' : 'WA'}</span>
+                            </a>
+                          )}
+                        </div>
+
+                        {entry.profile && (
+                          <div className="flex items-center gap-1">
+                            <button
+                              type="button"
+                              onClick={() => openEditSupplierModal(entry.profile!)}
+                              className="p-1 rounded-lg text-slate-500 hover:text-indigo-600 hover:bg-indigo-50 dark:hover:bg-indigo-950/50"
+                              title={isAr ? 'تعديل المورد' : 'Edit'}
+                            >
+                              <Pencil className="w-3.5 h-3.5" />
+                            </button>
+                            {confirmDeleteSupplierId === entry.profile.id ? (
+                              <button
+                                type="button"
+                                onClick={() => {
+                                  deleteSupplier(entry.profile!.id);
+                                  setConfirmDeleteSupplierId(null);
+                                }}
+                                className="px-2 py-0.5 rounded bg-rose-600 text-white text-[10px] font-bold"
+                              >
+                                {isAr ? 'تأكيد' : 'OK'}
+                              </button>
+                            ) : (
+                              <button
+                                type="button"
+                                onClick={() => setConfirmDeleteSupplierId(entry.profile!.id)}
+                                className="p-1 rounded-lg text-slate-400 hover:text-rose-600 hover:bg-rose-50 dark:hover:bg-rose-950/50"
+                                title={isAr ? 'حذف من الدليل' : 'Delete'}
+                              >
+                                <Trash2 className="w-3.5 h-3.5" />
+                              </button>
+                            )}
+                          </div>
+                        )}
+                      </div>
+                    </div>
+                  );
+                })}
+              </div>
+            )}
           </div>
 
           {/* Add Supplier Invoice Form */}
@@ -1420,6 +1834,211 @@ export const ExpensesView: React.FC = () => {
               >
                 <Check className="w-4 h-4" />
                 <span>{isAr ? 'حفظ التعديلات' : 'Save Changes'}</span>
+              </button>
+            </div>
+          </form>
+        </div>
+      )}
+
+      {/* Add / Edit Supplier Profile Modal */}
+      {showSupplierModal && (
+        <div
+          className="fixed inset-0 z-50 flex items-center justify-center bg-slate-950/60 backdrop-blur-xs p-4"
+          onClick={() => setShowSupplierModal(false)}
+        >
+          <form
+            onClick={(e) => e.stopPropagation()}
+            onSubmit={handleSaveSupplierProfile}
+            className="w-full max-w-md bg-white dark:bg-slate-900 rounded-3xl border border-slate-200 dark:border-slate-800 p-6 space-y-4 shadow-2xl"
+          >
+            <div className="flex items-center justify-between border-b border-slate-100 dark:border-slate-800 pb-3">
+              <h3 className="font-extrabold text-sm text-slate-900 dark:text-white flex items-center gap-2">
+                <Building2 className="w-4 h-4 text-indigo-600" />
+                <span>
+                  {editingSupplier
+                    ? isAr
+                      ? 'تعديل بيانات المورد'
+                      : 'Edit Supplier'
+                    : isAr
+                    ? 'إضافة مورد جديد للدليل'
+                    : 'Add New Supplier'}
+                </span>
+              </h3>
+              <button
+                type="button"
+                onClick={() => setShowSupplierModal(false)}
+                className="p-1 rounded-lg hover:bg-slate-100 dark:hover:bg-slate-800"
+              >
+                <X className="w-4 h-4 text-slate-400" />
+              </button>
+            </div>
+
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+              <div className="sm:col-span-2">
+                <label className="block text-xs font-bold text-slate-700 dark:text-slate-300 mb-1">
+                  {isAr ? 'اسم المورد / الشركة *' : 'Supplier Name *'}
+                </label>
+                <input
+                  type="text"
+                  required
+                  value={dirSupName}
+                  onChange={(e) => setDirSupName(e.target.value)}
+                  className="w-full px-3 py-2 text-xs font-bold bg-slate-50 dark:bg-slate-800 border border-slate-300 dark:border-slate-700 rounded-xl"
+                />
+              </div>
+
+              <div>
+                <label className="block text-xs font-bold text-slate-700 dark:text-slate-300 mb-1">
+                  {isAr ? 'رقم الهاتف / واتساب' : 'Phone / WhatsApp'}
+                </label>
+                <input
+                  type="tel"
+                  value={dirSupPhone}
+                  onChange={(e) => setDirSupPhone(e.target.value)}
+                  placeholder="+2126..."
+                  className="w-full px-3 py-2 text-xs font-mono bg-slate-50 dark:bg-slate-800 border border-slate-300 dark:border-slate-700 rounded-xl"
+                />
+              </div>
+
+              <div>
+                <label className="block text-xs font-bold text-slate-700 dark:text-slate-300 mb-1">
+                  {isAr ? 'رقم ICE الضريبي' : 'ICE Tax ID'}
+                </label>
+                <input
+                  type="text"
+                  value={dirSupIce}
+                  onChange={(e) => setDirSupIce(e.target.value)}
+                  className="w-full px-3 py-2 text-xs font-mono bg-slate-50 dark:bg-slate-800 border border-slate-300 dark:border-slate-700 rounded-xl"
+                />
+              </div>
+
+              <div>
+                <label className="block text-xs font-bold text-slate-700 dark:text-slate-300 mb-1">
+                  {isAr ? 'التخصص / المجال' : 'Category'}
+                </label>
+                <input
+                  type="text"
+                  value={dirSupCategory}
+                  onChange={(e) => setDirSupCategory(e.target.value)}
+                  placeholder={isAr ? 'ألبان، مشروبات، جملة...' : 'Dairy, Beverages...'}
+                  className="w-full px-3 py-2 text-xs bg-slate-50 dark:bg-slate-800 border border-slate-300 dark:border-slate-700 rounded-xl"
+                />
+              </div>
+
+              <div>
+                <label className="block text-xs font-bold text-slate-700 dark:text-slate-300 mb-1">
+                  {isAr ? 'العنوان / المدينة' : 'Address'}
+                </label>
+                <input
+                  type="text"
+                  value={dirSupAddress}
+                  onChange={(e) => setDirSupAddress(e.target.value)}
+                  className="w-full px-3 py-2 text-xs bg-slate-50 dark:bg-slate-800 border border-slate-300 dark:border-slate-700 rounded-xl"
+                />
+              </div>
+
+              <div className="sm:col-span-2">
+                <label className="block text-xs font-bold text-slate-700 dark:text-slate-300 mb-1">
+                  {isAr ? 'ملاحظات' : 'Notes'}
+                </label>
+                <input
+                  type="text"
+                  value={dirSupNotes}
+                  onChange={(e) => setDirSupNotes(e.target.value)}
+                  className="w-full px-3 py-2 text-xs bg-slate-50 dark:bg-slate-800 border border-slate-300 dark:border-slate-700 rounded-xl"
+                />
+              </div>
+            </div>
+
+            <div className="flex justify-end gap-2 pt-2">
+              <button
+                type="button"
+                onClick={() => setShowSupplierModal(false)}
+                className="px-4 py-2 text-xs font-bold text-slate-600 dark:text-slate-300 bg-slate-100 dark:bg-slate-800 rounded-xl"
+              >
+                {isAr ? 'إلغاء' : 'Cancel'}
+              </button>
+              <button
+                type="submit"
+                className="px-5 py-2 text-xs font-black text-white bg-indigo-600 hover:bg-indigo-700 rounded-xl"
+              >
+                {isAr ? 'حفظ المورد' : 'Save Supplier'}
+              </button>
+            </div>
+          </form>
+        </div>
+      )}
+
+      {/* FIFO Batch Settlement Modal */}
+      {fifoPayTarget && (
+        <div
+          className="fixed inset-0 z-50 flex items-center justify-center bg-slate-950/60 backdrop-blur-xs p-4"
+          onClick={() => setFifoPayTarget(null)}
+        >
+          <form
+            onClick={(e) => e.stopPropagation()}
+            onSubmit={handleConfirmFifoPayment}
+            className="w-full max-w-sm bg-white dark:bg-slate-900 rounded-3xl border border-slate-200 dark:border-slate-800 p-6 space-y-4 shadow-2xl"
+          >
+            <div className="flex items-center justify-between border-b border-slate-100 dark:border-slate-800 pb-3">
+              <div>
+                <h3 className="font-extrabold text-sm text-slate-900 dark:text-white">
+                  {isAr ? 'تسديد رصيد المورد (FIFO)' : 'FIFO Batch Payment'}
+                </h3>
+                <p className="text-[11px] text-slate-500 mt-0.5">{fifoPayTarget.name}</p>
+              </div>
+              <button
+                type="button"
+                onClick={() => setFifoPayTarget(null)}
+                className="p-1 rounded-lg hover:bg-slate-100 dark:hover:bg-slate-800"
+              >
+                <X className="w-4 h-4 text-slate-400" />
+              </button>
+            </div>
+
+            <div className="p-3 rounded-xl bg-amber-50 dark:bg-amber-950/40 border border-amber-200 dark:border-amber-800/70 text-xs flex items-center justify-between">
+              <span className="font-bold text-amber-800 dark:text-amber-300">
+                {isAr ? 'مجموع الباقي في الفواتير:' : 'Total Remaining Debt:'}
+              </span>
+              <span className="font-mono font-black text-amber-700 dark:text-amber-400 tabular-nums">
+                {fifoPayTarget.remainingDebt.toFixed(2)} {currencySymbol}
+              </span>
+            </div>
+
+            <div>
+              <label className="block text-xs font-bold text-slate-700 dark:text-slate-300 mb-1">
+                {isAr ? `مبلغ الدفعة (${currencySymbol})` : `Payment Amount (${currencySymbol})`}
+              </label>
+              <input
+                type="number"
+                step="any"
+                min="0.01"
+                max={fifoPayTarget.remainingDebt}
+                required
+                value={fifoPayAmount}
+                onChange={(e) => setFifoPayAmount(e.target.value)}
+                className="w-full px-3 py-2 text-base font-mono font-black bg-slate-50 dark:bg-slate-800 border border-slate-300 dark:border-slate-700 rounded-xl"
+              />
+              <p className="text-[10px] text-slate-400 mt-1">
+                {isAr
+                  ? 'سيتم توزيع الدفعة تلقائياً بدءاً من أقدم فاتورة غير مؤداة.'
+                  : 'Amount is automatically applied to the oldest unpaid invoices first.'}
+              </p>
+            </div>
+
+            <div className="flex justify-end gap-2 pt-1">
+              <button
+                type="button"
+                onClick={() => setFifoPayTarget(null)}
+                className="px-4 py-2 text-xs font-bold text-slate-600 dark:text-slate-300 bg-slate-100 dark:bg-slate-800 rounded-xl"
+              >
+                {isAr ? 'إلغاء' : 'Cancel'}
+              </button>
+              <button
+                type="submit"
+                className="px-5 py-2 text-xs font-black text-white bg-emerald-600 hover:bg-emerald-700 rounded-xl"
+              >
+                {isAr ? 'تأكيد التسديد' : 'Confirm Payment'}
               </button>
             </div>
           </form>

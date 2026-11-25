@@ -26,6 +26,7 @@ import { playSound } from '../../utils/audio';
 import { compressImageFile } from '../../utils/imageUtils';
 import { ProductCameraModal } from './ProductCameraModal';
 import { BarcodeScannerModal } from './BarcodeScannerModal';
+import { ShelfLabelPrintModal } from '../inventory/ShelfLabelPrintModal';
 import { lookupProductByBarcode } from '../../utils/openFoodFacts';
 import { bluetoothScanner } from '../../utils/bluetoothScanner';
 import { PriceAlertAdvisor } from '../alerts/PriceAlertAdvisor';
@@ -71,6 +72,14 @@ export const EditProductModal: React.FC<EditProductModalProps> = ({
   const [image, setImage] = useState<string>('');
   const [color, setColor] = useState<string>('#059669');
   const [repType, setRepType] = useState<'image' | 'color'>('image');
+  const [scalePlu, setScalePlu] = useState('');
+  const [boxChildProductId, setBoxChildProductId] = useState('');
+  const [unitsPerBox, setUnitsPerBox] = useState('');
+  const [semiWholesaleMinQty, setSemiWholesaleMinQty] = useState('');
+  const [semiWholesalePrice, setSemiWholesalePrice] = useState('');
+  const [wholesaleMinQty, setWholesaleMinQty] = useState('');
+  const [wholesalePrice, setWholesalePrice] = useState('');
+  const [showLabelPrintModal, setShowLabelPrintModal] = useState(false);
 
   // Camera, Lookup & File Upload
   const [showCameraModal, setShowCameraModal] = useState(false);
@@ -100,6 +109,13 @@ export const EditProductModal: React.FC<EditProductModalProps> = ({
       setImage(product.image || '');
       setColor(product.color || '#059669');
       setRepType(product.image ? 'image' : 'color');
+      setScalePlu(product.scalePlu || '');
+      setBoxChildProductId(product.boxChildProductId || '');
+      setUnitsPerBox(product.unitsPerBox ? String(product.unitsPerBox) : '');
+      setSemiWholesaleMinQty(product.semiWholesaleMinQty ? String(product.semiWholesaleMinQty) : '');
+      setSemiWholesalePrice(product.semiWholesalePrice ? String(product.semiWholesalePrice) : '');
+      setWholesaleMinQty(product.wholesaleMinQty ? String(product.wholesaleMinQty) : '');
+      setWholesalePrice(product.wholesalePrice ? String(product.wholesalePrice) : '');
       setIsProcessingImage(false);
       setIsLookingUpBarcode(false);
       setBarcodeLookupNote(null);
@@ -244,6 +260,12 @@ export const EditProductModal: React.FC<EditProductModalProps> = ({
     const nextPrice = Math.max(0, Number(price));
     const nextCost = Math.max(0, Number(costPrice));
 
+    const parsedUnitsPerBox = parseInt(unitsPerBox, 10);
+    const parsedSemiQty = parseFloat(semiWholesaleMinQty);
+    const parsedSemiPrice = parseFloat(semiWholesalePrice);
+    const parsedWsQty = parseFloat(wholesaleMinQty);
+    const parsedWsPrice = parseFloat(wholesalePrice);
+
     updateProduct(product.id, {
       name: name.trim(),
       nameEn: nameEn.trim() || name.trim(),
@@ -256,7 +278,14 @@ export const EditProductModal: React.FC<EditProductModalProps> = ({
       sku: sku.trim(),
       image: repType === 'image' ? image : undefined,
       color: color,
-      expiryDate: expiryDate ? expiryDate : undefined
+      expiryDate: expiryDate ? expiryDate : undefined,
+      scalePlu: scalePlu.trim() ? scalePlu.trim() : undefined,
+      boxChildProductId: unitType === 'box' && boxChildProductId ? boxChildProductId : undefined,
+      unitsPerBox: unitType === 'box' && parsedUnitsPerBox > 0 ? parsedUnitsPerBox : undefined,
+      semiWholesaleMinQty: parsedSemiQty > 0 ? parsedSemiQty : undefined,
+      semiWholesalePrice: parsedSemiPrice > 0 ? parsedSemiPrice : undefined,
+      wholesaleMinQty: parsedWsQty > 0 ? parsedWsQty : undefined,
+      wholesalePrice: parsedWsPrice > 0 ? parsedWsPrice : undefined
     });
 
     if (nextCost > 0 && nextPrice <= nextCost) {
@@ -424,6 +453,19 @@ export const EditProductModal: React.FC<EditProductModalProps> = ({
                   onChange={(e) => setSku(e.target.value)}
                   className="w-full px-3 py-2 bg-white dark:bg-slate-800 border border-slate-300 dark:border-slate-700 rounded-xl font-mono text-slate-900 dark:text-white"
                 />
+                <div className="mt-2">
+                  <label className="block text-[11px] font-semibold text-slate-600 dark:text-slate-400 mb-1">
+                    {isAr ? 'رمز الميزان الإلكتروني (Scale PLU)' : 'Scale PLU'}
+                  </label>
+                  <input
+                    type="text"
+                    value={scalePlu}
+                    onChange={(e) => setScalePlu(e.target.value)}
+                    placeholder="00105"
+                    dir="ltr"
+                    className="w-full px-3 py-1.5 bg-white dark:bg-slate-800 border border-slate-300 dark:border-slate-700 rounded-xl font-mono text-xs text-slate-900 dark:text-white"
+                  />
+                </div>
               </div>
             </div>
           </div>
@@ -530,6 +572,71 @@ export const EditProductModal: React.FC<EditProductModalProps> = ({
                 if (typeof patch.costPrice === 'number') setCostPrice(patch.costPrice);
               }}
             />
+
+            {/* Wholesale & Semi-Wholesale Quantity Tiers */}
+            <div className="pt-2 border-t border-slate-200/70 dark:border-slate-700/70 space-y-2">
+              <div className="text-[11px] font-extrabold text-slate-700 dark:text-slate-300">
+                {isAr ? 'تسعيرة الجملة ونصف الجملة التلقائية (اختياري)' : 'Wholesale & Semi-Wholesale Tiers'}
+              </div>
+              <div className="grid grid-cols-2 sm:grid-cols-4 gap-2">
+                <div>
+                  <label className="block text-[10px] font-semibold text-slate-500 dark:text-slate-400 mb-0.5">
+                    {isAr ? 'كمية نصف الجملة' : 'Semi-WS Qty'}
+                  </label>
+                  <input
+                    type="number"
+                    min="0"
+                    step="any"
+                    value={semiWholesaleMinQty}
+                    onChange={(e) => setSemiWholesaleMinQty(e.target.value)}
+                    placeholder="5"
+                    className="w-full px-2.5 py-1.5 text-xs font-mono bg-white dark:bg-slate-800 border border-slate-300 dark:border-slate-700 rounded-lg text-slate-900 dark:text-white"
+                  />
+                </div>
+                <div>
+                  <label className="block text-[10px] font-semibold text-slate-500 dark:text-slate-400 mb-0.5">
+                    {isAr ? `سعر نصف الجملة (${currencySymbol})` : 'Semi-WS Price'}
+                  </label>
+                  <input
+                    type="number"
+                    min="0"
+                    step="0.05"
+                    value={semiWholesalePrice}
+                    onChange={(e) => setSemiWholesalePrice(e.target.value)}
+                    placeholder="0.00"
+                    className="w-full px-2.5 py-1.5 text-xs font-mono bg-white dark:bg-slate-800 border border-slate-300 dark:border-slate-700 rounded-lg text-slate-900 dark:text-white"
+                  />
+                </div>
+                <div>
+                  <label className="block text-[10px] font-semibold text-slate-500 dark:text-slate-400 mb-0.5">
+                    {isAr ? 'كمية الجملة' : 'Wholesale Qty'}
+                  </label>
+                  <input
+                    type="number"
+                    min="0"
+                    step="any"
+                    value={wholesaleMinQty}
+                    onChange={(e) => setWholesaleMinQty(e.target.value)}
+                    placeholder="12"
+                    className="w-full px-2.5 py-1.5 text-xs font-mono bg-white dark:bg-slate-800 border border-slate-300 dark:border-slate-700 rounded-lg text-slate-900 dark:text-white"
+                  />
+                </div>
+                <div>
+                  <label className="block text-[10px] font-semibold text-slate-500 dark:text-slate-400 mb-0.5">
+                    {isAr ? `سعر الجملة (${currencySymbol})` : 'Wholesale Price'}
+                  </label>
+                  <input
+                    type="number"
+                    min="0"
+                    step="0.05"
+                    value={wholesalePrice}
+                    onChange={(e) => setWholesalePrice(e.target.value)}
+                    placeholder="0.00"
+                    className="w-full px-2.5 py-1.5 text-xs font-mono bg-white dark:bg-slate-800 border border-slate-300 dark:border-slate-700 rounded-lg text-slate-900 dark:text-white"
+                  />
+                </div>
+              </div>
+            </div>
           </div>
 
           {/* Section 3: Feature / Unit & Category (المميزة والفئة) */}
@@ -614,6 +721,44 @@ export const EditProductModal: React.FC<EditProductModalProps> = ({
                 </div>
               </div>
             </div>
+
+            {unitType === 'box' && (
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-2.5 p-3 rounded-xl bg-white dark:bg-slate-800 border border-emerald-200 dark:border-emerald-800">
+                <div>
+                  <label className="block text-[11px] font-bold text-slate-700 dark:text-slate-300 mb-1">
+                    {isAr ? 'سلعة التفصيل عند فك الكرتون (اختياري)' : 'Unpack Target Product'}
+                  </label>
+                  <select
+                    value={boxChildProductId}
+                    onChange={(e) => setBoxChildProductId(e.target.value)}
+                    className="w-full px-2.5 py-1.5 text-xs bg-slate-50 dark:bg-slate-900 border border-slate-200 dark:border-slate-700 rounded-lg text-slate-900 dark:text-white"
+                  >
+                    <option value="">{isAr ? '— اختر السلعة بالحبة —' : '— Select retail unit —'}</option>
+                    {products
+                      .filter((p) => p.id !== product.id && p.unitType !== 'box')
+                      .map((p) => (
+                        <option key={p.id} value={p.id}>
+                          {p.name} ({p.stock})
+                        </option>
+                      ))}
+                  </select>
+                </div>
+                <div>
+                  <label className="block text-[11px] font-bold text-slate-700 dark:text-slate-300 mb-1">
+                    {isAr ? 'عدد الحبات داخل الكرتون' : 'Units per Box'}
+                  </label>
+                  <input
+                    type="number"
+                    min={1}
+                    step={1}
+                    value={unitsPerBox}
+                    onChange={(e) => setUnitsPerBox(e.target.value)}
+                    placeholder="24"
+                    className="w-full px-2.5 py-1.5 text-xs font-mono bg-slate-50 dark:bg-slate-900 border border-slate-200 dark:border-slate-700 rounded-lg text-slate-900 dark:text-white"
+                  />
+                </div>
+              </div>
+            )}
           </div>
 
           {/* Section: Expiry Date (تاريخ انتهاء الصلاحية) */}
@@ -820,21 +965,31 @@ export const EditProductModal: React.FC<EditProductModalProps> = ({
 
 
           {/* Submit Footer */}
-          <div className="pt-3 border-t border-slate-100 dark:border-slate-800 flex items-center justify-end gap-3">
+          <div className="pt-3 border-t border-slate-100 dark:border-slate-800 flex flex-wrap items-center justify-between gap-2.5">
             <button
               type="button"
-              onClick={onClose}
-              className="px-5 py-2.5 rounded-xl border border-slate-200 dark:border-slate-700 text-slate-700 dark:text-slate-300 text-xs font-bold hover:bg-slate-100 dark:hover:bg-slate-800 transition-colors"
+              onClick={() => setShowLabelPrintModal(true)}
+              className="px-4 py-2.5 rounded-xl border border-slate-200 dark:border-slate-700 bg-slate-50 dark:bg-slate-800 text-slate-700 dark:text-slate-200 text-xs font-bold hover:bg-slate-100 dark:hover:bg-slate-700 transition-colors flex items-center gap-1.5"
             >
-              {isAr ? 'إلغاء' : 'Cancel'}
+              <Barcode className="w-4 h-4 text-emerald-600" />
+              <span>{isAr ? 'طباعة ملصق / باركود' : 'Print Label'}</span>
             </button>
-            <button
-              type="submit"
-              className="px-6 py-2.5 rounded-xl bg-emerald-600 hover:bg-emerald-700 text-white text-xs font-extrabold shadow-sm hover:shadow transition-all flex items-center gap-2 active:scale-95"
-            >
-              <Check className="w-4 h-4 stroke-[3]" />
-              <span>{isAr ? 'حفظ التعديلات' : 'Save Changes'}</span>
-            </button>
+            <div className="flex items-center gap-2.5 ms-auto">
+              <button
+                type="button"
+                onClick={onClose}
+                className="px-5 py-2.5 rounded-xl border border-slate-200 dark:border-slate-700 text-slate-700 dark:text-slate-300 text-xs font-bold hover:bg-slate-100 dark:hover:bg-slate-800 transition-colors"
+              >
+                {isAr ? 'إلغاء' : 'Cancel'}
+              </button>
+              <button
+                type="submit"
+                className="px-6 py-2.5 rounded-xl bg-emerald-600 hover:bg-emerald-700 text-white text-xs font-extrabold shadow-sm hover:shadow transition-all flex items-center gap-2 active:scale-95"
+              >
+                <Check className="w-4 h-4 stroke-[3]" />
+                <span>{isAr ? 'حفظ التعديلات' : 'Save Changes'}</span>
+              </button>
+            </div>
           </div>
         </form>
 
@@ -860,6 +1015,13 @@ export const EditProductModal: React.FC<EditProductModalProps> = ({
             }}
           />
         )}
+
+        {/* Shelf Label Print Modal */}
+        <ShelfLabelPrintModal
+          isOpen={showLabelPrintModal}
+          onClose={() => setShowLabelPrintModal(false)}
+          initialProducts={product ? [product] : []}
+        />
       </div>
     </div>
   );

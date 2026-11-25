@@ -98,9 +98,16 @@ export const AddProductModal: React.FC<AddProductModalProps> = ({
   const [soldBy, setSoldBy] = useState<'each' | 'weight'>('each');
   const [unitType, setUnitType] = useState<UnitType>('piece');
 
-  // Pricing & Cost
+  // Pricing, Cost & Wholesale Tiers
   const [price, setPrice] = useState<number>(0);
   const [costPrice, setCostPrice] = useState<number>(0);
+  const [scalePlu, setScalePlu] = useState<string>('');
+  const [boxChildProductId, setBoxChildProductId] = useState<string>('');
+  const [unitsPerBox, setUnitsPerBox] = useState<string>('');
+  const [semiWholesaleMinQty, setSemiWholesaleMinQty] = useState<string>('');
+  const [semiWholesalePrice, setSemiWholesalePrice] = useState<string>('');
+  const [wholesaleMinQty, setWholesaleMinQty] = useState<string>('');
+  const [wholesalePrice, setWholesalePrice] = useState<string>('');
 
   // Inventory Tracking
   const [trackStock, setTrackStock] = useState<boolean>(true);
@@ -139,6 +146,13 @@ export const AddProductModal: React.FC<AddProductModalProps> = ({
       setExpiryDate('');
       setBarcode('');
       setSku('');
+      setScalePlu('');
+      setBoxChildProductId('');
+      setUnitsPerBox('');
+      setSemiWholesaleMinQty('');
+      setSemiWholesalePrice('');
+      setWholesaleMinQty('');
+      setWholesalePrice('');
       setHasVariants(false);
       setBarcodeErrorAlert(null);
       setIsLookingUpBarcode(false);
@@ -420,6 +434,12 @@ export const AddProductModal: React.FC<AddProductModalProps> = ({
         ? categoryId
         : categories.find((c) => c.id !== 'cat-all')?.id || 'cat-oils-grains';
 
+    const parsedUnitsPerBox = parseInt(unitsPerBox, 10);
+    const parsedSemiQty = parseFloat(semiWholesaleMinQty);
+    const parsedSemiPrice = parseFloat(semiWholesalePrice);
+    const parsedWsQty = parseFloat(wholesaleMinQty);
+    const parsedWsPrice = parseFloat(wholesalePrice);
+
     const newProductData: Omit<Product, 'id'> = {
       name: name.trim(),
       nameEn: nameEn.trim() || name.trim(),
@@ -435,7 +455,20 @@ export const AddProductModal: React.FC<AddProductModalProps> = ({
       color: finalColor,
       hasVariants,
       variants: parsedVariants,
-      expiryDate: expiryDate ? expiryDate : undefined
+      expiryDate: expiryDate ? expiryDate : undefined,
+      scalePlu: scalePlu.trim() ? scalePlu.trim() : undefined,
+      boxChildProductId:
+        soldBy === 'each' && unitType === 'box' && boxChildProductId
+          ? boxChildProductId
+          : undefined,
+      unitsPerBox:
+        soldBy === 'each' && unitType === 'box' && parsedUnitsPerBox > 0
+          ? parsedUnitsPerBox
+          : undefined,
+      semiWholesaleMinQty: parsedSemiQty > 0 ? parsedSemiQty : undefined,
+      semiWholesalePrice: parsedSemiPrice > 0 ? parsedSemiPrice : undefined,
+      wholesaleMinQty: parsedWsQty > 0 ? parsedWsQty : undefined,
+      wholesalePrice: parsedWsPrice > 0 ? parsedWsPrice : undefined
     };
 
     const res = addProduct(newProductData);
@@ -680,6 +713,19 @@ export const AddProductModal: React.FC<AddProductModalProps> = ({
                   placeholder="SKU-COF-01"
                   className="w-full px-3 py-2 bg-white dark:bg-slate-800 border border-slate-300 dark:border-slate-700 rounded-xl font-mono text-sm text-slate-900 dark:text-white focus:border-emerald-500 focus:outline-hidden"
                 />
+                <div className="mt-2">
+                  <label className="block text-[11px] font-semibold text-slate-600 dark:text-slate-400 mb-1">
+                    {isAr ? 'رمز الميزان الإلكتروني (Scale PLU - اختياري)' : 'Scale PLU (Optional)'}
+                  </label>
+                  <input
+                    type="text"
+                    value={scalePlu}
+                    onChange={(e) => setScalePlu(e.target.value)}
+                    placeholder="00105"
+                    dir="ltr"
+                    className="w-full px-3 py-1.5 bg-white dark:bg-slate-800 border border-slate-300 dark:border-slate-700 rounded-xl font-mono text-xs text-slate-900 dark:text-white focus:border-emerald-500 focus:outline-hidden"
+                  />
+                </div>
               </div>
             </div>
           </div>
@@ -835,6 +881,78 @@ export const AddProductModal: React.FC<AddProductModalProps> = ({
               </button>
             </div>
 
+            {soldBy === 'each' && (
+              <div className="space-y-2 pt-1">
+                <div className="flex flex-wrap items-center gap-2">
+                  <span className="text-slate-600 dark:text-slate-400 font-medium">
+                    {isAr ? 'النوع:' : 'Type:'}
+                  </span>
+                  <div className="flex gap-2">
+                    <button
+                      type="button"
+                      onClick={() => setUnitType('piece')}
+                      className={`px-3 py-1 rounded-lg border text-xs font-bold ${
+                        unitType === 'piece'
+                          ? 'bg-emerald-600 text-white border-emerald-600'
+                          : 'bg-white dark:bg-slate-800 text-slate-700 dark:text-slate-300 border-slate-300 dark:border-slate-700'
+                      }`}
+                    >
+                      {isAr ? 'حبة / قطعة' : 'Piece'}
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => setUnitType('box')}
+                      className={`px-3 py-1 rounded-lg border text-xs font-bold ${
+                        unitType === 'box'
+                          ? 'bg-emerald-600 text-white border-emerald-600'
+                          : 'bg-white dark:bg-slate-800 text-slate-700 dark:text-slate-300 border-slate-300 dark:border-slate-700'
+                      }`}
+                    >
+                      {isAr ? 'كرتون / صندوق (قابل للفك)' : 'Box (Unpackable)'}
+                    </button>
+                  </div>
+                </div>
+
+                {unitType === 'box' && (
+                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-2.5 p-3 rounded-xl bg-white dark:bg-slate-800 border border-emerald-200 dark:border-emerald-800">
+                    <div>
+                      <label className="block text-[11px] font-bold text-slate-700 dark:text-slate-300 mb-1">
+                        {isAr ? 'سلعة التفصيل عند فك الكرتون (اختياري)' : 'Unpack Target Product'}
+                      </label>
+                      <select
+                        value={boxChildProductId}
+                        onChange={(e) => setBoxChildProductId(e.target.value)}
+                        className="w-full px-2.5 py-1.5 text-xs bg-slate-50 dark:bg-slate-900 border border-slate-200 dark:border-slate-700 rounded-lg text-slate-900 dark:text-white"
+                      >
+                        <option value="">{isAr ? '— اختر السلعة بالحبة —' : '— Select retail unit —'}</option>
+                        {products
+                          .filter((p) => p.unitType !== 'box')
+                          .map((p) => (
+                            <option key={p.id} value={p.id}>
+                              {p.name} ({p.stock})
+                            </option>
+                          ))}
+                      </select>
+                    </div>
+                    <div>
+                      <label className="block text-[11px] font-bold text-slate-700 dark:text-slate-300 mb-1">
+                        {isAr ? 'عدد الحبات داخل الكرتون' : 'Units per Box'}
+                      </label>
+                      <input
+                        type="number"
+                        min={1}
+                        step={1}
+                        value={unitsPerBox}
+                        onChange={(e) => setUnitsPerBox(e.target.value)}
+                        placeholder="24"
+                        className="w-full px-2.5 py-1.5 text-xs font-mono bg-slate-50 dark:bg-slate-900 border border-slate-200 dark:border-slate-700 rounded-lg text-slate-900 dark:text-white"
+                      />
+                    </div>
+                  </div>
+                )}
+              </div>
+            )}
+
             {/* If sold by weight, allow picking Kg vs Liter */}
             {soldBy === 'weight' && (
               <div className="flex items-center gap-2 pt-1 animate-in fade-in">
@@ -950,6 +1068,71 @@ export const AddProductModal: React.FC<AddProductModalProps> = ({
                 if (typeof patch.costPrice === 'number') setCostPrice(patch.costPrice);
               }}
             />
+
+            {/* Wholesale & Semi-Wholesale Quantity Tier Pricing */}
+            <div className="pt-2 border-t border-slate-200/70 dark:border-slate-700/70 space-y-2">
+              <div className="text-[11px] font-extrabold text-slate-700 dark:text-slate-300">
+                {isAr ? 'تسعيرة الجملة ونصف الجملة التلقائية (اختياري)' : 'Wholesale & Semi-Wholesale Tiers (Optional)'}
+              </div>
+              <div className="grid grid-cols-2 sm:grid-cols-4 gap-2">
+                <div>
+                  <label className="block text-[10px] font-semibold text-slate-500 dark:text-slate-400 mb-0.5">
+                    {isAr ? 'كمية نصف الجملة' : 'Semi-WS Min Qty'}
+                  </label>
+                  <input
+                    type="number"
+                    min="0"
+                    step="any"
+                    value={semiWholesaleMinQty}
+                    onChange={(e) => setSemiWholesaleMinQty(e.target.value)}
+                    placeholder="5"
+                    className="w-full px-2.5 py-1.5 text-xs font-mono bg-white dark:bg-slate-800 border border-slate-300 dark:border-slate-700 rounded-lg text-slate-900 dark:text-white"
+                  />
+                </div>
+                <div>
+                  <label className="block text-[10px] font-semibold text-slate-500 dark:text-slate-400 mb-0.5">
+                    {isAr ? `سعر نصف الجملة (${currencySymbol})` : 'Semi-WS Price'}
+                  </label>
+                  <input
+                    type="number"
+                    min="0"
+                    step="0.05"
+                    value={semiWholesalePrice}
+                    onChange={(e) => setSemiWholesalePrice(e.target.value)}
+                    placeholder="0.00"
+                    className="w-full px-2.5 py-1.5 text-xs font-mono bg-white dark:bg-slate-800 border border-slate-300 dark:border-slate-700 rounded-lg text-slate-900 dark:text-white"
+                  />
+                </div>
+                <div>
+                  <label className="block text-[10px] font-semibold text-slate-500 dark:text-slate-400 mb-0.5">
+                    {isAr ? 'كمية الجملة' : 'Wholesale Min Qty'}
+                  </label>
+                  <input
+                    type="number"
+                    min="0"
+                    step="any"
+                    value={wholesaleMinQty}
+                    onChange={(e) => setWholesaleMinQty(e.target.value)}
+                    placeholder="12"
+                    className="w-full px-2.5 py-1.5 text-xs font-mono bg-white dark:bg-slate-800 border border-slate-300 dark:border-slate-700 rounded-lg text-slate-900 dark:text-white"
+                  />
+                </div>
+                <div>
+                  <label className="block text-[10px] font-semibold text-slate-500 dark:text-slate-400 mb-0.5">
+                    {isAr ? `سعر الجملة (${currencySymbol})` : 'Wholesale Price'}
+                  </label>
+                  <input
+                    type="number"
+                    min="0"
+                    step="0.05"
+                    value={wholesalePrice}
+                    onChange={(e) => setWholesalePrice(e.target.value)}
+                    placeholder="0.00"
+                    className="w-full px-2.5 py-1.5 text-xs font-mono bg-white dark:bg-slate-800 border border-slate-300 dark:border-slate-700 rounded-lg text-slate-900 dark:text-white"
+                  />
+                </div>
+              </div>
+            </div>
           </div>
 
           {/* Section 4: Inventory Tracking (إدارة المخزون والتتبع) */}

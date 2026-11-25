@@ -103,33 +103,35 @@ service cloud.firestore {
         );
     }
 
+    function isValidStoreDocId(id) {
+      return isValidId(id) && (id == 'store' || id.matches('^store_[a-zA-Z0-9_\\-]{6,96}$'));
+    }
+
     // Boot connection check document (read-only ping)
     match /test/connection {
       allow get: if true;
       allow list, write: if false;
     }
 
-    // Shared real-time POS store sync document: kadi_pos/store
+    // Real-time POS store sync documents: legacy kadi_pos/store or isolated kadi_pos/store_<uid>
     match /kadi_pos/{docId} {
       allow get: if isVerifiedUser()
-        && isValidId(docId)
-        && docId == 'store'
+        && isValidStoreDocId(docId)
         && (resource == null || isStoreOperator(existing()));
 
       allow list: if isVerifiedUser()
         && existing().ownerUid == request.auth.uid;
 
       allow create: if isVerifiedUser()
-        && isValidId(docId)
-        && docId == 'store'
+        && isValidStoreDocId(docId)
+        && (docId == 'store' || docId == ('store_' + request.auth.uid))
         && isValidStoreDoc(incoming())
         && incoming().ownerUid == request.auth.uid
         && incoming().ownerEmail == request.auth.token.email
         && incoming().serverSyncedAt == request.time;
 
       allow update: if isVerifiedUser()
-        && isValidId(docId)
-        && docId == 'store'
+        && isValidStoreDocId(docId)
         && isValidStoreDoc(incoming())
         && isStoreOperator(existing())
         && incoming().ownerUid == existing().ownerUid

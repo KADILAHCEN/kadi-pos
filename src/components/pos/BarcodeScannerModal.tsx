@@ -3,6 +3,7 @@ import { usePos } from '../../context/PosContext';
 import { getT } from '../../utils/translations';
 import { playSound } from '../../utils/audio';
 import { Product } from '../../types';
+import { parseScaleBarcode } from '../../utils/scaleBarcode';
 import { BrowserMultiFormatReader, BrowserCodeReader, IScannerControls } from '@zxing/browser';
 import { BarcodeFormat, DecodeHintType } from '@zxing/library';
 import {
@@ -278,6 +279,11 @@ export const BarcodeScannerModal: React.FC<BarcodeScannerModalProps> = ({
         productLookupMap.get(code) ||
         productLookupMap.get(code.toLowerCase());
 
+      const scaleParsed = !matched
+        ? parseScaleBarcode(code, products, settings.scaleBarcodeConfig)
+        : null;
+      const effectiveMatched = matched || scaleParsed?.product || null;
+
       const fmtStr = typeof format === 'string' ? format.toLowerCase() : '';
       const isQr =
         format === BarcodeFormat.QR_CODE ||
@@ -290,18 +296,24 @@ export const BarcodeScannerModal: React.FC<BarcodeScannerModalProps> = ({
 
       // Distinct crisp audio chime + haptic pulse for every successful scan
       if (continuousMode || settings.enableSoundEffects) {
-        playSound(matched || mode === 'field' ? 'beep' : 'error');
+        playSound(effectiveMatched || mode === 'field' ? 'beep' : 'error');
       }
       if (typeof navigator !== 'undefined' && typeof navigator.vibrate === 'function') {
-        navigator.vibrate(matched ? 22 : [25, 30, 25]);
+        navigator.vibrate(effectiveMatched ? 22 : [25, 30, 25]);
       }
 
-      const productName = matched ? (isAr ? matched.name : matched.nameEn) : undefined;
+      const productName = effectiveMatched
+        ? scaleParsed?.product
+          ? `${isAr ? effectiveMatched.name : effectiveMatched.nameEn} (${scaleParsed.quantity.toFixed(3)} ${effectiveMatched.unitType === 'liter' ? 'L' : 'kg'})`
+          : isAr
+          ? effectiveMatched.name
+          : effectiveMatched.nameEn
+        : undefined;
 
       setLastScannedBanner({
         code,
         productName,
-        found: !!matched,
+        found: !!effectiveMatched,
         isQr
       });
 
@@ -327,7 +339,7 @@ export const BarcodeScannerModal: React.FC<BarcodeScannerModalProps> = ({
               id: `${code}-${now}`,
               code,
               productName,
-              found: !!matched,
+              found: !!effectiveMatched,
               scannedAt: timeLabel,
               count: 1,
               isQr
@@ -337,7 +349,14 @@ export const BarcodeScannerModal: React.FC<BarcodeScannerModalProps> = ({
         });
       }
 
-      onScanned(matched ? matched.barcode || matched.sku || code : code);
+      // Preserve raw 13-digit scale barcode so downstream POS cart adds exact weight/price
+      onScanned(
+        scaleParsed?.product
+          ? code
+          : effectiveMatched
+          ? effectiveMatched.barcode || effectiveMatched.sku || code
+          : code
+      );
 
       if (!continuousMode || (mode === 'field' && !allowContinuous)) {
         isClosingRef.current = true;
@@ -355,8 +374,10 @@ export const BarcodeScannerModal: React.FC<BarcodeScannerModalProps> = ({
       onClose,
       onScanned,
       productLookupMap,
+      products,
       scanFormatMode,
       settings.enableSoundEffects,
+      settings.scaleBarcodeConfig,
       stopScanner
     ]
   );

@@ -51,6 +51,7 @@ import { Order, Product } from './types';
 import { playSound } from './utils/audio';
 import { bluetoothPrinter } from './utils/bluetoothPrinter';
 import { bluetoothScanner } from './utils/bluetoothScanner';
+import { parseScaleBarcode } from './utils/scaleBarcode';
 import {
   QuickBarcodeSourceContext,
   QuickNewBarcodeProductModal
@@ -200,16 +201,19 @@ const PosMainContent: React.FC = () => {
       if (currentTab === 'pos' || currentTab === 'inventory' || currentTab === 'settings') return;
 
       const clean = payload.barcode.trim();
-      const matched = products.find(
-        (p) => p.barcode === clean || p.sku.toLowerCase() === clean.toLowerCase()
-      );
+      const scaleParsed = parseScaleBarcode(clean, products, settings.scaleBarcodeConfig);
+      const matched =
+        scaleParsed?.product ||
+        products.find((p) => p.barcode === clean || p.sku.toLowerCase() === clean.toLowerCase());
+      const scannedQty = scaleParsed?.product ? scaleParsed.quantity : 1;
+
       if (matched) {
         const inCartQty = cart
           .filter((ci) => ci.productId === matched.id)
           .reduce((sum, ci) => sum + ci.quantity, 0);
-        const remainingStock = Math.max(0, Number((matched.stock - inCartQty).toFixed(2)));
+        const remainingStock = Math.max(0, Number((matched.stock - inCartQty).toFixed(3)));
         if (settings.bluetoothAutoAddToCart !== false) {
-          if (remainingStock <= 0) {
+          if (remainingStock <= 0 || scannedQty > remainingStock) {
             playSound('error');
             setScanFeedbackToast({
               text: isAr ? `نفذ - ${matched.name} ما بقاش` : `Out of stock - ${matched.name}`,
@@ -219,9 +223,13 @@ const PosMainContent: React.FC = () => {
             return;
           }
           if (settings.bluetoothSoundFeedback !== false) playSound('beep');
-          addToCart(matched);
+          addToCart(matched, undefined, undefined, scannedQty);
           setScanFeedbackToast({
-            text: isAr
+            text: scaleParsed?.product
+              ? isAr
+                ? `⚖️ الميزان: ${matched.name} (${scannedQty.toFixed(3)} ${matched.unitType === 'liter' ? 'لتر' : 'كغ'})`
+                : `⚖️ Scale: ${matched.name} (${scannedQty.toFixed(3)})`
+              : isAr
               ? `🔊 بيب! تزادت للسلة: ${matched.name}`
               : `🔊 Scanned & added: ${matched.name}`
           });
@@ -241,7 +249,7 @@ const PosMainContent: React.FC = () => {
       }
     });
     return () => unsub();
-  }, [currentTab, products, cart, addToCart, settings.bluetoothSoundFeedback, settings.bluetoothAutoAddToCart, isAr, currencySymbol]);
+  }, [currentTab, products, cart, addToCart, settings.bluetoothSoundFeedback, settings.bluetoothAutoAddToCart, settings.scaleBarcodeConfig, isAr, currencySymbol]);
 
   // Preload custom Store Logo for canvas PDFs & Thermal receipts
   useEffect(() => {
@@ -397,15 +405,18 @@ const PosMainContent: React.FC = () => {
 
   const handleBarcodeScanned = (code: string) => {
     const clean = code.trim();
-    const matched = products.find(
-      (p) => p.barcode === clean || p.sku.toLowerCase() === clean.toLowerCase()
-    );
+    const scaleParsed = parseScaleBarcode(clean, products, settings.scaleBarcodeConfig);
+    const matched =
+      scaleParsed?.product ||
+      products.find((p) => p.barcode === clean || p.sku.toLowerCase() === clean.toLowerCase());
+    const scannedQty = scaleParsed?.product ? scaleParsed.quantity : 1;
+
     if (matched) {
       const inCartQty = cart
         .filter((ci) => ci.productId === matched.id)
         .reduce((sum, ci) => sum + ci.quantity, 0);
-      const remainingStock = Math.max(0, Number((matched.stock - inCartQty).toFixed(2)));
-      if (remainingStock <= 0) {
+      const remainingStock = Math.max(0, Number((matched.stock - inCartQty).toFixed(3)));
+      if (remainingStock <= 0 || scannedQty > remainingStock) {
         playSound('error');
         setScanFeedbackToast({
           text: isAr ? `نفذ - ${matched.name} ما بقاش` : `Out of stock - ${matched.name}`,
@@ -415,9 +426,13 @@ const PosMainContent: React.FC = () => {
         return;
       }
       if (settings.bluetoothSoundFeedback !== false) playSound('beep');
-      addToCart(matched);
+      addToCart(matched, undefined, undefined, scannedQty);
       setScanFeedbackToast({
-        text: isAr
+        text: scaleParsed?.product
+          ? isAr
+            ? `⚖️ الميزان: ${matched.name} (${scannedQty.toFixed(3)} ${matched.unitType === 'liter' ? 'لتر' : 'كغ'})`
+            : `⚖️ Scale: ${matched.name} (${scannedQty.toFixed(3)})`
+          : isAr
           ? `🔊 بيب! تزادت للسلة: ${matched.name}`
           : `📷 Scanned & added: ${matched.name}`
       });

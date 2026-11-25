@@ -1,19 +1,19 @@
 # Security Specification & Threat Model for Kadi POS Firestore Sync
 
 ## 1. Data Invariants
-- `/kadi_pos/store` is the sole operational store sync document; arbitrary doc IDs in `/kadi_pos/{docId}` are rejected (`docId == 'store'`).
+- `/kadi_pos/{docId}` accepts isolated merchant workspaces (`store_<uid>`) or the legacy shared workspace (`store`); arbitrary doc IDs in `/kadi_pos/{docId}` are rejected (`isValidStoreDocId(docId)`), and creating `store_<otherUid>` is denied (`docId == 'store' || docId == ('store_' + request.auth.uid)`).
 - A store sync document MUST belong to a verified Google-authenticated `ownerUid` / `ownerEmail`, optionally authorizing bounded `allowedEmails` (max 20 entries).
 - Client writes MUST match exact allowed keys (`hasAll` + `hasOnly`), enforce bounded list sizes (`products <= 2500`, `sales <= 600`, `allowedEmails <= 20`, `devices <= 50`), enforce `serverSyncedAt == request.time`, and keep `ownerUid`/`ownerEmail` immutable after creation.
-- Unauthenticated users cannot read or write `/kadi_pos/store`.
+- Unauthenticated users cannot read or write `/kadi_pos/{docId}`.
 
 ## 2. Dirty Dozen Payloads (All Must Return PERMISSION_DENIED)
-1. Unauthenticated read or write on `/kadi_pos/store`.
+1. Unauthenticated read or write on `/kadi_pos/store` or `/kadi_pos/store_<uid>`.
 2. Unverified email account (`email_verified == false`) attempting create/update/read.
-3. Non-owner UID not in `allowedEmails` attempting to read or update `/kadi_pos/store`.
-4. Spoofing `ownerUid` to another user's UID on create.
+3. Non-owner UID not in `allowedEmails` attempting to read or update `/kadi_pos/{docId}`.
+4. Spoofing `ownerUid` or creating `store_<victimUid>` by another user.
 5. Modifying `ownerUid` or `ownerEmail` on update.
 6. Shadow / ghost field injection (`{ ..., isAdmin: true }`) on create or update.
-7. Non-`store` document ID injection (`/kadi_pos/evil_doc` or 1.5KB ID string).
+7. Invalid document ID injection (`/kadi_pos/evil_doc` or 1.5KB ID string).
 8. Oversized string in `updatedBy` (`> 160` chars).
 9. Wrong data type for `products`, `sales`, `cash`, or `lastUpdated` (e.g., string instead of list/number).
 10. Client-forged `serverSyncedAt` not equal to `request.time`.

@@ -31,13 +31,16 @@ import {
   Pencil,
   Clock,
   Send,
-  PackageX
+  PackageX,
+  Barcode,
+  PackageOpen
 } from 'lucide-react';
 import { AddCategoryModal } from './AddCategoryModal';
 import { BulkUpdateModal } from './BulkUpdateModal';
 import { EditProductModal } from '../pos/EditProductModal';
 import { BarcodeScannerModal } from '../pos/BarcodeScannerModal';
 import { ExportCatalogGmailModal } from './ExportCatalogGmailModal';
+import { ShelfLabelPrintModal } from './ShelfLabelPrintModal';
 import { StocktakePanel } from './StocktakePanel';
 import { bluetoothScanner } from '../../utils/bluetoothScanner';
 import { playSound } from '../../utils/audio';
@@ -132,6 +135,7 @@ export const InventoryView: React.FC = () => {
     updateProduct,
     deleteProduct,
     adjustStock,
+    unpackBoxProduct,
     seedLargeCatalogDemo,
     stockMovements,
     expiringSoonProducts,
@@ -203,6 +207,12 @@ export const InventoryView: React.FC = () => {
   const [showBulkModal, setShowBulkModal] = useState(false);
   const [showBarcodeScanner, setShowBarcodeScanner] = useState(false);
   const [showCatalogGmailModal, setShowCatalogGmailModal] = useState(false);
+  const [showLabelPrintModal, setShowLabelPrintModal] = useState(false);
+  const [labelPrintInitialProducts, setLabelPrintInitialProducts] = useState<Product[] | undefined>(undefined);
+  const [unpackModalProduct, setUnpackModalProduct] = useState<Product | null>(null);
+  const [unpackBoxesCount, setUnpackBoxesCount] = useState<string>('1');
+  const [unpackChildId, setUnpackChildId] = useState<string>('');
+  const [unpackUnitsPerBox, setUnpackUnitsPerBox] = useState<string>('');
   const [showSeedDemoConfirm, setShowSeedDemoConfirm] = useState(false);
   const [selectedProductForAdjust, setSelectedProductForAdjust] = useState<Product | null>(null);
   const [productToast, setProductToast] = useState<string | null>(null);
@@ -945,6 +955,19 @@ export const InventoryView: React.FC = () => {
 
             <button
               type="button"
+              onClick={() => {
+                setLabelPrintInitialProducts(undefined);
+                setShowLabelPrintModal(true);
+              }}
+              className="px-3 py-2 text-xs font-bold rounded-xl border border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-800 hover:bg-slate-100 dark:hover:bg-slate-700 text-slate-800 dark:text-slate-100 transition-colors flex items-center gap-1.5 shadow-2xs whitespace-nowrap"
+              title={isAr ? 'طباعة ملصقات الأسعار والباركود للرفوف (A4 أو 80mm/58mm)' : 'Print Shelf Price & Barcode Labels'}
+            >
+              <Barcode className="w-3.5 h-3.5 text-emerald-600 dark:text-emerald-400" />
+              <span>{isAr ? 'ملصقات الباركود' : 'Shelf Labels'}</span>
+            </button>
+
+            <button
+              type="button"
               onClick={() => setShowCatalogGmailModal(true)}
               className="px-3 py-2 text-xs font-black rounded-xl border border-rose-200 dark:border-rose-800 bg-rose-50 dark:bg-rose-950/50 hover:bg-rose-100 text-rose-700 dark:text-rose-300 transition-colors flex items-center gap-1.5 shadow-2xs"
               title={isAr ? 'تسجيل السلع وصورها وثمنها في ملف وإرساله إلى Gmail' : 'Export catalog with images & prices to Gmail'}
@@ -1205,13 +1228,24 @@ export const InventoryView: React.FC = () => {
                   </div>
                 </div>
 
-                <div className="flex items-center gap-2">
+                <div className="flex flex-wrap items-center gap-2">
                   <button
                     type="button"
                     onClick={clearSelection}
                     className="px-3 py-1.5 text-xs font-bold text-slate-300 hover:text-white transition-colors"
                   >
                     {isAr ? 'إلغاء التحديد' : 'Deselect All'}
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setLabelPrintInitialProducts(selectedProductsList);
+                      setShowLabelPrintModal(true);
+                    }}
+                    className="px-3.5 py-1.5 text-xs font-bold rounded-xl bg-slate-700 hover:bg-slate-600 text-white transition-colors shadow-sm flex items-center gap-1.5"
+                  >
+                    <Barcode className="w-3.5 h-3.5 text-emerald-400" />
+                    <span>{isAr ? `طباعة ملصقات (${selectedProductIds.size})` : `Print Labels (${selectedProductIds.size})`}</span>
                   </button>
                   <button
                     type="button"
@@ -1458,6 +1492,33 @@ export const InventoryView: React.FC = () => {
                             >
                               <Pencil className="w-3.5 h-3.5" />
                             </button>
+                            <button
+                              type="button"
+                              onClick={() => {
+                                setLabelPrintInitialProducts([p]);
+                                setShowLabelPrintModal(true);
+                              }}
+                              className="p-1.5 text-slate-600 hover:text-indigo-600 dark:text-slate-300 dark:hover:text-indigo-400 hover:bg-indigo-50 dark:hover:bg-indigo-950/60 rounded-lg transition-colors"
+                              title={isAr ? 'طباعة ملصق الثمن والباركود' : 'Print Shelf Label'}
+                            >
+                              <Barcode className="w-3.5 h-3.5" />
+                            </button>
+                            {p.unitType === 'box' && (
+                              <button
+                                type="button"
+                                onClick={() => {
+                                  setUnpackModalProduct(p);
+                                  setUnpackBoxesCount('1');
+                                  setUnpackChildId(p.boxChildProductId || '');
+                                  setUnpackUnitsPerBox(String(p.unitsPerBox || 24));
+                                }}
+                                className="px-2 py-1 text-[11px] font-black rounded-lg bg-amber-50 dark:bg-amber-950/60 text-amber-800 dark:text-amber-300 hover:bg-amber-100 border border-amber-200 dark:border-amber-800/70 transition-colors inline-flex items-center gap-1 whitespace-nowrap"
+                                title={isAr ? 'فك الكرتون / الصندوق وتحويله إلى وحدات بيع' : 'Unpack Box to Pieces'}
+                              >
+                                <PackageOpen className="w-3 h-3" />
+                                <span>{isAr ? 'فك كرتون' : 'Unpack'}</span>
+                              </button>
+                            )}
                             <button
                               type="button"
                               onClick={() => {
@@ -2562,6 +2623,142 @@ export const InventoryView: React.FC = () => {
               </button>
             </div>
           </div>
+        </div>
+      )}
+
+      <ShelfLabelPrintModal
+        isOpen={showLabelPrintModal}
+        onClose={() => setShowLabelPrintModal(false)}
+        initialProducts={labelPrintInitialProducts}
+      />
+
+      {unpackModalProduct && (
+        <div
+          className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-slate-950/65 backdrop-blur-xs"
+          onClick={() => setUnpackModalProduct(null)}
+        >
+          <form
+            onClick={(e) => e.stopPropagation()}
+            onSubmit={(e) => {
+              e.preventDefault();
+              const boxesVal = parseFloat(unpackBoxesCount) || 0;
+              const unitsVal = parseFloat(unpackUnitsPerBox) || 0;
+              const res = unpackBoxProduct(
+                unpackModalProduct.id,
+                boxesVal,
+                unpackChildId || undefined,
+                unitsVal > 0 ? unitsVal : undefined
+              );
+              setProductToast(res.message);
+              setTimeout(() => setProductToast(null), 4000);
+              if (res.success) {
+                setUnpackModalProduct(null);
+              }
+            }}
+            className="w-full max-w-md bg-white dark:bg-slate-900 rounded-3xl p-5 shadow-2xl border border-slate-200 dark:border-slate-800 space-y-4"
+          >
+            <div className="flex items-center justify-between border-b border-slate-100 dark:border-slate-800 pb-3">
+              <div className="flex items-center gap-2.5">
+                <div className="w-9 h-9 rounded-xl bg-amber-100 dark:bg-amber-950/60 text-amber-700 dark:text-amber-300 flex items-center justify-center shrink-0">
+                  <PackageOpen className="w-5 h-5" />
+                </div>
+                <div>
+                  <h3 className="font-black text-sm text-slate-900 dark:text-white">
+                    {isAr ? 'فك الكرتون إلى حبات' : 'Unpack Box to Pieces'}
+                  </h3>
+                  <p className="text-[11px] text-slate-500">
+                    {unpackModalProduct.name} ({isAr ? `المتوفر: ${unpackModalProduct.stock}` : `Stock: ${unpackModalProduct.stock}`})
+                  </p>
+                </div>
+              </div>
+              <button
+                type="button"
+                onClick={() => setUnpackModalProduct(null)}
+                className="p-1.5 rounded-lg text-slate-400 hover:bg-slate-100 dark:hover:bg-slate-800"
+              >
+                <X className="w-4 h-4" />
+              </button>
+            </div>
+
+            <div className="grid grid-cols-2 gap-3">
+              <div>
+                <label className="block text-xs font-bold text-slate-700 dark:text-slate-300 mb-1">
+                  {isAr ? 'عدد الكراتين المراد فكها' : 'Boxes to Unpack'}
+                </label>
+                <input
+                  type="number"
+                  min="1"
+                  max={Math.max(1, unpackModalProduct.stock)}
+                  step="1"
+                  required
+                  value={unpackBoxesCount}
+                  onChange={(e) => setUnpackBoxesCount(e.target.value)}
+                  className="w-full px-3 py-2 text-sm font-mono font-black bg-slate-50 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 rounded-xl"
+                />
+              </div>
+
+              <div>
+                <label className="block text-xs font-bold text-slate-700 dark:text-slate-300 mb-1">
+                  {isAr ? 'عدد الحبات داخل الكرتون' : 'Pieces per Box'}
+                </label>
+                <input
+                  type="number"
+                  min="1"
+                  step="1"
+                  required
+                  value={unpackUnitsPerBox}
+                  onChange={(e) => setUnpackUnitsPerBox(e.target.value)}
+                  className="w-full px-3 py-2 text-sm font-mono font-black bg-slate-50 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 rounded-xl"
+                />
+              </div>
+            </div>
+
+            <div>
+              <label className="block text-xs font-bold text-slate-700 dark:text-slate-300 mb-1">
+                {isAr ? 'منتج الحبة / التجزئة المستهدف' : 'Target Piece Product'}
+              </label>
+              <select
+                required
+                value={unpackChildId}
+                onChange={(e) => setUnpackChildId(e.target.value)}
+                className="w-full px-3 py-2 text-xs font-bold bg-slate-50 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 rounded-xl"
+              >
+                <option value="">{isAr ? 'اختر منتج الحبة لإضافة الكمية إليه...' : 'Select target retail piece product...'}</option>
+                {products
+                  .filter((pr) => pr.id !== unpackModalProduct.id && pr.unitType !== 'box')
+                  .map((pr) => (
+                    <option key={pr.id} value={pr.id}>
+                      {pr.name} ({isAr ? `الرصيد: ${pr.stock}` : `Stock: ${pr.stock}`})
+                    </option>
+                  ))}
+              </select>
+            </div>
+
+            <div className="p-3 rounded-xl bg-emerald-50 dark:bg-emerald-950/40 border border-emerald-200 dark:border-emerald-800/70 text-xs font-bold text-emerald-800 dark:text-emerald-300 flex items-center justify-between">
+              <span>{isAr ? 'الكمية المضافة للحبة:' : 'Units added to piece:'}</span>
+              <span className="font-mono font-black text-sm tabular-nums">
+                +{(Math.max(0, parseFloat(unpackBoxesCount) || 0) * Math.max(0, parseFloat(unpackUnitsPerBox) || 0))}
+              </span>
+            </div>
+
+            <div className="flex items-center justify-end gap-2 pt-1">
+              <button
+                type="button"
+                onClick={() => setUnpackModalProduct(null)}
+                className="px-4 py-2 rounded-xl border border-slate-200 dark:border-slate-700 text-xs font-bold text-slate-600 dark:text-slate-300"
+              >
+                {isAr ? 'إلغاء' : 'Cancel'}
+              </button>
+              <button
+                type="submit"
+                disabled={!unpackChildId || unpackModalProduct.stock <= 0}
+                className="px-5 py-2 rounded-xl bg-amber-500 hover:bg-amber-600 disabled:opacity-50 text-slate-950 text-xs font-black flex items-center gap-1.5"
+              >
+                <PackageOpen className="w-4 h-4" />
+                <span>{isAr ? 'تأكيد فك الكرتون' : 'Confirm Unpack'}</span>
+              </button>
+            </div>
+          </form>
         </div>
       )}
     </div>

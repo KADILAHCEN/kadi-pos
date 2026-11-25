@@ -60,8 +60,10 @@ import {
   Activity,
   ShieldAlert,
   Target,
-  Coins
+  Coins,
+  FileSpreadsheet
 } from 'lucide-react';
+import { AccountingTvaExportModal } from './AccountingTvaExportModal';
 
 type CpuSubTab = 'overview' | 'simulator' | 'retirement' | 'settings';
 
@@ -86,6 +88,7 @@ export const CpuTaxView: React.FC = () => {
 
   const isAr = language === 'ar';
   const [subTab, setSubTab] = useState<CpuSubTab>('overview');
+  const [showAccountingModal, setShowAccountingModal] = useState(false);
   const [toast, setToast] = useState<{ ok: boolean; warn?: boolean; text: string } | null>(null);
 
   // Quarter turnover declaration form
@@ -946,6 +949,16 @@ export const CpuTaxView: React.FC = () => {
                 ? 'Retirement: ON'
                 : 'Retirement: OFF'}
             </span>
+          </button>
+
+          {/* Accounting TVA & ICE Export Button */}
+          <button
+            type="button"
+            onClick={() => setShowAccountingModal(true)}
+            className="px-4 py-2 rounded-xl bg-indigo-600 hover:bg-indigo-700 text-white text-xs font-black flex items-center gap-2 shadow-sm transition-colors whitespace-nowrap"
+          >
+            <FileSpreadsheet className="w-4 h-4" />
+            <span>{isAr ? 'تصدير المحاسبة (TVA + ICE)' : 'Accounting Export (TVA + ICE)'}</span>
           </button>
 
           {/* PDF Export Button */}
@@ -4859,6 +4872,11 @@ export const CpuTaxView: React.FC = () => {
           </div>
         </form>
       )}
+
+      <AccountingTvaExportModal
+        isOpen={showAccountingModal}
+        onClose={() => setShowAccountingModal(false)}
+      />
     </div>
   );
 };

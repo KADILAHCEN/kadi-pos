@@ -82,7 +82,7 @@
       "schema": {
         "$ref": "#/entities/KadiPosStore"
       },
-      "description": "Single shared store synchronization document (store) storing products, sales, cash drawer state, lastUpdated, updatedBy, and connected devices registry."
+      "description": "Per-merchant isolated store synchronization documents (store_<uid>) or shared store document (store) storing products, sales, cash drawer state, customers, credit ledger, categories, lastUpdated, updatedBy, and connected devices registry."
     }
   }
 }

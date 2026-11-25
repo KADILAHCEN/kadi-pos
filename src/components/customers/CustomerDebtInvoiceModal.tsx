@@ -754,24 +754,24 @@ export const CustomerDebtInvoiceModal: React.FC<CustomerDebtInvoiceModalProps> =
               </div>
 
               {/* Customer Card & Quick Totals */}
-              <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 p-3.5 rounded-2xl bg-slate-50 border border-slate-200 text-xs">
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 p-4 rounded-2xl bg-slate-50 border border-slate-200 text-xs">
                 <div className="space-y-1">
-                  <div className="text-[10px] font-bold text-slate-500 uppercase">
+                  <div className="text-xs font-semibold text-slate-600">
                     {isAr ? 'بيانات الزبون المدين' : 'Customer Information'}
                   </div>
-                  <div className="font-black text-sm text-slate-900">{customer.name}</div>
-                  <div className="font-mono text-slate-600">{customer.phone}</div>
-                  {customer.notes && <div className="text-[11px] text-slate-500">{customer.notes}</div>}
+                  <div className="font-extrabold text-sm text-slate-900">{customer.name}</div>
+                  <div className="font-mono text-slate-700">{customer.phone}</div>
+                  {customer.notes && <div className="text-xs text-slate-600">{customer.notes}</div>}
                 </div>
 
                 <div className="flex flex-col justify-center sm:items-end space-y-1">
-                  <div className="text-[10px] font-bold text-amber-800 uppercase">
+                  <div className="text-xs font-semibold text-amber-800">
                     {isAr ? 'صافي الدين الباقي في الذمة' : 'Remaining Balance Due'}
                   </div>
-                  <div className="text-2xl font-black text-rose-600 font-mono tabular-nums">
+                  <div className="text-2xl font-extrabold text-rose-700 tabular-nums">
                     {invoiceData.remainingDebt.toFixed(2)} {currencySymbol}
                   </div>
-                  <div className="text-[11px] text-slate-500">
+                  <div className="text-xs text-slate-600 tabular-nums">
                     {isAr
                       ? `${invoiceData.purchaseItems.length} بنود مشتريات · ${invoiceData.paymentItems.length} دفعات`
                       : `${invoiceData.purchaseItems.length} items · ${invoiceData.paymentItems.length} payments`}

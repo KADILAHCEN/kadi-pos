@@ -5,6 +5,7 @@ import {
   CartItem,
   Customer,
   Order,
+  OrderExchangeRecord,
   OfflineSaleQueueItem,
   Shift,
   StoreSettings,
@@ -27,6 +28,7 @@ import {
   CpuQuarterRecord,
   CpuTaxSettings,
   SupplierInvoice,
+  SupplierProfile,
   AppPalette,
   LowStockAlertItem,
   TheftAlertCategory,
@@ -103,23 +105,28 @@ import { onAuthStateChanged, User } from 'firebase/auth';
 import { auth, signInWithGoogleForFirestore, signOutFromFirestore } from '../firebase';
 import {
   DEVICE_ACTIVE_WINDOW_MS,
+  FIRESTORE_STORE_DOC_ID,
   FirestoreStoreDocument,
   LocalStoreSyncPayload,
   clearDeletedProductTombstone,
   clearPendingCloudSyncFlag,
+  getCustomStoreDocId,
   getOrCreateDeviceId,
   getPendingCloudSyncFlag,
   getShortDevicePlatform,
   getStoredDeviceName,
+  isValidStoreDocIdString,
   loadDeletedProductTombstones,
   loadKnownCloudProductIds,
   loadLocalCloudBackup,
   mergePosStoreData,
   pushMergedStoreToFirestore,
   recordDeletedProductTombstone,
+  resolveActiveStoreDocId,
   saveKnownCloudProductIds,
   saveLocalCloudBackup,
   saveStoredDeviceName,
+  setCustomStoreDocId,
   setPendingCloudSyncFlag,
   subscribeStoreSyncDoc,
   updateDeviceRegistryOnly
@@ -189,6 +196,12 @@ interface PosContextType {
   ) => void;
   deleteProduct: (id: string) => void;
   adjustStock: (productId: string, quantityChange: number, reason: string, type?: 'restock' | 'waste' | 'audit_adjustment') => void;
+  unpackBoxProduct: (
+    boxProductId: string,
+    boxesCount: number,
+    targetChildId?: string,
+    unitsPerBoxOverride?: number
+  ) => { success: boolean; message: string };
   importProductsBulk: (
     items: Omit<Product, 'id'>[],
     mode: 'merge' | 'append' | 'replace',
@@ -278,6 +291,13 @@ interface PosContextType {
     marginPct: number;
   };
   refundOrder: (orderId: string, full: boolean, amount?: number) => void;
+  processReturnAndExchange: (params: {
+    orderId: string;
+    returnSelections: { productId: string; quantity: number }[];
+    replacementItems: { product: Product; quantity: number }[];
+    settleMethod?: 'cash' | 'credit' | 'exchange_even';
+    note?: string;
+  }) => { success: boolean; message: string; netDifference?: number };
   lastCompletedOrder: Order | null;
   setLastCompletedOrder: (order: Order | null) => void;
 
@@ -398,11 +418,20 @@ interface PosContextType {
   cpuAlerts: CpuPaymentAlert[];
   retirementProgress: RetirementProgressSummary;
 
-  // Supplier Purchase Invoices (فواتير الموردين ومشتريات السلعة)
+  // Supplier Purchase Invoices & Directory (فواتير ودليل وحسابات الموردين)
   supplierInvoices: SupplierInvoice[];
   addSupplierInvoice: (data: Omit<SupplierInvoice, 'id' | 'createdAt' | 'status'>) => SupplierInvoice;
   paySupplierInvoice: (invoiceId: string, amount: number) => void;
   deleteSupplierInvoice: (invoiceId: string) => void;
+  suppliers: SupplierProfile[];
+  addSupplier: (data: Omit<SupplierProfile, 'id' | 'createdAt'>) => SupplierProfile;
+  updateSupplier: (id: string, updated: Partial<SupplierProfile>) => void;
+  deleteSupplier: (id: string) => void;
+  paySupplierBalanceFIFO: (
+    supplierName: string,
+    amount: number,
+    supplierIce?: string
+  ) => { paidCount: number; appliedAmount: number };
 
   // Courier Delivery Action
   markRemoteOrderDeliveredAndCollected: (remoteOrderId: string, courierName?: string) => void;
@@ -464,6 +493,8 @@ interface PosContextType {
   removeInactiveDevices: () => Promise<{ removedCount: number; error?: string }>;
   addAllowedSyncEmail: (email: string) => Promise<{ success: boolean; error?: string }>;
   removeAllowedSyncEmail: (email: string) => Promise<void>;
+  joinCloudStore: (storeDocId: string) => { success: boolean; message: string };
+  usePersonalCloudStore: () => void;
 
   // Utilities
   buildFullBackupObject: () => Record<string, unknown>;
@@ -1968,6 +1999,120 @@ export const PosProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
     }
   };
 
+  const unpackBoxProduct = (
+    boxProductId: string,
+    boxesCount: number,
+    targetChildId?: string,
+    unitsPerBoxOverride?: number
+  ): { success: boolean; message: string } => {
+    const cleanBoxes = Math.max(0, Number(boxesCount) || 0);
+    if (cleanBoxes <= 0) {
+      return { success: false, message: 'يرجى تحديد عدد الكراتين المراد فكها.' };
+    }
+    const boxProd = products.find((p) => p.id === boxProductId);
+    if (!boxProd) {
+      return { success: false, message: 'منتج الكرتون غير موجود.' };
+    }
+    if (boxProd.stock < cleanBoxes) {
+      return {
+        success: false,
+        message: `الرصيد غير كافٍ (${boxProd.stock} كرتون فقط متاح).`
+      };
+    }
+
+    const childId = targetChildId || boxProd.boxChildProductId;
+    const perBox = Number(unitsPerBoxOverride || boxProd.unitsPerBox || 0);
+    if (!childId || childId === boxProd.id) {
+      return { success: false, message: 'يرجى اختيار سلعة التفصيل المرتبطة بالصندوق.' };
+    }
+    if (!Number.isFinite(perBox) || perBox <= 0) {
+      return { success: false, message: 'يرجى تحديد عدد الحبات داخل كل كرتون.' };
+    }
+
+    const childProd = products.find((p) => p.id === childId);
+    if (!childProd) {
+      return { success: false, message: 'سلعة التفصيل غير موجودة في المخزون.' };
+    }
+
+    const addedUnits = Number((cleanBoxes * perBox).toFixed(2));
+    const prevBoxStock = boxProd.stock;
+    const nextBoxStock = Math.max(0, Number((prevBoxStock - cleanBoxes).toFixed(2)));
+    const prevChildStock = childProd.stock;
+    const nextChildStock = Number((prevChildStock + addedUnits).toFixed(2));
+    const computedChildCost =
+      childProd.costPrice <= 0 && boxProd.costPrice > 0
+        ? Number((boxProd.costPrice / perBox).toFixed(2))
+        : childProd.costPrice;
+    const nowMs = Date.now();
+    const nowIso = new Date(nowMs).toISOString();
+
+    setProducts((prev) =>
+      prev.map((p) => {
+        if (p.id === boxProd.id) {
+          return {
+            ...p,
+            stock: nextBoxStock,
+            boxChildProductId: childId,
+            unitsPerBox: perBox,
+            updatedAt: nowMs
+          };
+        }
+        if (p.id === childProd.id) {
+          return {
+            ...p,
+            stock: nextChildStock,
+            costPrice: computedChildCost,
+            updatedAt: nowMs
+          };
+        }
+        return p;
+      })
+    );
+
+    const movOut: StockMovement = {
+      id: `mov-unpack-out-${nowMs}`,
+      productId: boxProd.id,
+      productName: boxProd.name,
+      date: nowIso,
+      type: 'audit_adjustment',
+      quantityChange: -cleanBoxes,
+      previousStock: prevBoxStock,
+      newStock: nextBoxStock,
+      unit: boxProd.unitType,
+      costPerUnit: boxProd.costPrice,
+      reason: `فك ${cleanBoxes} كرتون إلى ${addedUnits} حبة (${childProd.name})`
+    };
+    const movIn: StockMovement = {
+      id: `mov-unpack-in-${nowMs + 1}`,
+      productId: childProd.id,
+      productName: childProd.name,
+      date: nowIso,
+      type: 'restock',
+      quantityChange: addedUnits,
+      previousStock: prevChildStock,
+      newStock: nextChildStock,
+      unit: childProd.unitType,
+      costPerUnit: computedChildCost,
+      reason: `تفريغ من ${cleanBoxes} كرتون (${boxProd.name})`
+    };
+    setStockMovements((prev) => [movIn, movOut, ...prev]);
+
+    addActivityLog({
+      category: 'inventory_major',
+      title: `فك كرتون تلقائي: ${boxProd.name} ➔ ${childProd.name}`,
+      description: `تم تحويل ${cleanBoxes} كرتون إلى +${addedUnits} ${childProd.unitType === 'piece' ? 'حبة' : childProd.unitType} في مخزون "${childProd.name}".`,
+      actor: currentUser.name,
+      actorRole: currentUser.role,
+      severity: 'info'
+    });
+
+    if (settings.enableSoundEffects) playSound('success');
+    return {
+      success: true,
+      message: `تم فك ${cleanBoxes} كرتون وإضافة +${addedUnits} إلى "${childProd.name}" بنجاح.`
+    };
+  };
+
   const applyStocktakeSession = (
     entries: { productId: string; countedStock: number; note?: string }[],
     sessionNote?: string
@@ -2632,6 +2777,62 @@ export const PosProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
     safeLocalStorageSet('kadi_pos_cart', JSON.stringify(cart));
   }, [cart]);
 
+  const resolveTierPricing = useCallback(
+    (
+      product: Product | undefined,
+      quantity: number,
+      fallbackBasePrice: number,
+      variantId?: string,
+      modifiers?: { id: string; name: string; price: number }[]
+    ): {
+      price: number;
+      baseRetailPrice: number;
+      appliedPriceTier: 'retail' | 'semi_wholesale' | 'wholesale';
+    } => {
+      const modTotal = (modifiers || []).reduce((acc, m) => acc + (m.price || 0), 0);
+      if (!product || variantId) {
+        return {
+          price: Number(fallbackBasePrice.toFixed(2)),
+          baseRetailPrice: Number(fallbackBasePrice.toFixed(2)),
+          appliedPriceTier: 'retail'
+        };
+      }
+      const retail = Number((product.price + modTotal).toFixed(2));
+      if (
+        product.wholesaleMinQty &&
+        product.wholesaleMinQty > 0 &&
+        product.wholesalePrice &&
+        product.wholesalePrice > 0 &&
+        quantity >= product.wholesaleMinQty
+      ) {
+        return {
+          price: Number((product.wholesalePrice + modTotal).toFixed(2)),
+          baseRetailPrice: retail,
+          appliedPriceTier: 'wholesale'
+        };
+      }
+      if (
+        product.semiWholesaleMinQty &&
+        product.semiWholesaleMinQty > 0 &&
+        product.semiWholesalePrice &&
+        product.semiWholesalePrice > 0 &&
+        quantity >= product.semiWholesaleMinQty
+      ) {
+        return {
+          price: Number((product.semiWholesalePrice + modTotal).toFixed(2)),
+          baseRetailPrice: retail,
+          appliedPriceTier: 'semi_wholesale'
+        };
+      }
+      return {
+        price: retail,
+        baseRetailPrice: retail,
+        appliedPriceTier: 'retail'
+      };
+    },
+    []
+  );
+
   const addToCart = (
     product: Product,
     variantId?: string,
@@ -2665,11 +2866,29 @@ export const PosProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
       const existing = prev.find((item) => item.id === cartItemId);
       if (existing) {
         const step = customQuantity !== undefined ? customQuantity : (product.unitType === 'kg' || product.unitType === 'liter' ? 0.5 : 1);
-        const newQty = Number((existing.quantity + step).toFixed(2));
-        return prev.map((item) =>
-          item.id === cartItemId ? { ...item, quantity: newQty } : item
+        const newQty = Number((existing.quantity + step).toFixed(3));
+        const tierRes = resolveTierPricing(
+          product,
+          newQty,
+          existing.baseRetailPrice ?? effectivePrice,
+          variantId,
+          modifiers
         );
+        return prev.map((item) => {
+          if (item.id !== cartItemId) return item;
+          if (item.isPriceOverridden) {
+            return { ...item, quantity: newQty };
+          }
+          return {
+            ...item,
+            quantity: newQty,
+            price: tierRes.price,
+            baseRetailPrice: tierRes.baseRetailPrice,
+            appliedPriceTier: tierRes.appliedPriceTier
+          };
+        });
       }
+      const tierRes = resolveTierPricing(product, initialQty, effectivePrice, variantId, modifiers);
       const newItem: CartItem = {
         id: cartItemId,
         productId: product.id,
@@ -2677,7 +2896,9 @@ export const PosProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
         productNameEn: product.nameEn,
         sku: product.sku,
         barcode: product.barcode,
-        price: effectivePrice,
+        price: tierRes.price,
+        baseRetailPrice: tierRes.baseRetailPrice,
+        appliedPriceTier: tierRes.appliedPriceTier,
         costPrice: effectiveCost,
         quantity: initialQty,
         unitType: product.unitType,
@@ -2699,8 +2920,26 @@ export const PosProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
       return prev
         .map((item) => {
           if (item.id === cartItemId) {
-            const newQty = Number((item.quantity + delta).toFixed(2));
-            return newQty > 0 ? { ...item, quantity: newQty } : null;
+            const newQty = Number((item.quantity + delta).toFixed(3));
+            if (newQty <= 0) return null;
+            if (item.isPriceOverridden) {
+              return { ...item, quantity: newQty };
+            }
+            const prod = products.find((p) => p.id === item.productId);
+            const tierRes = resolveTierPricing(
+              prod,
+              newQty,
+              item.baseRetailPrice ?? item.price,
+              item.variantId,
+              item.modifiers
+            );
+            return {
+              ...item,
+              quantity: newQty,
+              price: tierRes.price,
+              baseRetailPrice: tierRes.baseRetailPrice,
+              appliedPriceTier: tierRes.appliedPriceTier
+            };
           }
           return item;
         })
@@ -2716,9 +2955,29 @@ export const PosProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
       removeCartItem(cartItemId);
       return;
     }
-    const cleanQty = Number(quantity.toFixed(2));
+    const cleanQty = Number(quantity.toFixed(3));
     setCart((prev) =>
-      prev.map((item) => (item.id === cartItemId ? { ...item, quantity: cleanQty } : item))
+      prev.map((item) => {
+        if (item.id !== cartItemId) return item;
+        if (item.isPriceOverridden) {
+          return { ...item, quantity: cleanQty };
+        }
+        const prod = products.find((p) => p.id === item.productId);
+        const tierRes = resolveTierPricing(
+          prod,
+          cleanQty,
+          item.baseRetailPrice ?? item.price,
+          item.variantId,
+          item.modifiers
+        );
+        return {
+          ...item,
+          quantity: cleanQty,
+          price: tierRes.price,
+          baseRetailPrice: tierRes.baseRetailPrice,
+          appliedPriceTier: tierRes.appliedPriceTier
+        };
+      })
     );
   };
 
@@ -3882,6 +4141,132 @@ export const PosProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
       return next;
     });
     if (settings.enableSoundEffects) playSound('click');
+  };
+
+  // Dedicated Suppliers Directory (دليل وحسابات الموردين)
+  const [suppliers, setSuppliers] = useState<SupplierProfile[]>(() =>
+    safeReadStorageArray<SupplierProfile>('kadi_pos_suppliers_v1', [])
+  );
+
+  useEffect(() => {
+    safeLocalStorageSet('kadi_pos_suppliers_v1', JSON.stringify(suppliers));
+  }, [suppliers]);
+
+  // Auto-populate suppliers directory from recorded invoices if not already registered
+  useEffect(() => {
+    if (supplierInvoices.length === 0) return;
+    setSuppliers((prev) => {
+      const existingByName = new Set(prev.map((s) => s.name.trim().toLowerCase()));
+      const additions: SupplierProfile[] = [];
+      supplierInvoices.forEach((inv) => {
+        const key = inv.supplierName.trim().toLowerCase();
+        if (!key || existingByName.has(key)) return;
+        existingByName.add(key);
+        additions.push({
+          id: `sup-prof-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`,
+          name: inv.supplierName.trim(),
+          phone: inv.supplierPhone || '',
+          ice: inv.supplierIce || '',
+          createdAt: inv.createdAt || new Date().toISOString()
+        });
+      });
+      return additions.length > 0 ? [...prev, ...additions] : prev;
+    });
+  }, [supplierInvoices]);
+
+  const addSupplier = (data: Omit<SupplierProfile, 'id' | 'createdAt'>): SupplierProfile => {
+    const nowIso = new Date().toISOString();
+    const prof: SupplierProfile = {
+      ...data,
+      name: data.name.trim(),
+      id: `sup-prof-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`,
+      createdAt: nowIso,
+      updatedAt: nowIso
+    };
+    setSuppliers((prev) => [prof, ...prev]);
+    if (settings.enableSoundEffects) playSound('success');
+    return prof;
+  };
+
+  const updateSupplier = (id: string, updated: Partial<SupplierProfile>) => {
+    const nowIso = new Date().toISOString();
+    setSuppliers((prev) =>
+      prev.map((s) => (s.id === id ? { ...s, ...updated, updatedAt: nowIso } : s))
+    );
+  };
+
+  const deleteSupplier = (id: string) => {
+    setSuppliers((prev) => prev.filter((s) => s.id !== id));
+    if (settings.enableSoundEffects) playSound('click');
+  };
+
+  const paySupplierBalanceFIFO = (
+    supplierName: string,
+    amount: number,
+    supplierIce?: string
+  ): { paidCount: number; appliedAmount: number } => {
+    let remainingToApply = Math.max(0, Number(amount) || 0);
+    if (remainingToApply <= 0) return { paidCount: 0, appliedAmount: 0 };
+
+    const targetKey = supplierName.trim().toLowerCase();
+    const targetIce = (supplierIce || '').trim();
+
+    // Match unpaid/partial invoices sorted oldest first (FIFO)
+    const eligibleIds = supplierInvoices
+      .filter((inv) => {
+        if (inv.status === 'paid') return false;
+        const nameMatch = inv.supplierName.trim().toLowerCase() === targetKey;
+        const iceMatch = targetIce && inv.supplierIce && inv.supplierIce.trim() === targetIce;
+        return nameMatch || iceMatch;
+      })
+      .sort((a, b) => a.date.localeCompare(b.date))
+      .map((i) => i.id);
+
+    if (eligibleIds.length === 0) return { paidCount: 0, appliedAmount: 0 };
+
+    let paidCount = 0;
+    let appliedTotal = 0;
+    const updatesMap = new Map<string, { paidAmount: number; status: SupplierInvoice['status'] }>();
+
+    for (const id of eligibleIds) {
+      if (remainingToApply <= 0.005) break;
+      const inv = supplierInvoices.find((i) => i.id === id);
+      if (!inv) continue;
+      const balanceDue = Math.max(0, Number((inv.totalAmount - inv.paidAmount).toFixed(2)));
+      if (balanceDue <= 0) continue;
+
+      const payHere = Math.min(balanceDue, remainingToApply);
+      const nextPaid = Number((inv.paidAmount + payHere).toFixed(2));
+      const nextStatus: SupplierInvoice['status'] =
+        nextPaid >= inv.totalAmount ? 'paid' : nextPaid > 0 ? 'partial' : 'unpaid';
+      updatesMap.set(id, { paidAmount: nextPaid, status: nextStatus });
+      remainingToApply = Number((remainingToApply - payHere).toFixed(2));
+      appliedTotal = Number((appliedTotal + payHere).toFixed(2));
+      paidCount++;
+    }
+
+    if (updatesMap.size > 0) {
+      setSupplierInvoices((prev) => {
+        const next = prev.map((inv) => {
+          const patch = updatesMap.get(inv.id);
+          return patch ? { ...inv, ...patch } : inv;
+        });
+        void saveSupplierInvoicesToIndexedDB(next);
+        return next;
+      });
+      addActivityLog({
+        category: 'system',
+        title: `تسديد دفعة لحساب المورد (${supplierName})`,
+        description: `تم توزيع مبلغ ${appliedTotal.toFixed(2)} ${settings.currencySymbol} على ${paidCount} فواتير أقدمية (FIFO).`,
+        actor: currentUser.name,
+        actorRole: currentUser.role,
+        amount: appliedTotal,
+        severity: 'success'
+      });
+      if (settings.enableSoundEffects) playSound('success');
+    }
+
+    return { paidCount, appliedAmount: appliedTotal };
   };
 
   // ==========================================================
@@ -5353,6 +5738,239 @@ export const PosProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
     }
   };
 
+  const processReturnAndExchange = (params: {
+    orderId: string;
+    returnSelections: { productId: string; quantity: number }[];
+    replacementItems: { product: Product; quantity: number }[];
+    settleMethod?: 'cash' | 'credit' | 'exchange_even';
+    note?: string;
+  }): { success: boolean; message: string; netDifference?: number } => {
+    const order = orders.find((o) => o.id === params.orderId);
+    if (!order) {
+      return { success: false, message: 'الفاتورة غير موجودة.' };
+    }
+
+    const retMap = new Map<string, number>();
+    params.returnSelections.forEach((sel) => {
+      if (sel.quantity > 0) {
+        retMap.set(sel.productId, Number(((retMap.get(sel.productId) || 0) + sel.quantity).toFixed(3)));
+      }
+    });
+
+    if (retMap.size === 0) {
+      return { success: false, message: 'يرجى تحديد سلعة واحدة على الأقل للإرجاع.' };
+    }
+
+    const nowIso = new Date().toISOString();
+    const nowMs = Date.now();
+    const returnedSummary: OrderExchangeRecord['returnedItems'] = [];
+    let refundedValue = 0;
+
+    // Validate return quantities against remaining returnable quantities
+    const updatedOrderItems = order.items.map((item) => {
+      const reqRet = retMap.get(item.productId) || 0;
+      if (reqRet <= 0) return item;
+      const alreadyReturned = item.returnedQty || 0;
+      const maxReturnable = Math.max(0, Number((item.quantity - alreadyReturned).toFixed(3)));
+      const actualRet = Math.min(reqRet, maxReturnable);
+      if (actualRet <= 0) return item;
+
+      const unitNet = item.quantity > 0 ? item.total / item.quantity : item.price;
+      const lineRetVal = Number((unitNet * actualRet).toFixed(2));
+      refundedValue = Number((refundedValue + lineRetVal).toFixed(2));
+      returnedSummary.push({
+        productId: item.productId,
+        productName: item.productName,
+        quantity: actualRet,
+        unitPrice: Number(unitNet.toFixed(2)),
+        total: lineRetVal
+      });
+
+      return {
+        ...item,
+        returnedQty: Number((alreadyReturned + actualRet).toFixed(3))
+      };
+    });
+
+    if (returnedSummary.length === 0) {
+      return { success: false, message: 'الكميات المحددة تم إرجاعها مسبقاً بالكامل.' };
+    }
+
+    const replacementSummary: OrderExchangeRecord['replacementItems'] = [];
+    let replacementValue = 0;
+    const repQtyByProdId = new Map<string, number>();
+
+    params.replacementItems.forEach((rep) => {
+      if (rep.quantity <= 0) return;
+      const tier = resolveTierPricing(rep.product, rep.quantity, rep.product.price);
+      const lineTot = Number((tier.price * rep.quantity).toFixed(2));
+      replacementValue = Number((replacementValue + lineTot).toFixed(2));
+      repQtyByProdId.set(
+        rep.product.id,
+        Number(((repQtyByProdId.get(rep.product.id) || 0) + rep.quantity).toFixed(3))
+      );
+      replacementSummary.push({
+        productId: rep.product.id,
+        productName: rep.product.name,
+        quantity: rep.quantity,
+        unitPrice: tier.price,
+        total: lineTot
+      });
+    });
+
+    const netDifference = Number((replacementValue - refundedValue).toFixed(2));
+    const settleMethod =
+      params.settleMethod ||
+      (Math.abs(netDifference) < 0.01
+        ? 'exchange_even'
+        : order.paymentMethod === 'credit' && order.customerId
+        ? 'credit'
+        : 'cash');
+
+    // Update stock atomically (+returned, -replacement) & log StockMovements
+    const newMovements: StockMovement[] = [];
+    const returnedByProdId = new Map<string, number>();
+    returnedSummary.forEach((r) => {
+      returnedByProdId.set(
+        r.productId,
+        Number(((returnedByProdId.get(r.productId) || 0) + r.quantity).toFixed(3))
+      );
+    });
+
+    setProducts((prev) =>
+      prev.map((p) => {
+        const retQ = returnedByProdId.get(p.id) || 0;
+        const repQ = repQtyByProdId.get(p.id) || 0;
+        if (retQ === 0 && repQ === 0) return p;
+
+        let curStock = p.stock;
+        if (retQ > 0) {
+          const nextAfterRet = Number((curStock + retQ).toFixed(3));
+          newMovements.push({
+            id: `mov-ret-${nowMs}-${p.id}`,
+            productId: p.id,
+            productName: p.name,
+            date: nowIso,
+            type: 'refund',
+            quantityChange: retQ,
+            previousStock: curStock,
+            newStock: nextAfterRet,
+            unit: p.unitType,
+            costPerUnit: p.costPrice,
+            orderNumber: order.orderNumber,
+            reason: `إرجاع من فاتورة ${order.orderNumber}${params.note ? ` (${params.note})` : ''}`
+          });
+          curStock = nextAfterRet;
+        }
+        if (repQ > 0) {
+          const nextAfterRep = Math.max(0, Number((curStock - repQ).toFixed(3)));
+          newMovements.push({
+            id: `mov-exch-${nowMs}-${p.id}`,
+            productId: p.id,
+            productName: p.name,
+            date: nowIso,
+            type: 'sale',
+            quantityChange: -repQ,
+            previousStock: curStock,
+            newStock: nextAfterRep,
+            unit: p.unitType,
+            costPerUnit: p.costPrice,
+            orderNumber: order.orderNumber,
+            reason: `استبدال في فاتورة ${order.orderNumber}`
+          });
+          curStock = nextAfterRep;
+        }
+        return { ...p, stock: curStock, updatedAt: nowMs };
+      })
+    );
+
+    if (newMovements.length > 0) {
+      setStockMovements((prev) => [...newMovements, ...prev]);
+    }
+
+    const exchangeRec: OrderExchangeRecord = {
+      id: `exch-${nowMs}`,
+      date: nowIso,
+      actor: currentUser.name,
+      returnedItems: returnedSummary,
+      replacementItems: replacementSummary,
+      refundedValue,
+      replacementValue,
+      netDifference,
+      settleMethod,
+      note: params.note
+    };
+
+    const allItemsReturned = updatedOrderItems.every(
+      (it) => (it.returnedQty || 0) >= it.quantity - 0.001
+    );
+    const nextOrderStatus: Order['status'] =
+      allItemsReturned && replacementSummary.length === 0
+        ? 'refunded'
+        : 'partially_refunded';
+
+    setOrders((prev) =>
+      prev.map((o) => {
+        if (o.id !== order.id) return o;
+        const cashRefundDelta = netDifference < 0 ? Math.abs(netDifference) : 0;
+        return {
+          ...o,
+          items: updatedOrderItems,
+          status: nextOrderStatus,
+          refundedAmount: Number(((o.refundedAmount || 0) + cashRefundDelta).toFixed(2)),
+          exchanges: [exchangeRec, ...(o.exchanges || [])],
+          updatedAt: nowMs
+        };
+      })
+    );
+
+    // Adjust customer credit balance when settling against customer ledger
+    if (order.customerId && settleMethod === 'credit' && Math.abs(netDifference) > 0.01) {
+      if (netDifference < 0) {
+        settleCustomerCredit(
+          order.customerId,
+          Math.abs(netDifference),
+          `إرجاع / استبدال فاتورة ${order.orderNumber}`
+        );
+      } else {
+        addCreditDebt(
+          order.customerId,
+          netDifference,
+          `فرق استبدال سلعة في فاتورة ${order.orderNumber}`,
+          order.orderNumber
+        );
+      }
+    }
+
+    addActivityLog({
+      category: 'sale_large',
+      title:
+        replacementSummary.length > 0
+          ? `استبدال وإرجاع صنف من الفاتورة (${order.orderNumber})`
+          : `إرجاع صنف محدد من الفاتورة (${order.orderNumber})`,
+      description: `إرجاع بقيمة ${refundedValue.toFixed(2)} ${settings.currencySymbol}${
+        replacementSummary.length > 0
+          ? ` مقابل بديل بقيمة ${replacementValue.toFixed(2)} ${settings.currencySymbol} (الفرق: ${netDifference >= 0 ? '+' : ''}${netDifference.toFixed(2)})`
+          : ''
+      }`,
+      actor: currentUser.name,
+      actorRole: currentUser.role,
+      amount: Math.abs(netDifference || refundedValue),
+      severity: 'warning',
+      metadata: { orderNumber: order.orderNumber }
+    });
+
+    if (settings.enableSoundEffects) playSound('drawer');
+    return {
+      success: true,
+      netDifference,
+      message:
+        replacementSummary.length > 0
+          ? 'تم تسجيل الإرجاع والاستبدال وتحديث المخزون بنجاح.'
+          : 'تم تسجيل إرجاع السلع المختارة وإعادتها للمخزون.'
+    };
+  };
+
   // Reset to Demo Data
   const resetToDemoData = () => {
     localStorage.clear();
@@ -5567,6 +6185,11 @@ export const PosProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
   const deviceIdRef = useRef<string>(getOrCreateDeviceId());
   const [deviceName, setDeviceName] = useState<string>(() => getStoredDeviceName(deviceIdRef.current));
   const [firebaseUser, setFirebaseUser] = useState<User | null>(() => auth.currentUser);
+  const [customStoreDocId, setCustomStoreDocIdState] = useState<string | null>(() => getCustomStoreDocId());
+  const activeStoreDocId = useMemo(
+    () => (customStoreDocId && isValidStoreDocIdString(customStoreDocId) ? customStoreDocId : resolveActiveStoreDocId(firebaseUser?.uid)),
+    [customStoreDocId, firebaseUser?.uid]
+  );
   const [cloudDevices, setCloudDevices] = useState<ConnectedDeviceInfo[]>([]);
   const [cloudOwnerEmail, setCloudOwnerEmail] = useState<string | null>(null);
   const [cloudIsOwner, setCloudIsOwner] = useState<boolean>(false);
@@ -5752,7 +6375,8 @@ export const PosProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
           deviceName: latestDeviceNameRef.current,
           cashierName: latestCashierNameRef.current,
           activityLabel: activityLabel || lastLocalActivityRef.current || 'تحديث البيانات',
-          online: onlineFlag
+          online: onlineFlag,
+          storeDocId: activeStoreDocId
         });
 
         cachedRemoteDocRef.current = writtenDoc;
@@ -5788,10 +6412,10 @@ export const PosProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
       }
       return result;
     },
-    [buildCurrentLocalPayload, isOnline]
+    [buildCurrentLocalPayload, isOnline, activeStoreDocId]
   );
 
-  // Real-time onSnapshot listener across all devices (kadi_pos/store)
+  // Real-time onSnapshot listener across all devices (per-merchant kadi_pos/store_<uid> or joined store)
   useEffect(() => {
     const isCoreHydrated = productsHydrated && ordersHydrated;
     if (!isCoreHydrated || !isOnline || !firebaseUser || !firebaseUser.emailVerified) {
@@ -6009,7 +6633,8 @@ export const PosProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
       (errMsg) => {
         setCloudSyncError(errMsg);
         setCloudSyncingNow(false);
-      }
+      },
+      activeStoreDocId
     );
 
     return () => {
@@ -6020,6 +6645,7 @@ export const PosProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
     ordersHydrated,
     isOnline,
     firebaseUser,
+    activeStoreDocId,
     buildCurrentLocalPayload,
     pushCurrentStoreToCloud
   ]);
@@ -6248,7 +6874,8 @@ export const PosProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
         }),
         deviceId: deviceIdRef.current,
         cashierName: latestCashierNameRef.current,
-        activityLabel: 'إغلاق/مغادرة الجهاز'
+        activityLabel: 'إغلاق/مغادرة الجهاز',
+        storeDocId: activeStoreDocId
       }).catch(() => {});
     };
 
@@ -6363,17 +6990,18 @@ export const PosProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
               }
             };
           },
-          deviceId: deviceIdRef.current,
-          cashierName: latestCashierNameRef.current,
-          activityLabel: 'تسجيل الخروج من الجهاز'
-        });
-      } catch {
-        // Ignore if offline or non-owner
-      }
+        deviceId: deviceIdRef.current,
+        cashierName: latestCashierNameRef.current,
+        activityLabel: 'تسجيل الخروج من الجهاز',
+        storeDocId: activeStoreDocId
+      });
+    } catch {
+      // Ignore if offline or non-owner
     }
-    await signOutFromFirestore();
-    setFirebaseUser(null);
-  }, [isOnline]);
+  }
+  await signOutFromFirestore();
+  setFirebaseUser(null);
+}, [isOnline, activeStoreDocId]);
 
   const forceCloudSyncNow = useCallback(
     async (activityLabel?: string): Promise<{ success: boolean; error?: string }> => {
@@ -6410,7 +7038,8 @@ export const PosProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
         },
         deviceId: deviceIdRef.current,
         cashierName: latestCashierNameRef.current,
-        activityLabel: `إزالة جهاز من القائمة (${targetDeviceId})`
+        activityLabel: `إزالة جهاز من القائمة (${targetDeviceId})`,
+        storeDocId: activeStoreDocId
       });
       cachedRemoteDocRef.current = written;
       setCloudDevices(
@@ -6419,7 +7048,7 @@ export const PosProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
         )
       );
     },
-    [isOnline]
+    [isOnline, activeStoreDocId]
   );
 
   const removeInactiveDevices = useCallback(async (): Promise<{
@@ -6452,7 +7081,8 @@ export const PosProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
         },
         deviceId: deviceIdRef.current,
         cashierName: latestCashierNameRef.current,
-        activityLabel: 'تنظيف الأجهزة الخاملة وغير المتصلة'
+        activityLabel: 'تنظيف الأجهزة الخاملة وغير المتصلة',
+        storeDocId: activeStoreDocId
       });
       cachedRemoteDocRef.current = written;
       setCloudDevices(
@@ -6467,7 +7097,7 @@ export const PosProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
         error: err instanceof Error ? err.message : String(err)
       };
     }
-  }, [isOnline]);
+  }, [isOnline, activeStoreDocId]);
 
   const addAllowedSyncEmail = useCallback(
     async (email: string): Promise<{ success: boolean; error?: string }> => {
@@ -6488,7 +7118,8 @@ export const PosProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
           nextAllowedEmails: nextEmails,
           deviceId: deviceIdRef.current,
           cashierName: latestCashierNameRef.current,
-          activityLabel: `إضافة بريد مصرح بالمزامنة: ${clean}`
+          activityLabel: `إضافة بريد مصرح بالمزامنة: ${clean}`,
+          storeDocId: activeStoreDocId
         });
         cachedRemoteDocRef.current = written;
         setCloudAllowedEmails(written.allowedEmails || []);
@@ -6497,7 +7128,7 @@ export const PosProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
         return { success: false, error: err instanceof Error ? err.message : String(err) };
       }
     },
-    []
+    [activeStoreDocId]
   );
 
   const removeAllowedSyncEmail = useCallback(async (email: string): Promise<void> => {
@@ -6513,10 +7144,39 @@ export const PosProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
       nextAllowedEmails: nextEmails,
       deviceId: deviceIdRef.current,
       cashierName: latestCashierNameRef.current,
-      activityLabel: `سحب صلاحية بريد من المزامنة: ${email}`
+      activityLabel: `سحب صلاحية بريد من المزامنة: ${email}`,
+      storeDocId: activeStoreDocId
     });
     cachedRemoteDocRef.current = written;
     setCloudAllowedEmails(written.allowedEmails || []);
+  }, [activeStoreDocId]);
+
+  const joinCloudStore = useCallback(
+    (storeDocIdInput: string): { success: boolean; message: string } => {
+      const clean = storeDocIdInput.trim();
+      if (!isValidStoreDocIdString(clean)) {
+        return {
+          success: false,
+          message: 'معرف المتجر غير صالح. يجب أن يكون بالشكل store_xxx أو store.'
+        };
+      }
+      setCustomStoreDocId(clean);
+      setCustomStoreDocIdState(clean);
+      cachedRemoteDocRef.current = null;
+      setCloudSyncError(null);
+      return {
+        success: true,
+        message: `تم الانتقال إلى مساحة المتجر (${clean}) وجاري المزامنة.`
+      };
+    },
+    []
+  );
+
+  const usePersonalCloudStore = useCallback(() => {
+    setCustomStoreDocId(null);
+    setCustomStoreDocIdState(null);
+    cachedRemoteDocRef.current = null;
+    setCloudSyncError(null);
   }, []);
 
   const cloudSyncState = useMemo<FirestoreSyncState>(() => {
@@ -6561,6 +7221,8 @@ export const PosProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
       hasPendingWrites: cloudHasPendingWrites,
       lastSyncedAtIso: cloudLastSyncedAtIso,
       storeExistsInCloud,
+      storeDocId: activeStoreDocId,
+      customStoreDocId,
       lastError: cloudSyncError
     };
   }, [
@@ -6579,7 +7241,9 @@ export const PosProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
     cloudLastUpdated,
     cloudUpdatedBy,
     hasPendingLocalChanges,
-    storeExistsInCloud
+    storeExistsInCloud,
+    activeStoreDocId,
+    customStoreDocId
   ]);
 
   return (
@@ -6612,6 +7276,7 @@ export const PosProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
         bulkUpdateProducts,
         deleteProduct,
         adjustStock,
+        unpackBoxProduct,
         importProductsBulk,
         seedLargeCatalogDemo,
         stockMovements,
@@ -6651,6 +7316,7 @@ export const PosProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
         recordVoiceSale,
         updateProductPurchaseCostAndRecalculateProfit,
         refundOrder,
+        processReturnAndExchange,
         lastCompletedOrder,
         setLastCompletedOrder,
         heldTickets,
@@ -6725,6 +7391,11 @@ export const PosProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
         addSupplierInvoice,
         paySupplierInvoice,
         deleteSupplierInvoice,
+        suppliers,
+        addSupplier,
+        updateSupplier,
+        deleteSupplier,
+        paySupplierBalanceFIFO,
         markRemoteOrderDeliveredAndCollected,
         allPalettes,
         activePalette,
@@ -6762,6 +7433,8 @@ export const PosProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
         removeInactiveDevices,
         addAllowedSyncEmail,
         removeAllowedSyncEmail,
+        joinCloudStore,
+        usePersonalCloudStore,
         buildFullBackupObject,
         resetToDemoData,
         exportDatabaseJson,

@@ -576,6 +576,29 @@ export const CartRegister: React.FC<CartRegisterProps> = ({
                         </div>
                       )}
 
+                      {/* Wholesale / Semi-Wholesale Automatic Tier Feedback */}
+                      {!item.isPriceOverridden &&
+                        item.appliedPriceTier &&
+                        item.appliedPriceTier !== 'retail' && (
+                          <div className="flex items-center gap-1.5 mt-1 flex-wrap text-[10px]">
+                            <span className="font-extrabold text-blue-700 dark:text-blue-300 bg-blue-50 dark:bg-blue-950/60 px-1.5 py-0.5 rounded-md border border-blue-200 dark:border-blue-800">
+                              {item.appliedPriceTier === 'wholesale'
+                                ? isAr
+                                  ? 'سعر الجملة التلقائي'
+                                  : 'Prix Gros Auto'
+                                : isAr
+                                ? 'نصف الجملة التلقائي'
+                                : 'Demi-Gros Auto'}
+                            </span>
+                            {item.baseRetailPrice !== undefined &&
+                              item.baseRetailPrice > item.price && (
+                                <span className="text-slate-400 line-through font-mono tabular-nums">
+                                  {item.baseRetailPrice.toFixed(2)} {currencySymbol}
+                                </span>
+                              )}
+                          </div>
+                        )}
+
                       <div className="text-[11px] text-slate-400 mt-0.5 tabular-nums">
                         {item.price.toFixed(2)} {currencySymbol} {isWeighted ? `/ ${item.unitType === 'kg' ? (isAr ? 'كغ' : 'kg') : (isAr ? 'لتر' : 'L')}` : ''}
                         <span className="mx-1 text-slate-300">·</span>
@@ -744,6 +767,30 @@ export const CartRegister: React.FC<CartRegisterProps> = ({
                 <span className="font-bold tabular-nums">-{cartDiscountTotal.toFixed(2)} {currencySymbol}</span>
               </div>
             )}
+
+            {(() => {
+              const tierSavings = cart.reduce((sum, ci) => {
+                if (
+                  !ci.isPriceOverridden &&
+                  ci.appliedPriceTier &&
+                  ci.appliedPriceTier !== 'retail' &&
+                  ci.baseRetailPrice !== undefined &&
+                  ci.baseRetailPrice > ci.price
+                ) {
+                  return sum + (ci.baseRetailPrice - ci.price) * ci.quantity;
+                }
+                return sum;
+              }, 0);
+              if (tierSavings <= 0.005) return null;
+              return (
+                <div className="flex items-center justify-between text-blue-700 dark:text-blue-400 font-semibold">
+                  <span>{isAr ? 'توفير تسعيرة الجملة' : 'Économie Prix Gros'}</span>
+                  <span className="font-mono font-bold tabular-nums">
+                    -{tierSavings.toFixed(2)} {currencySymbol}
+                  </span>
+                </div>
+              );
+            })()}
 
             <div className="flex items-center justify-between text-slate-600 dark:text-slate-400">
               <span>{t.vat_tax} (15%)</span>

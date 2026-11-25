@@ -25,12 +25,54 @@ export const FIRESTORE_COLLECTION = 'kadi_pos';
 export const FIRESTORE_STORE_DOC_ID = 'store';
 export const STORE_DOC_PATH = `${FIRESTORE_COLLECTION}/${FIRESTORE_STORE_DOC_ID}`;
 
+const ACTIVE_STORE_DOC_KEY = 'kadi_pos_active_store_doc_v1';
 const DEVICE_ID_STORAGE_KEY = 'kadi_pos_device_id';
 const DEVICE_NAME_STORAGE_KEY = 'kadi_pos_device_name';
 const LOCAL_CLOUD_BACKUP_KEY = 'kadi_pos_cloud_backup_v1';
 const PENDING_SYNC_ACTIVITY_KEY = 'kadi_pos_cloud_pending_activity';
 const DELETED_PRODUCTS_TOMBSTONE_KEY = 'kadi_pos_deleted_products_v1';
 const KNOWN_CLOUD_PRODUCT_IDS_KEY = 'kadi_pos_known_cloud_product_ids_v1';
+
+export function isValidStoreDocIdString(id: string): boolean {
+  const clean = (id || '').trim();
+  return clean === 'store' || /^store_[a-zA-Z0-9_\-]{6,96}$/.test(clean);
+}
+
+export function getCustomStoreDocId(): string | null {
+  try {
+    const raw = localStorage.getItem(ACTIVE_STORE_DOC_KEY);
+    if (raw && isValidStoreDocIdString(raw)) {
+      return raw.trim();
+    }
+    return null;
+  } catch {
+    return null;
+  }
+}
+
+export function setCustomStoreDocId(docId: string | null): void {
+  try {
+    if (!docId || !docId.trim()) {
+      localStorage.removeItem(ACTIVE_STORE_DOC_KEY);
+      return;
+    }
+    const clean = docId.trim();
+    if (isValidStoreDocIdString(clean)) {
+      safeLocalStorageSet(ACTIVE_STORE_DOC_KEY, clean);
+    }
+  } catch {
+    // ignore
+  }
+}
+
+export function resolveActiveStoreDocId(userUid?: string | null): string {
+  const custom = getCustomStoreDocId();
+  if (custom) return custom;
+  if (userUid && /^[a-zA-Z0-9_\-]{6,96}$/.test(userUid)) {
+    return `store_${userUid}`;
+  }
+  return FIRESTORE_STORE_DOC_ID;
+}
 
 // Devices with no heartbeat within this window are treated as idle/offline in counts
 export const DEVICE_ACTIVE_WINDOW_MS = 5 * 60 * 1000;
@@ -784,9 +826,12 @@ export function subscribeStoreSyncDoc(
     docData: FirestoreStoreDocument | null,
     meta: { fromCache: boolean; hasPendingWrites: boolean }
   ) => void,
-  onSyncError: (errMsg: string) => void
+  onSyncError: (errMsg: string) => void,
+  storeDocId: string = FIRESTORE_STORE_DOC_ID
 ): Unsubscribe {
-  const ref = doc(db, FIRESTORE_COLLECTION, FIRESTORE_STORE_DOC_ID);
+  const targetDocId = isValidStoreDocIdString(storeDocId) ? storeDocId : FIRESTORE_STORE_DOC_ID;
+  const targetPath = `${FIRESTORE_COLLECTION}/${targetDocId}`;
+  const ref = doc(db, FIRESTORE_COLLECTION, targetDocId);
   return onSnapshot(
     ref,
     { includeMetadataChanges: true },
@@ -804,7 +849,7 @@ export function subscribeStoreSyncDoc(
     },
     (error) => {
       try {
-        handleFirestoreError(error, OperationType.GET, STORE_DOC_PATH);
+        handleFirestoreError(error, OperationType.GET, targetPath);
       } catch (wrapped) {
         onSyncError(wrapped instanceof Error ? wrapped.message : String(error));
       }
@@ -821,6 +866,7 @@ export async function pushMergedStoreToFirestore(params: {
   cashierName: string;
   activityLabel: string;
   online?: boolean;
+  storeDocId?: string;
 }): Promise<FirestoreStoreDocument> {
   const {
     user,
@@ -830,10 +876,16 @@ export async function pushMergedStoreToFirestore(params: {
     deviceName,
     cashierName,
     activityLabel,
-    online = true
+    online = true,
+    storeDocId
   } = params;
 
-  const storeRef = doc(db, FIRESTORE_COLLECTION, FIRESTORE_STORE_DOC_ID);
+  const targetDocId =
+    storeDocId && isValidStoreDocIdString(storeDocId)
+      ? storeDocId
+      : resolveActiveStoreDocId(user.uid);
+  const targetPath = `${FIRESTORE_COLLECTION}/${targetDocId}`;
+  const storeRef = doc(db, FIRESTORE_COLLECTION, targetDocId);
 
   try {
     const written = await runTransaction(db, async (transaction) => {
@@ -909,7 +961,7 @@ export async function pushMergedStoreToFirestore(params: {
     clearPendingCloudSyncFlag();
     return written;
   } catch (err) {
-    handleFirestoreError(err, OperationType.WRITE, STORE_DOC_PATH);
+    handleFirestoreError(err, OperationType.WRITE, targetPath);
   }
 }
 
@@ -924,8 +976,14 @@ export async function updateDeviceRegistryOnly(params: {
   deviceId: string;
   cashierName: string;
   activityLabel: string;
+  storeDocId?: string;
 }): Promise<FirestoreStoreDocument> {
-  const storeRef = doc(db, FIRESTORE_COLLECTION, FIRESTORE_STORE_DOC_ID);
+  const targetDocId =
+    params.storeDocId && isValidStoreDocIdString(params.storeDocId)
+      ? params.storeDocId
+      : resolveActiveStoreDocId(params.user.uid);
+  const targetPath = `${FIRESTORE_COLLECTION}/${targetDocId}`;
+  const storeRef = doc(db, FIRESTORE_COLLECTION, targetDocId);
   try {
     return await runTransaction(db, async (transaction) => {
       const snap = await transaction.get(storeRef);
@@ -970,17 +1028,21 @@ export async function updateDeviceRegistryOnly(params: {
       return payload;
     });
   } catch (err) {
-    handleFirestoreError(err, OperationType.UPDATE, STORE_DOC_PATH);
+    handleFirestoreError(err, OperationType.UPDATE, targetPath);
   }
 }
 
-export async function fetchRemoteStoreOnce(): Promise<FirestoreStoreDocument | null> {
-  const storeRef = doc(db, FIRESTORE_COLLECTION, FIRESTORE_STORE_DOC_ID);
+export async function fetchRemoteStoreOnce(
+  storeDocId: string = FIRESTORE_STORE_DOC_ID
+): Promise<FirestoreStoreDocument | null> {
+  const targetDocId = isValidStoreDocIdString(storeDocId) ? storeDocId : FIRESTORE_STORE_DOC_ID;
+  const targetPath = `${FIRESTORE_COLLECTION}/${targetDocId}`;
+  const storeRef = doc(db, FIRESTORE_COLLECTION, targetDocId);
   try {
     const snap = await getDoc(storeRef);
     if (!snap.exists()) return null;
     return parseRemoteDocData(snap.data() as Partial<FirestoreStoreDocument>);
   } catch (err) {
-    handleFirestoreError(err, OperationType.GET, STORE_DOC_PATH);
+    handleFirestoreError(err, OperationType.GET, targetPath);
   }
 }
