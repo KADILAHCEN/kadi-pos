@@ -780,7 +780,10 @@ function parseRemoteDocData(
 }
 
 export function subscribeStoreSyncDoc(
-  onRemoteData: (docData: FirestoreStoreDocument | null, meta: { fromCache: boolean }) => void,
+  onRemoteData: (
+    docData: FirestoreStoreDocument | null,
+    meta: { fromCache: boolean; hasPendingWrites: boolean }
+  ) => void,
   onSyncError: (errMsg: string) => void
 ): Unsubscribe {
   const ref = doc(db, FIRESTORE_COLLECTION, FIRESTORE_STORE_DOC_ID);
@@ -788,12 +791,16 @@ export function subscribeStoreSyncDoc(
     ref,
     { includeMetadataChanges: true },
     (snapshot) => {
+      const meta = {
+        fromCache: snapshot.metadata.fromCache,
+        hasPendingWrites: snapshot.metadata.hasPendingWrites
+      };
       if (!snapshot.exists()) {
-        onRemoteData(null, { fromCache: snapshot.metadata.fromCache });
+        onRemoteData(null, meta);
         return;
       }
       const parsed = parseRemoteDocData(snapshot.data() as Partial<FirestoreStoreDocument>);
-      onRemoteData(parsed, { fromCache: snapshot.metadata.fromCache });
+      onRemoteData(parsed, meta);
     },
     (error) => {
       try {

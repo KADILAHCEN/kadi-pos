@@ -48,6 +48,7 @@ export const BranchManagementSection: React.FC = () => {
   const [showTransferModal, setShowTransferModal] = useState(false);
   const [showTransfersHistory, setShowTransfersHistory] = useState(false);
   const [syncToast, setSyncToast] = useState<string | null>(null);
+  const [deletingBranch, setDeletingBranch] = useState<Branch | null>(null);
 
   // Add/Edit Form State
   const [formName, setFormName] = useState('');
@@ -300,11 +301,7 @@ export const BranchManagementSection: React.FC = () => {
                     {!b.isMain && branches.length > 1 && (
                       <button
                         type="button"
-                        onClick={() => {
-                          if (confirm(isAr ? `هل أنت متأكد من حذف ${b.name}؟` : `Delete branch ${b.name}?`)) {
-                            deleteBranch(b.id);
-                          }
-                        }}
+                        onClick={() => setDeletingBranch(b)}
                         className="p-1.5 rounded-lg text-slate-400 hover:text-rose-600 hover:bg-rose-50 dark:hover:bg-rose-950/30"
                         title={isAr ? 'حذف الفرع' : 'Delete'}
                       >
@@ -728,6 +725,53 @@ export const BranchManagementSection: React.FC = () => {
               </button>
             </div>
           </form>
+        </div>
+      )}
+
+      {deletingBranch && (
+        <div
+          className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-slate-950/65 backdrop-blur-xs"
+          onClick={() => setDeletingBranch(null)}
+        >
+          <div
+            onClick={(e) => e.stopPropagation()}
+            className="w-full max-w-sm bg-white dark:bg-slate-900 rounded-2xl p-5 shadow-2xl border border-slate-200 dark:border-slate-800 space-y-4 animate-in fade-in zoom-in-95 duration-150"
+          >
+            <div className="flex items-start gap-3">
+              <div className="w-10 h-10 rounded-xl bg-rose-100 dark:bg-rose-950/60 text-rose-600 dark:text-rose-400 flex items-center justify-center shrink-0">
+                <Trash2 className="w-5 h-5" />
+              </div>
+              <div>
+                <h3 className="font-extrabold text-sm text-slate-900 dark:text-white">
+                  {isAr ? 'حذف الفرع' : 'Delete Branch'}
+                </h3>
+                <p className="text-xs text-slate-600 dark:text-slate-400 mt-1">
+                  {isAr
+                    ? `هل أنت متأكد من حذف "${deletingBranch.name}"؟`
+                    : `Are you sure you want to delete "${deletingBranch.name}"?`}
+                </p>
+              </div>
+            </div>
+            <div className="flex items-center justify-end gap-2 pt-1">
+              <button
+                type="button"
+                onClick={() => setDeletingBranch(null)}
+                className="px-4 py-2 rounded-xl border border-slate-200 dark:border-slate-700 text-xs font-bold text-slate-600 dark:text-slate-300 hover:bg-slate-100 dark:hover:bg-slate-800"
+              >
+                {isAr ? 'إلغاء' : 'Cancel'}
+              </button>
+              <button
+                type="button"
+                onClick={() => {
+                  deleteBranch(deletingBranch.id);
+                  setDeletingBranch(null);
+                }}
+                className="px-4 py-2 rounded-xl bg-rose-600 hover:bg-rose-700 text-white text-xs font-extrabold shadow-xs"
+              >
+                {isAr ? 'تأكيد الحذف' : 'Delete'}
+              </button>
+            </div>
+          </div>
         </div>
       )}
     </div>

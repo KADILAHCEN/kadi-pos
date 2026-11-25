@@ -1,7 +1,8 @@
-import React, { useState, useEffect, useRef, useCallback } from 'react';
+import React, { useState, useEffect, useRef, useCallback, useMemo } from 'react';
 import { usePos } from '../../context/PosContext';
 import { getT } from '../../utils/translations';
 import { playSound } from '../../utils/audio';
+import { Product } from '../../types';
 import { BrowserMultiFormatReader, BrowserCodeReader, IScannerControls } from '@zxing/browser';
 import { BarcodeFormat, DecodeHintType } from '@zxing/library';
 import {
@@ -22,12 +23,30 @@ import {
 
 type ScanFormatMode = 'all' | 'barcode' | 'qr';
 
+interface NativeDetectedBarcode {
+  rawValue?: string;
+  format?: string;
+}
+
+interface NativeBarcodeDetector {
+  detect: (source: HTMLVideoElement | HTMLCanvasElement | ImageBitmap) => Promise<NativeDetectedBarcode[]>;
+}
+
+interface NativeBarcodeDetectorConstructor {
+  new (options?: { formats?: string[] }): NativeBarcodeDetector;
+  getSupportedFormats?: () => Promise<string[]>;
+}
+
+const DARK_LUMINANCE_THRESHOLD = 68;
+
 interface BarcodeScannerModalProps {
   onClose: () => void;
   onScanned: (code: string) => void;
   mode?: 'pos' | 'field';
   title?: string;
   defaultScanFormat?: ScanFormatMode;
+  allowContinuous?: boolean;
+  defaultContinuous?: boolean;
 }
 
 function resolveScannedPayload(rawText: string): string {
@@ -75,7 +94,9 @@ export const BarcodeScannerModal: React.FC<BarcodeScannerModalProps> = ({
   onScanned,
   mode = 'pos',
   title,
-  defaultScanFormat = 'all'
+  defaultScanFormat = 'all',
+  allowContinuous = false,
+  defaultContinuous = false
 }) => {
   const { products, language, settings } = usePos();
   const t = getT(language);
@@ -85,7 +106,7 @@ export const BarcodeScannerModal: React.FC<BarcodeScannerModalProps> = ({
   const [manualCode, setManualCode] = useState('');
   const [cameraActive, setCameraActive] = useState(false);
   const [cameraError, setCameraError] = useState<string | null>(null);
-  const [continuousMode, setContinuousMode] = useState(false);
+  const [continuousMode, setContinuousMode] = useState(Boolean(defaultContinuous));
   const [sessionHistory, setSessionHistory] = useState<
     {
       id: string;
@@ -108,6 +129,7 @@ export const BarcodeScannerModal: React.FC<BarcodeScannerModalProps> = ({
   const [selectedDeviceId, setSelectedDeviceId] = useState<string | undefined>(undefined);
   const [torchSupported, setTorchSupported] = useState(false);
   const [torchOn, setTorchOn] = useState(false);
+  const [autoTorchActivated, setAutoTorchActivated] = useState(false);
   const [cameraRetryNonce, setCameraRetryNonce] = useState(0);
   const [focusReticle, setFocusReticle] = useState<{ x: number; y: number } | null>(null);
   const [imageScanMsg, setImageScanMsg] = useState<string | null>(null);
@@ -116,47 +138,106 @@ export const BarcodeScannerModal: React.FC<BarcodeScannerModalProps> = ({
   const controlsRef = useRef<IScannerControls | null>(null);
   const readerRef = useRef<BrowserMultiFormatReader | null>(null);
   const imageInputRef = useRef<HTMLInputElement>(null);
+  const luminanceCanvasRef = useRef<HTMLCanvasElement | null>(null);
+  const userToggledTorchRef = useRef(false);
+  const autoTorchTimerRef = useRef<number | null>(null);
 
   const lastScanRef = useRef<{ code: string; time: number }>({ code: '', time: 0 });
   const isClosingRef = useRef(false);
 
-  // Build ZXing MultiFormatReader configured according to selected scan format mode
-  const createReader = useCallback(() => {
-    const linearFormats = [
-      BarcodeFormat.EAN_13,
-      BarcodeFormat.EAN_8,
-      BarcodeFormat.UPC_A,
-      BarcodeFormat.UPC_E,
-      BarcodeFormat.CODE_128,
-      BarcodeFormat.CODE_39,
-      BarcodeFormat.CODE_93,
-      BarcodeFormat.ITF,
-      BarcodeFormat.CODABAR
-    ];
-    const qrFormats = [
-      BarcodeFormat.QR_CODE,
-      BarcodeFormat.DATA_MATRIX,
-      BarcodeFormat.AZTEC,
-      BarcodeFormat.PDF_417
-    ];
+  // Pre-indexed O(1) product lookup map for instant barcode matching
+  const productLookupMap = useMemo(() => {
+    const map = new Map<string, Product>();
+    for (let i = 0; i < products.length; i++) {
+      const p = products[i];
+      if (p.barcode) {
+        const b = p.barcode.trim();
+        if (b && !map.has(b)) map.set(b, p);
+      }
+      if (p.sku) {
+        const s = p.sku.trim().toLowerCase();
+        if (s && !map.has(s)) map.set(s, p);
+      }
+      if (p.id && !map.has(p.id)) {
+        map.set(p.id, p);
+      }
+    }
+    return map;
+  }, [products]);
 
-    const formats =
-      scanFormatMode === 'barcode'
-        ? linearFormats
-        : scanFormatMode === 'qr'
-        ? qrFormats
-        : [...linearFormats, ...qrFormats];
+  // Build ZXing MultiFormatReader tuned for fast live response vs deep image decoding
+  const createReader = useCallback(
+    (tryHarderForStaticImage = false) => {
+      const linearFormats = [
+        BarcodeFormat.EAN_13,
+        BarcodeFormat.EAN_8,
+        BarcodeFormat.UPC_A,
+        BarcodeFormat.UPC_E,
+        BarcodeFormat.CODE_128,
+        BarcodeFormat.CODE_39,
+        BarcodeFormat.CODE_93,
+        BarcodeFormat.ITF,
+        BarcodeFormat.CODABAR
+      ];
+      const qrFormats = [
+        BarcodeFormat.QR_CODE,
+        BarcodeFormat.DATA_MATRIX,
+        BarcodeFormat.AZTEC,
+        BarcodeFormat.PDF_417
+      ];
 
-    const hints = new Map();
-    hints.set(DecodeHintType.POSSIBLE_FORMATS, formats);
-    hints.set(DecodeHintType.TRY_HARDER, true);
-    return new BrowserMultiFormatReader(hints, {
-      delayBetweenScanAttempts: 180,
-      delayBetweenScanSuccess: 900
-    });
-  }, [scanFormatMode]);
+      const formats =
+        scanFormatMode === 'barcode'
+          ? linearFormats
+          : scanFormatMode === 'qr'
+          ? qrFormats
+          : [...linearFormats, ...qrFormats];
+
+      const hints = new Map();
+      hints.set(DecodeHintType.POSSIBLE_FORMATS, formats);
+      if (tryHarderForStaticImage) {
+        hints.set(DecodeHintType.TRY_HARDER, true);
+      }
+      return new BrowserMultiFormatReader(hints, {
+        delayBetweenScanAttempts: 45,
+        delayBetweenScanSuccess: 320
+      });
+    },
+    [scanFormatMode]
+  );
+
+  const applyHardwareTorch = useCallback(async (enabled: boolean): Promise<boolean> => {
+    let applied = false;
+    if (controlsRef.current?.switchTorch) {
+      try {
+        await controlsRef.current.switchTorch(enabled);
+        applied = true;
+      } catch {
+        // try direct track constraint fallback
+      }
+    }
+    if (!applied) {
+      const tracks = (videoRef.current?.srcObject as MediaStream | null)?.getVideoTracks?.() || [];
+      const activeTrack = tracks[0];
+      if (activeTrack?.applyConstraints) {
+        try {
+          await activeTrack.applyConstraints({
+            advanced: [{ torch: enabled } as unknown as MediaTrackConstraintSet]
+          });
+          applied = true;
+        } catch {
+          applied = false;
+        }
+      }
+    }
+    return applied;
+  }, []);
 
   const stopScanner = useCallback(() => {
+    if (autoTorchTimerRef.current !== null) {
+      window.clearTimeout(autoTorchTimerRef.current);
+      autoTorchTimerRef.current = null;
+    }
     try {
       controlsRef.current?.stop();
     } catch {
@@ -171,22 +252,22 @@ export const BarcodeScannerModal: React.FC<BarcodeScannerModalProps> = ({
     setCameraActive(false);
     setTorchOn(false);
     setTorchSupported(false);
+    setAutoTorchActivated(false);
   }, []);
 
   const handleDetectedCode = useCallback(
-    (rawCode: string, format?: BarcodeFormat) => {
+    (rawCode: string, format?: BarcodeFormat | string) => {
       const literal = rawCode.trim();
       if (!literal || isClosingRef.current) return;
 
-      const directMatch = products.find(
-        (p) => p.barcode === literal || p.sku.toLowerCase() === literal.toLowerCase()
-      );
+      const directMatch =
+        productLookupMap.get(literal) || productLookupMap.get(literal.toLowerCase());
       const code = directMatch ? literal : resolveScannedPayload(literal);
       if (!code) return;
 
       const now = Date.now();
-      // Cooldown prevents scanning the exact same frame repeatedly
-      const cooldownMs = continuousMode ? 1200 : 1800;
+      // Cooldown prevents scanning the exact same frame twice while keeping distinct items instant
+      const cooldownMs = continuousMode ? 850 : 1000;
       if (lastScanRef.current.code === code && now - lastScanRef.current.time < cooldownMs) {
         return;
       }
@@ -194,20 +275,20 @@ export const BarcodeScannerModal: React.FC<BarcodeScannerModalProps> = ({
 
       const matched =
         directMatch ||
-        products.find(
-          (p) =>
-            p.barcode === code ||
-            p.sku.toLowerCase() === code.toLowerCase() ||
-            p.id === code
-        );
+        productLookupMap.get(code) ||
+        productLookupMap.get(code.toLowerCase());
 
+      const fmtStr = typeof format === 'string' ? format.toLowerCase() : '';
       const isQr =
         format === BarcodeFormat.QR_CODE ||
         format === BarcodeFormat.DATA_MATRIX ||
         format === BarcodeFormat.AZTEC ||
+        fmtStr === 'qr_code' ||
+        fmtStr === 'data_matrix' ||
+        fmtStr === 'aztec' ||
         scanFormatMode === 'qr';
 
-      // Distinct crisp audio chime + haptic pulse for every successful scan in Smart Reader Mode or when sounds enabled
+      // Distinct crisp audio chime + haptic pulse for every successful scan
       if (continuousMode || settings.enableSoundEffects) {
         playSound(matched || mode === 'field' ? 'beep' : 'error');
       }
@@ -258,27 +339,181 @@ export const BarcodeScannerModal: React.FC<BarcodeScannerModalProps> = ({
 
       onScanned(matched ? matched.barcode || matched.sku || code : code);
 
-      if (!continuousMode || mode === 'field') {
+      if (!continuousMode || (mode === 'field' && !allowContinuous)) {
         isClosingRef.current = true;
-        setTimeout(() => {
+        window.setTimeout(() => {
           stopScanner();
           onClose();
-        }, 180);
+        }, 55);
       }
     },
-    [continuousMode, mode, isAr, onClose, onScanned, products, scanFormatMode, settings.enableSoundEffects, stopScanner]
+    [
+      allowContinuous,
+      continuousMode,
+      isAr,
+      mode,
+      onClose,
+      onScanned,
+      productLookupMap,
+      scanFormatMode,
+      settings.enableSoundEffects,
+      stopScanner
+    ]
   );
 
-  // Keep latest callback ref so ZXing continuous loop doesn't restart unnecessarily
+  // Keep latest callback ref so ZXing / BarcodeDetector loops don't restart unnecessarily
   const detectedCallbackRef = useRef(handleDetectedCode);
   useEffect(() => {
     detectedCallbackRef.current = handleDetectedCode;
   }, [handleDetectedCode]);
 
-  // Enumerate cameras and start live barcode scanner
+  // Enumerate cameras, start live barcode scanner (+ native BarcodeDetector fast path), and auto-enable torch in dark rooms
   useEffect(() => {
     let mounted = true;
+    let nativePollTimer: number | null = null;
+    let nativeDetectorInFlight = false;
     isClosingRef.current = false;
+    userToggledTorchRef.current = false;
+
+    const sampleAmbientLuminance = (): { ready: boolean; meanLuminance: number } => {
+      const video = videoRef.current;
+      if (!video || video.readyState < 2 || video.videoWidth <= 0 || video.videoHeight <= 0) {
+        return { ready: false, meanLuminance: 255 };
+      }
+      if (!luminanceCanvasRef.current) {
+        luminanceCanvasRef.current = document.createElement('canvas');
+      }
+      const canvas = luminanceCanvasRef.current;
+      const sampleW = 64;
+      const sampleH = 48;
+      canvas.width = sampleW;
+      canvas.height = sampleH;
+      const ctx = canvas.getContext('2d', { willReadFrequently: true });
+      if (!ctx) return { ready: false, meanLuminance: 255 };
+
+      ctx.drawImage(video, 0, 0, sampleW, sampleH);
+      const pixels = ctx.getImageData(0, 0, sampleW, sampleH).data;
+      let sumLum = 0;
+      let maxChannel = 0;
+      const count = sampleW * sampleH;
+      for (let i = 0; i < pixels.length; i += 4) {
+        const r = pixels[i];
+        const g = pixels[i + 1];
+        const b = pixels[i + 2];
+        if (r > maxChannel) maxChannel = r;
+        if (g > maxChannel) maxChannel = g;
+        if (b > maxChannel) maxChannel = b;
+        sumLum += 0.299 * r + 0.587 * g + 0.114 * b;
+      }
+      if (maxChannel === 0) {
+        // Frame hasn't rendered first camera exposure yet
+        return { ready: false, meanLuminance: 255 };
+      }
+      return { ready: true, meanLuminance: sumLum / count };
+    };
+
+    const scheduleAutoTorchEvaluation = (attempt = 0) => {
+      if (!mounted || userToggledTorchRef.current) return;
+      const delayMs = attempt === 0 ? 180 : 220;
+      autoTorchTimerRef.current = window.setTimeout(async () => {
+        if (!mounted || userToggledTorchRef.current || isClosingRef.current) return;
+        const sample = sampleAmbientLuminance();
+        if (!sample.ready) {
+          if (attempt < 5) {
+            scheduleAutoTorchEvaluation(attempt + 1);
+          }
+          return;
+        }
+        if (sample.meanLuminance < DARK_LUMINANCE_THRESHOLD) {
+          const hwEnabled = await applyHardwareTorch(true);
+          if (!mounted || userToggledTorchRef.current) return;
+          if (hwEnabled) {
+            setTorchSupported(true);
+          }
+          setTorchOn(true);
+          setAutoTorchActivated(true);
+        }
+      }, delayMs);
+    };
+
+    const startNativeFastDetector = async () => {
+      const DetectorCtor = (
+        window as unknown as { BarcodeDetector?: NativeBarcodeDetectorConstructor }
+      ).BarcodeDetector;
+      if (!DetectorCtor) return;
+
+      const nativeFormats =
+        scanFormatMode === 'barcode'
+          ? ['ean_13', 'ean_8', 'upc_a', 'upc_e', 'code_128', 'code_39', 'code_93', 'itf', 'codabar']
+          : scanFormatMode === 'qr'
+          ? ['qr_code', 'data_matrix', 'aztec', 'pdf417']
+          : [
+              'ean_13',
+              'ean_8',
+              'upc_a',
+              'upc_e',
+              'code_128',
+              'code_39',
+              'code_93',
+              'itf',
+              'codabar',
+              'qr_code',
+              'data_matrix',
+              'aztec',
+              'pdf417'
+            ];
+
+      try {
+        let formatsToUse = nativeFormats;
+        if (DetectorCtor.getSupportedFormats) {
+          const supported = await DetectorCtor.getSupportedFormats();
+          const filtered = nativeFormats.filter((f) => supported.includes(f));
+          if (filtered.length === 0) return;
+          formatsToUse = filtered;
+        }
+        const detector = new DetectorCtor({ formats: formatsToUse });
+
+        const tick = async () => {
+          if (!mounted || isClosingRef.current) return;
+          const video = videoRef.current;
+          if (
+            video &&
+            video.readyState >= 2 &&
+            video.videoWidth > 0 &&
+            !nativeDetectorInFlight
+          ) {
+            nativeDetectorInFlight = true;
+            try {
+              const found = await detector.detect(video);
+              if (mounted && found && found.length > 0) {
+                for (let i = 0; i < found.length; i++) {
+                  const val = found[i]?.rawValue;
+                  if (val && val.trim()) {
+                    detectedCallbackRef.current(val, found[i]?.format);
+                    break;
+                  }
+                }
+              }
+            } catch {
+              // ignore transient frame decode error
+            } finally {
+              nativeDetectorInFlight = false;
+            }
+          }
+          if (mounted && !isClosingRef.current) {
+            nativePollTimer = window.setTimeout(() => {
+              void tick();
+            }, 45);
+          }
+        };
+
+        nativePollTimer = window.setTimeout(() => {
+          void tick();
+        }, 60);
+      } catch {
+        // Native BarcodeDetector unavailable; ZXing handles decoding
+      }
+    };
 
     async function initAndStartCamera() {
       setCameraError(null);
@@ -295,7 +530,7 @@ export const BarcodeScannerModal: React.FC<BarcodeScannerModalProps> = ({
       }
 
       try {
-        const reader = createReader();
+        const reader = createReader(false);
         readerRef.current = reader;
 
         if (!videoRef.current) return;
@@ -305,14 +540,16 @@ export const BarcodeScannerModal: React.FC<BarcodeScannerModalProps> = ({
               video: {
                 deviceId: { exact: selectedDeviceId },
                 width: { ideal: 1280 },
-                height: { ideal: 720 }
+                height: { ideal: 720 },
+                frameRate: { ideal: 30 }
               }
             }
           : {
               video: {
                 facingMode: { ideal: 'environment' },
                 width: { ideal: 1280 },
-                height: { ideal: 720 }
+                height: { ideal: 720 },
+                frameRate: { ideal: 30 }
               }
             };
 
@@ -336,14 +573,19 @@ export const BarcodeScannerModal: React.FC<BarcodeScannerModalProps> = ({
         controlsRef.current = controls;
         setCameraActive(true);
 
-        // Check torch & apply continuous autofocus on active track
+        // Check torch capability & apply continuous autofocus on active track
         try {
-          const caps = controls.streamVideoCapabilitiesGet?.((track) => [track]);
-          if (caps && 'torch' in caps && (caps as { torch?: boolean }).torch) {
-            setTorchSupported(true);
-          }
+          const zxingCaps = controls.streamVideoCapabilitiesGet?.((track) => [track]);
           const tracks = (videoRef.current?.srcObject as MediaStream | null)?.getVideoTracks?.() || [];
           const activeTrack = tracks[0];
+          const trackCaps = activeTrack?.getCapabilities?.() as { torch?: boolean } | undefined;
+          const hasTorch = Boolean(
+            (zxingCaps && 'torch' in zxingCaps && (zxingCaps as { torch?: boolean }).torch) ||
+              trackCaps?.torch
+          );
+          if (hasTorch) {
+            setTorchSupported(true);
+          }
           if (activeTrack) {
             activeTrack
               .applyConstraints({
@@ -355,6 +597,10 @@ export const BarcodeScannerModal: React.FC<BarcodeScannerModalProps> = ({
           // Capabilities check optional
         }
 
+        // Start native BarcodeDetector fast loop + auto-flash darkness detection on camera open
+        void startNativeFastDetector();
+        scheduleAutoTorchEvaluation(0);
+
         // Populate camera list after permission is granted so labels are available
         try {
           const videoDevices = await BrowserCodeReader.listVideoInputDevices();
@@ -364,7 +610,7 @@ export const BarcodeScannerModal: React.FC<BarcodeScannerModalProps> = ({
         } catch {
           // ignore device enumeration errors
         }
-      } catch (err) {
+      } catch {
         if (mounted) {
           setCameraActive(false);
           setCameraError(
@@ -380,19 +626,29 @@ export const BarcodeScannerModal: React.FC<BarcodeScannerModalProps> = ({
 
     return () => {
       mounted = false;
+      if (nativePollTimer !== null) {
+        window.clearTimeout(nativePollTimer);
+      }
       stopScanner();
     };
-  }, [selectedDeviceId, cameraRetryNonce, createReader, stopScanner, isAr]);
+  }, [
+    selectedDeviceId,
+    cameraRetryNonce,
+    scanFormatMode,
+    createReader,
+    applyHardwareTorch,
+    stopScanner,
+    isAr
+  ]);
 
   const handleToggleTorch = async () => {
+    userToggledTorchRef.current = true;
+    setAutoTorchActivated(false);
     const next = !torchOn;
     setTorchOn(next);
-    if (controlsRef.current?.switchTorch && torchSupported) {
-      try {
-        await controlsRef.current.switchTorch(next);
-      } catch {
-        setTorchSupported(false);
-      }
+    const applied = await applyHardwareTorch(next);
+    if (!applied && torchSupported) {
+      setTorchSupported(false);
     }
   };
 
@@ -431,6 +687,7 @@ export const BarcodeScannerModal: React.FC<BarcodeScannerModalProps> = ({
     if (devices.length < 2) return;
     const currentIndex = devices.findIndex((d) => d.deviceId === selectedDeviceId);
     const nextIndex = (currentIndex + 1) % devices.length;
+    userToggledTorchRef.current = false;
     stopScanner();
     setSelectedDeviceId(devices[nextIndex].deviceId);
   };
@@ -442,7 +699,7 @@ export const BarcodeScannerModal: React.FC<BarcodeScannerModalProps> = ({
 
     const objectUrl = URL.createObjectURL(file);
     try {
-      const reader = readerRef.current || createReader();
+      const reader = createReader(true);
       const result = await reader.decodeFromImageUrl(objectUrl);
       const text = result.getText();
       if (text) {
@@ -567,8 +824,8 @@ export const BarcodeScannerModal: React.FC<BarcodeScannerModalProps> = ({
             </button>
           </div>
 
-          {/* Smart Reader Continuous Mode Banner Pill (POS Mode) */}
-          {mode === 'pos' && (
+          {/* Smart Reader Continuous Mode Banner Pill (POS & Stocktake Continuous Mode) */}
+          {(mode === 'pos' || allowContinuous) && (
             <button
               type="button"
               onClick={() => setContinuousMode((prev) => !prev)}
@@ -739,7 +996,15 @@ export const BarcodeScannerModal: React.FC<BarcodeScannerModalProps> = ({
                       title={isAr ? 'فلاش' : 'Flashlight'}
                     >
                       <Flashlight className="w-3.5 h-3.5" />
-                      <span className="hidden sm:inline">{isAr ? 'فلاش' : 'Flash'}</span>
+                      <span className="hidden sm:inline">
+                        {autoTorchActivated && torchOn
+                          ? isAr
+                            ? 'فلاش تلقائي'
+                            : 'Auto Flash'
+                          : isAr
+                          ? 'فلاش'
+                          : 'Flash'}
+                      </span>
                     </button>
 
                     {devices.length > 1 && (
@@ -755,6 +1020,19 @@ export const BarcodeScannerModal: React.FC<BarcodeScannerModalProps> = ({
                     )}
                   </div>
                 </div>
+
+                {autoTorchActivated && torchOn && (
+                  <div className="absolute bottom-3 inset-x-3 flex justify-center pointer-events-none">
+                    <span className="px-3 py-1 rounded-full bg-amber-400/95 text-slate-950 text-[10px] font-black shadow-md flex items-center gap-1.5">
+                      <Flashlight className="w-3 h-3" />
+                      <span>
+                        {isAr
+                          ? 'تم تشغيل الفلاش تلقائياً بسبب الإضاءة الضعيفة'
+                          : 'Auto-flash enabled for low light'}
+                      </span>
+                    </span>
+                  </div>
+                )}
               </>
             )}
           </div>

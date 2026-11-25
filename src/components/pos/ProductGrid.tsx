@@ -39,7 +39,9 @@ import {
   ScanLine,
   BookOpen,
   Ear,
-  Wrench
+  Wrench,
+  PackageCheck,
+  ArrowUpDown
 } from 'lucide-react';
 
 interface ProductGridProps {
@@ -93,12 +95,14 @@ export const ProductGrid: React.FC<ProductGridProps> = ({ onOpenBarcodeScanner }
 
   const [selectedCategoryId, setSelectedCategoryId] = useState<string>('cat-all');
   const [searchQuery, setSearchQuery] = useState<string>('');
+  const searchInputRef = useRef<HTMLInputElement | null>(null);
 
   // Modals state
   const [scaleProduct, setScaleProduct] = useState<Product | null>(null);
   const [variantProduct, setVariantProduct] = useState<Product | null>(null);
   const [editingProduct, setEditingProduct] = useState<Product | null>(null);
   const [deletingProduct, setDeletingProduct] = useState<Product | null>(null);
+  const [deletingCategory, setDeletingCategory] = useState<Category | null>(null);
   const [showAddProductModal, setShowAddProductModal] = useState(false);
   const [showAddCategoryModal, setShowAddCategoryModal] = useState(false);
 
@@ -107,6 +111,10 @@ export const ProductGrid: React.FC<ProductGridProps> = ({ onOpenBarcodeScanner }
 
   // Quick Expiry filter state (تصفية المنتجات المنتهية أو القريبة من الانتهاء)
   const [showOnlyExpiring, setShowOnlyExpiring] = useState(false);
+
+  // Quick In-Stock filter & Sort state
+  const [showOnlyInStock, setShowOnlyInStock] = useState(false);
+  const [sortBy, setSortBy] = useState<'default' | 'lowest_stock' | 'price_asc' | 'price_desc'>('default');
 
   // Quick Negative / Loss Price filter state (تصفية المنتجات اللي فيها خسارة أو بلا ربح)
   const [showOnlyPriceIssues, setShowOnlyPriceIssues] = useState(false);
@@ -144,7 +152,38 @@ export const ProductGrid: React.FC<ProductGridProps> = ({ onOpenBarcodeScanner }
   // Reset pagination when category, search, or filters change
   useEffect(() => {
     setVisibleCount(36);
-  }, [selectedCategoryId, searchQuery, showOnlyExpiring, showOnlyPriceIssues]);
+  }, [selectedCategoryId, searchQuery, showOnlyExpiring, showOnlyPriceIssues, showOnlyInStock, sortBy]);
+
+  // Global "/" or "F2" keyboard shortcut to focus POS search immediately
+  useEffect(() => {
+    const handleGlobalKey = (e: KeyboardEvent) => {
+      if (e.ctrlKey || e.metaKey || e.altKey) return;
+      const activeEl = document.activeElement as HTMLElement | null;
+      const isTyping =
+        activeEl &&
+        (activeEl.tagName === 'INPUT' ||
+          activeEl.tagName === 'TEXTAREA' ||
+          activeEl.tagName === 'SELECT' ||
+          activeEl.isContentEditable);
+
+      if (e.key === 'F2' || (e.key === '/' && !isTyping)) {
+        e.preventDefault();
+        searchInputRef.current?.focus();
+        searchInputRef.current?.select();
+      }
+    };
+    window.addEventListener('keydown', handleGlobalKey);
+    return () => window.removeEventListener('keydown', handleGlobalKey);
+  }, []);
+
+  // Pre-compute category counts in a single O(N) pass instead of filtering inside categories.map
+  const categoryCountsMap = useMemo(() => {
+    const counts = new Map<string, number>();
+    for (const p of products) {
+      counts.set(p.categoryId, (counts.get(p.categoryId) ?? 0) + 1);
+    }
+    return counts;
+  }, [products]);
 
   // Audit all products for loss / zero-profit / decimal-mismatch price issues
   const priceIssues = useMemo(() => auditOldStockPrices(products), [products]);
@@ -174,15 +213,19 @@ export const ProductGrid: React.FC<ProductGridProps> = ({ onOpenBarcodeScanner }
     }).length;
   }, [products]);
 
-  // Fast memoized filtering across thousands of products
+  // Fast memoized filtering & optional sorting across thousands of products
   const filteredProducts = useMemo(() => {
     const query = searchQuery.trim().toLowerCase();
     const today = new Date();
     today.setHours(0, 0, 0, 0);
 
-    return products.filter((prod) => {
+    const list = products.filter((prod) => {
       const matchesCat = selectedCategoryId === 'cat-all' || prod.categoryId === selectedCategoryId;
       if (!matchesCat) return false;
+
+      if (showOnlyInStock && getRemainingStock(prod) <= 0) {
+        return false;
+      }
 
       if (showOnlyPriceIssues && !priceIssuesByProductId.has(prod.id)) {
         return false;
@@ -205,7 +248,29 @@ export const ProductGrid: React.FC<ProductGridProps> = ({ onOpenBarcodeScanner }
         prod.barcode.toLowerCase().includes(query)
       );
     });
-  }, [products, selectedCategoryId, searchQuery, showOnlyExpiring, showOnlyPriceIssues, priceIssuesByProductId]);
+
+    if (sortBy === 'default') return list;
+
+    return [...list].sort((a, b) => {
+      if (sortBy === 'lowest_stock') {
+        return getRemainingStock(a) - getRemainingStock(b);
+      }
+      if (sortBy === 'price_asc') {
+        return a.price - b.price;
+      }
+      return b.price - a.price;
+    });
+  }, [
+    products,
+    selectedCategoryId,
+    searchQuery,
+    showOnlyExpiring,
+    showOnlyPriceIssues,
+    showOnlyInStock,
+    sortBy,
+    priceIssuesByProductId,
+    cartQtyByProductId
+  ]);
 
   const displayedProducts = useMemo(() => {
     return filteredProducts.slice(0, visibleCount);
@@ -491,10 +556,28 @@ export const ProductGrid: React.FC<ProductGridProps> = ({ onOpenBarcodeScanner }
         <div className="relative flex-1 min-w-[115px]">
           <Search className="absolute right-2.5 rtl:right-2.5 rtl:left-auto left-2.5 rtl:right-auto top-1/2 -translate-y-1/2 w-3.5 h-3.5 text-slate-400 pointer-events-none" />
           <input
+            ref={searchInputRef}
             type="text"
             value={searchQuery}
             onChange={(e) => setSearchQuery(e.target.value)}
-            placeholder={t.search_placeholder}
+            onKeyDown={(e) => {
+              if (e.key === 'Enter' && searchQuery.trim()) {
+                const q = searchQuery.trim().toLowerCase();
+                const exactMatch = products.find(
+                  (p) => p.barcode.toLowerCase() === q || p.sku.toLowerCase() === q
+                );
+                const target = exactMatch || (filteredProducts.length === 1 ? filteredProducts[0] : null);
+                if (target) {
+                  e.preventDefault();
+                  handleProductClick(target);
+                  setSearchQuery('');
+                  if (settings.enableSoundEffects !== false) playSound('beep');
+                }
+              } else if (e.key === 'Escape' && searchQuery) {
+                setSearchQuery('');
+              }
+            }}
+            placeholder={isAr ? `${t.search_placeholder} (/ أو F2)` : `${t.search_placeholder} (/ or F2)`}
             className="w-full h-8 py-1 ps-8 pe-11 text-xs bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-lg focus:outline-none focus:ring-2 focus:ring-emerald-500 focus:border-emerald-500 text-slate-900 dark:text-white transition-all shadow-2xs"
           />
           <div className="absolute end-1 top-1/2 -translate-y-1/2 flex items-center gap-0.5">
@@ -577,9 +660,8 @@ export const ProductGrid: React.FC<ProductGridProps> = ({ onOpenBarcodeScanner }
         <div className="flex items-center gap-1.5 overflow-x-auto pb-1 scrollbar-none">
           {categories.map((cat) => {
             const isSelected = selectedCategoryId === cat.id;
-            const catCount = cat.id === 'cat-all'
-              ? products.length
-              : products.filter((p) => p.categoryId === cat.id).length;
+            const catCount =
+              cat.id === 'cat-all' ? products.length : (categoryCountsMap.get(cat.id) ?? 0);
 
             return (
               <div
@@ -618,17 +700,7 @@ export const ProductGrid: React.FC<ProductGridProps> = ({ onOpenBarcodeScanner }
                     type="button"
                     onClick={(e) => {
                       e.stopPropagation();
-                      const assignedCount = products.filter((p) => p.categoryId === cat.id).length;
-                      if (
-                        confirm(
-                          isAr
-                            ? `هل أنت متأكد من حذف وإلغاء فئة "${cat.name}"؟\nسيتم نقل منتجاتها (${assignedCount} منتج) تلقائياً إلى فئة أخرى.`
-                            : `Delete category "${cat.name}"? ${assignedCount} products will be moved.`
-                        )
-                      ) {
-                        deleteCategory(cat.id);
-                        setSelectedCategoryId('cat-all');
-                      }
+                      setDeletingCategory(cat);
                     }}
                     className="ms-0.5 p-0.5 rounded text-slate-400 hover:text-rose-600 hover:bg-rose-50 dark:hover:bg-rose-950/60 transition-colors"
                     title={isAr ? `إلغاء وحذف فئة ${cat.name}` : `Delete category ${cat.name}`}
@@ -639,6 +711,21 @@ export const ProductGrid: React.FC<ProductGridProps> = ({ onOpenBarcodeScanner }
               </div>
             );
           })}
+
+          {/* Quick In-Stock Filter Chip */}
+          <button
+            type="button"
+            onClick={() => setShowOnlyInStock((prev) => !prev)}
+            className={`relative h-8 flex items-center gap-1 px-2 rounded-lg border transition-all shrink-0 select-none text-[11px] font-bold whitespace-nowrap ${
+              showOnlyInStock
+                ? 'border-emerald-600 bg-emerald-600 text-white shadow-xs'
+                : 'border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-900 text-slate-700 dark:text-slate-300 hover:border-emerald-400'
+            }`}
+            title={isAr ? 'عرض السلع المتوفرة في المخزون فقط' : 'Show in-stock items only'}
+          >
+            <PackageCheck className="w-3 h-3" />
+            <span>{isAr ? 'المتوفر فقط' : 'In Stock'}</span>
+          </button>
 
           {/* Quick Expiry Filter Chip */}
           <button
@@ -679,6 +766,22 @@ export const ProductGrid: React.FC<ProductGridProps> = ({ onOpenBarcodeScanner }
               </span>
             </button>
           )}
+
+          {/* Compact Sort Selector */}
+          <div className="relative h-8 flex items-center shrink-0">
+            <ArrowUpDown className="w-3 h-3 text-slate-400 absolute start-2 pointer-events-none" />
+            <select
+              value={sortBy}
+              onChange={(e) => setSortBy(e.target.value as typeof sortBy)}
+              aria-label={isAr ? 'ترتيب المنتجات' : 'Sort products'}
+              className="h-8 ps-6 pe-2 text-[11px] font-bold rounded-lg border border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-900 text-slate-700 dark:text-slate-300 focus:outline-none focus:ring-2 focus:ring-emerald-500 cursor-pointer"
+            >
+              <option value="default">{isAr ? 'الترتيب الافتراضي' : 'Default Sort'}</option>
+              <option value="lowest_stock">{isAr ? 'الأقل مخزوناً' : 'Lowest Stock'}</option>
+              <option value="price_asc">{isAr ? 'الأرخص أولاً' : 'Price: Low-High'}</option>
+              <option value="price_desc">{isAr ? 'الأغلى أولاً' : 'Price: High-Low'}</option>
+            </select>
+          </div>
         </div>
       </div>
 
@@ -1023,6 +1126,28 @@ export const ProductGrid: React.FC<ProductGridProps> = ({ onOpenBarcodeScanner }
         )}
       </div>
 
+      {/* Desktop Bottom Quick Bar inside Main POS View (lg+) */}
+      <div className="hidden lg:flex items-center justify-between gap-3 pt-2 mt-1 border-t border-slate-200/80 dark:border-slate-800/80 shrink-0">
+        <div className="text-xs text-slate-500 dark:text-slate-400 font-semibold tabular-nums flex items-center gap-2">
+          <span>
+            {isAr
+              ? `${displayedProducts.length} من ${filteredProducts.length} سلعة`
+              : `${displayedProducts.length} of ${filteredProducts.length} items`}
+          </span>
+          <span aria-hidden="true">·</span>
+          <span>{isAr ? 'البيع السريع' : 'Quick Sale'}</span>
+        </div>
+
+        <button
+          type="button"
+          onClick={() => window.dispatchEvent(new CustomEvent('kadi:open-price-checker'))}
+          className="px-4 py-2 rounded-xl bg-amber-400 hover:bg-amber-500 text-slate-950 text-xs font-black flex items-center gap-2 shadow-2xs transition-colors active:scale-95 whitespace-nowrap shrink-0"
+        >
+          <Tag className="w-4 h-4 shrink-0" />
+          <span>{isAr ? 'شحال الثمن' : isFr ? 'Vérifier le prix' : 'Price Check'}</span>
+        </button>
+      </div>
+
       {/* Digital Scale Modal for kg / liter */}
       {scaleProduct && (
         <ScaleModal
@@ -1329,6 +1454,56 @@ export const ProductGrid: React.FC<ProductGridProps> = ({ onOpenBarcodeScanner }
           setTimeout(() => setBarcodeToast(null), 3000);
         }}
       />
+
+      {/* Delete Category Confirmation Modal */}
+      {deletingCategory && (
+        <div
+          className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-slate-950/65 backdrop-blur-xs"
+          onClick={() => setDeletingCategory(null)}
+        >
+          <div
+            onClick={(e) => e.stopPropagation()}
+            className="w-full max-w-sm bg-white dark:bg-slate-900 rounded-2xl p-5 shadow-2xl border border-slate-200 dark:border-slate-800 space-y-4 animate-in fade-in zoom-in-95 duration-150"
+          >
+            <div className="flex items-start gap-3">
+              <div className="w-10 h-10 rounded-xl bg-rose-100 dark:bg-rose-950/60 text-rose-600 dark:text-rose-400 flex items-center justify-center shrink-0">
+                <Trash2 className="w-5 h-5" />
+              </div>
+              <div>
+                <h3 className="font-extrabold text-sm text-slate-900 dark:text-white">
+                  {isAr ? 'حذف الفئة / الصنف' : 'Delete Category'}
+                </h3>
+                <p className="text-xs text-slate-600 dark:text-slate-400 mt-1 leading-relaxed">
+                  {isAr
+                    ? `هل أنت متأكد من حذف فئة "${deletingCategory.name}"؟ سيتم نقل منتجاتها (${categoryCountsMap.get(deletingCategory.id) ?? 0} منتج) تلقائياً إلى فئة أخرى.`
+                    : `Delete category "${deletingCategory.name}"? ${categoryCountsMap.get(deletingCategory.id) ?? 0} products will be safely moved.`}
+                </p>
+              </div>
+            </div>
+
+            <div className="flex items-center justify-end gap-2 pt-1">
+              <button
+                type="button"
+                onClick={() => setDeletingCategory(null)}
+                className="px-4 py-2 rounded-xl border border-slate-200 dark:border-slate-700 text-xs font-bold text-slate-600 dark:text-slate-300 hover:bg-slate-100 dark:hover:bg-slate-800"
+              >
+                {isAr ? 'إلغاء' : 'Cancel'}
+              </button>
+              <button
+                type="button"
+                onClick={() => {
+                  deleteCategory(deletingCategory.id);
+                  setSelectedCategoryId('cat-all');
+                  setDeletingCategory(null);
+                }}
+                className="px-4 py-2 rounded-xl bg-rose-600 hover:bg-rose-700 text-white text-xs font-extrabold shadow-xs"
+              >
+                {isAr ? 'تأكيد الحذف' : 'Delete'}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 };

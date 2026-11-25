@@ -12,8 +12,7 @@ import {
   Firestore,
   getFirestore,
   initializeFirestore,
-  persistentLocalCache,
-  persistentMultipleTabManager,
+  memoryLocalCache,
   doc,
   getDocFromServer
 } from 'firebase/firestore';
@@ -29,14 +28,13 @@ export function getFirebaseApp(): FirebaseApp {
   return appInstance;
 }
 
-function createPersistentFirestore(firebaseApp: FirebaseApp): Firestore {
+function createFirestoreClient(firebaseApp: FirebaseApp): Firestore {
   try {
     return initializeFirestore(
       firebaseApp,
       {
-        localCache: persistentLocalCache({
-          tabManager: persistentMultipleTabManager()
-        })
+        experimentalForceLongPolling: true,
+        localCache: memoryLocalCache()
       },
       firebaseConfig.firestoreDatabaseId
     );
@@ -46,7 +44,7 @@ function createPersistentFirestore(firebaseApp: FirebaseApp): Firestore {
 }
 
 export const app = getFirebaseApp();
-export const db = createPersistentFirestore(app);
+export const db = createFirestoreClient(app);
 export const auth = getAuth(app);
 void setPersistence(auth, browserLocalPersistence).catch(() => {});
 export const activeFirebaseConfig = firebaseConfig;
@@ -116,11 +114,28 @@ export function handleFirestoreError(
 }
 
 async function testConnection() {
+  if (typeof navigator !== 'undefined' && navigator.onLine === false) {
+    return;
+  }
   try {
     await getDocFromServer(doc(db, 'test', 'connection'));
   } catch (error) {
     if (error instanceof Error && error.message.includes('the client is offline')) {
-      console.error('Please check your Firebase configuration.');
+      await new Promise((resolve) => setTimeout(resolve, 1500));
+      if (typeof navigator !== 'undefined' && navigator.onLine === false) {
+        return;
+      }
+      try {
+        await getDocFromServer(doc(db, 'test', 'connection'));
+        return;
+      } catch (retryError) {
+        if (
+          retryError instanceof Error &&
+          retryError.message.includes('the client is offline')
+        ) {
+          console.error('Please check your Firebase configuration.');
+        }
+      }
     }
   }
 }

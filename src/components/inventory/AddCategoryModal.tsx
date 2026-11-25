@@ -52,6 +52,7 @@ export const AddCategoryModal: React.FC<AddCategoryModalProps> = ({
   const [showCameraModal, setShowCameraModal] = useState(false);
   const [isProcessingImage, setIsProcessingImage] = useState(false);
   const [imageToast, setImageToast] = useState<string | null>(null);
+  const [pendingDeleteCategory, setPendingDeleteCategory] = useState<Category | null>(null);
 
   // Dual file input refs: one for phone photo gallery, one for native phone camera
   const galleryInputRef = useRef<HTMLInputElement>(null);
@@ -61,6 +62,7 @@ export const AddCategoryModal: React.FC<AddCategoryModalProps> = ({
     if (isOpen) {
       setActiveTab(initialTab);
       setEditingCategoryId(null);
+      setPendingDeleteCategory(null);
       setName('');
       setNameEn('');
       setSelectedColor('#059669');
@@ -190,14 +192,14 @@ export const AddCategoryModal: React.FC<AddCategoryModalProps> = ({
   };
 
   const handleDeleteCategory = (cat: Category) => {
-    const assignedCount = products.filter((p) => p.categoryId === cat.id).length;
-    const msg = isAr
-      ? `هل أنت متأكد من حذف وإلغاء صنف "${cat.name}"؟\nسيتم نقل كافة منتجات هذا الصنف (${assignedCount} منتج) تلقائياً إلى صنف آخر حتى لا تضيع.`
-      : `Delete category "${cat.name}"? ${assignedCount} products will be safely moved.`;
+    setPendingDeleteCategory(cat);
+  };
 
-    if (confirm(msg)) {
-      deleteCategory(cat.id);
-    }
+  const confirmDeleteCategoryNow = () => {
+    if (!pendingDeleteCategory) return;
+    deleteCategory(pendingDeleteCategory.id);
+    if (settings.enableSoundEffects) playSound('click');
+    setPendingDeleteCategory(null);
   };
 
   const customCategories = categories.filter((c) => c.id !== 'cat-all');
@@ -529,6 +531,38 @@ export const AddCategoryModal: React.FC<AddCategoryModalProps> = ({
                 <span>{isAr ? '+ إضافة صنف' : '+ Add Category'}</span>
               </button>
             </div>
+
+            {pendingDeleteCategory && (
+              <div
+                role="alert"
+                className="p-3.5 rounded-2xl bg-rose-50 dark:bg-rose-950/40 border border-rose-300 dark:border-rose-800 space-y-2.5 animate-in fade-in duration-150"
+              >
+                <div className="flex items-start gap-2 text-xs font-bold text-rose-900 dark:text-rose-200">
+                  <AlertTriangle className="w-4 h-4 text-rose-600 shrink-0 mt-0.5" />
+                  <span>
+                    {isAr
+                      ? `هل أنت متأكد من حذف صنف "${pendingDeleteCategory.name}"؟ سيتم نقل كافة منتجاته (${products.filter((p) => p.categoryId === pendingDeleteCategory.id).length} منتج) تلقائياً إلى صنف آخر حتى لا تضيع.`
+                      : `Delete category "${pendingDeleteCategory.name}"? Its ${products.filter((p) => p.categoryId === pendingDeleteCategory.id).length} products will be safely moved.`}
+                  </span>
+                </div>
+                <div className="flex items-center justify-end gap-2">
+                  <button
+                    type="button"
+                    onClick={() => setPendingDeleteCategory(null)}
+                    className="px-3 py-1.5 rounded-xl bg-white dark:bg-slate-800 border border-slate-200 dark:border-slate-700 text-xs font-bold text-slate-700 dark:text-slate-300"
+                  >
+                    {isAr ? 'إلغاء' : 'Cancel'}
+                  </button>
+                  <button
+                    type="button"
+                    onClick={confirmDeleteCategoryNow}
+                    className="px-3.5 py-1.5 rounded-xl bg-rose-600 hover:bg-rose-700 text-white text-xs font-extrabold shadow-2xs"
+                  >
+                    {isAr ? 'تأكيد الحذف' : 'Confirm Delete'}
+                  </button>
+                </div>
+              </div>
+            )}
 
             <div className="p-3 rounded-2xl bg-amber-50 dark:bg-amber-950/30 border border-amber-200 dark:border-amber-800 text-[11px] text-amber-900 dark:text-amber-200 leading-relaxed flex items-start gap-2">
               <AlertTriangle className="w-4 h-4 text-amber-600 shrink-0 mt-0.5" />

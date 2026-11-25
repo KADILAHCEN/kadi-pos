@@ -7,14 +7,18 @@ import {
   Bell,
   BellRing,
   Calendar,
+  Check,
   CheckCircle2,
   Coins,
+  Copy,
   Landmark,
   Layers,
   PackageCheck,
   PackagePlus,
+  Percent,
   Plus,
   Scale,
+  Send,
   ShieldAlert,
   Trash2,
   Wrench
@@ -61,7 +65,13 @@ export const AlertsView: React.FC = () => {
   const isAr = language === 'ar';
   const isFr = language === 'fr';
   const [activeFilter, setActiveFilter] = useState<AlertsFilterTab>('all');
-  const [restockedIds, setRestockedIds] = useState<Record<string, boolean>>({});
+  const [lowStockSubFilter, setLowStockSubFilter] = useState<'all' | 'out' | 'critical' | 'low'>('all');
+  const [expirySubFilter, setExpirySubFilter] = useState<'all' | 'expired' | 'week' | 'month'>('all');
+  const [restockedIds, setRestockedIds] = useState<Record<string, number>>({});
+  const [copiedReorderToast, setCopiedReorderToast] = useState(false);
+  const [discountedIds, setDiscountedIds] = useState<Record<string, boolean>>({});
+  const [editingExpiryId, setEditingExpiryId] = useState<string | null>(null);
+  const [draftExpiryDate, setDraftExpiryDate] = useState('');
 
   // Quick Price Alert & Product Entry State (Non-blocking: ما كيمنعش، غير كيعلمك)
   const [quickName, setQuickName] = useState('');
@@ -195,9 +205,69 @@ export const AlertsView: React.FC = () => {
     cpuAlerts.length +
     unresolvedTheftAlerts.length;
 
-  const handleQuickRestock = (productId: string) => {
-    adjustStock(productId, 20, 'توريد سريع عبر صفحة التنبيهات', 'restock');
-    setRestockedIds((prev) => ({ ...prev, [productId]: true }));
+  const handleQuickRestock = (productId: string, qty: number = 20) => {
+    adjustStock(productId, qty, `توريد سريع (+${qty}) عبر صفحة التنبيهات`, 'restock');
+    setRestockedIds((prev) => ({ ...prev, [productId]: (prev[productId] || 0) + qty }));
+  };
+
+  const filteredLowStock = useMemo(() => {
+    return lowStockProducts.filter((p) => {
+      if (lowStockSubFilter === 'out') return p.stock <= 0;
+      if (lowStockSubFilter === 'critical') {
+        return p.stock > 0 && (p.stock < 5 || (p.lowStockThreshold > 0 && p.stock <= p.lowStockThreshold * 0.2));
+      }
+      if (lowStockSubFilter === 'low') {
+        return p.stock >= 5 && !(p.lowStockThreshold > 0 && p.stock <= p.lowStockThreshold * 0.2);
+      }
+      return true;
+    });
+  }, [lowStockProducts, lowStockSubFilter]);
+
+  const filteredExpiring = useMemo(() => {
+    const today = new Date();
+    today.setHours(0, 0, 0, 0);
+    return expiringSoonProducts.filter((p) => {
+      if (!p.expiryDate) return false;
+      const diffDays = Math.round(
+        (new Date(p.expiryDate).getTime() - today.getTime()) / (1000 * 60 * 60 * 24)
+      );
+      if (expirySubFilter === 'expired') return diffDays < 0;
+      if (expirySubFilter === 'week') return diffDays >= 0 && diffDays <= 7;
+      if (expirySubFilter === 'month') return diffDays > 7 && diffDays <= 30;
+      return true;
+    });
+  }, [expiringSoonProducts, expirySubFilter]);
+
+  const buildSupplierReorderText = (): string => {
+    const targetList = filteredLowStock.length > 0 ? filteredLowStock : lowStockProducts;
+    const header = isAr
+      ? `📦 لائحة التقدية والنواقص (${targetList.length} سلع):`
+      : `📦 Supplier Reorder List (${targetList.length} items):`;
+    const lines = targetList.map((p, idx) => {
+      const targetThreshold = Math.max(10, p.lowStockThreshold || 10);
+      const suggestedOrder = Math.max(5, Math.ceil(targetThreshold * 2 - p.stock));
+      return `${idx + 1}. ${p.name} — ${isAr ? 'الباقي' : 'Stock'}: ${p.stock} · ${isAr ? 'الطلب المقترح' : 'Order'}: +${suggestedOrder}`;
+    });
+    return [header, ...lines].join('\n');
+  };
+
+  const handleCopyReorderList = () => {
+    const text = buildSupplierReorderText();
+    void navigator.clipboard?.writeText(text);
+    setCopiedReorderToast(true);
+    window.setTimeout(() => setCopiedReorderToast(false), 2500);
+  };
+
+  const handleApplyExpiryDiscount = (p: Product) => {
+    const discountedPrice = Math.max(0.5, Number((p.price * 0.7).toFixed(2)));
+    updateProduct(p.id, { price: discountedPrice });
+    setDiscountedIds((prev) => ({ ...prev, [p.id]: true }));
+  };
+
+  const handleWriteOffExpired = (p: Product) => {
+    if (p.stock > 0) {
+      adjustStock(p.id, -p.stock, 'إتلاف بضاعة منتهية الصلاحية عبر مركز التنبيهات', 'waste');
+    }
   };
 
   const filterPills: {
@@ -803,24 +873,90 @@ export const AlertsView: React.FC = () => {
                   {isAr ? 'تنبيهات انخفاض المخزون' : 'Low Stock Alerts'} ({lowStockProducts.length})
                 </h2>
               </div>
-              <button
-                type="button"
-                onClick={() => setCurrentTab('inventory')}
-                className="min-h-[38px] px-3 py-1.5 rounded-xl bg-emerald-600 hover:bg-emerald-700 text-white text-xs font-bold flex items-center gap-1.5 transition-colors"
-              >
-                <Layers className="w-3.5 h-3.5" />
-                <span>{isAr ? 'إدارة المخزون' : 'Manage Inventory'}</span>
-              </button>
+              <div className="flex flex-wrap items-center gap-2">
+                {lowStockProducts.length > 0 && (
+                  <>
+                    <button
+                      type="button"
+                      onClick={handleCopyReorderList}
+                      className="min-h-[38px] px-3 py-1.5 rounded-xl bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-700 hover:bg-slate-100 text-slate-800 dark:text-slate-200 text-xs font-bold flex items-center gap-1.5"
+                    >
+                      <Copy className="w-3.5 h-3.5" />
+                      <span>
+                        {copiedReorderToast
+                          ? isAr
+                            ? 'تم النسخ ✓'
+                            : 'Copied ✓'
+                          : isAr
+                          ? 'نسخ لائحة التقدية'
+                          : 'Copy Reorder'}
+                      </span>
+                    </button>
+                    <a
+                      href={`https://wa.me/?text=${encodeURIComponent(buildSupplierReorderText())}`}
+                      target="_blank"
+                      rel="noopener noreferrer"
+                      className="min-h-[38px] px-3 py-1.5 rounded-xl bg-emerald-50 dark:bg-emerald-950/60 border border-emerald-200 dark:border-emerald-800 hover:bg-emerald-100 text-emerald-700 dark:text-emerald-300 text-xs font-black flex items-center gap-1.5"
+                    >
+                      <Send className="w-3.5 h-3.5" />
+                      <span>{isAr ? 'إرسال للمورد واتساب' : 'WhatsApp Order'}</span>
+                    </a>
+                  </>
+                )}
+                <button
+                  type="button"
+                  onClick={() => setCurrentTab('inventory')}
+                  className="min-h-[38px] px-3 py-1.5 rounded-xl bg-emerald-600 hover:bg-emerald-700 text-white text-xs font-bold flex items-center gap-1.5 transition-colors"
+                >
+                  <Layers className="w-3.5 h-3.5" />
+                  <span>{isAr ? 'إدارة المخزون' : 'Manage Inventory'}</span>
+                </button>
+              </div>
             </div>
 
-            {lowStockProducts.length === 0 ? (
+            {lowStockProducts.length > 0 && (
+              <div className="px-4 py-2.5 border-b border-slate-100 dark:border-slate-800 flex flex-wrap items-center gap-1.5 bg-slate-50/40 dark:bg-slate-900/50">
+                {(
+                  [
+                    { id: 'all', label: isAr ? `الكل (${lowStockProducts.length})` : `All (${lowStockProducts.length})` },
+                    { id: 'out', label: isAr ? `نفذ (${lowStockProducts.filter((p) => p.stock <= 0).length})` : `Out (0)` },
+                    { id: 'critical', label: isAr ? `حرج < 5` : `Critical < 5` },
+                    { id: 'low', label: isAr ? `منخفض` : `Low` }
+                  ] as const
+                ).map((tab) => (
+                  <button
+                    key={tab.id}
+                    type="button"
+                    onClick={() => setLowStockSubFilter(tab.id)}
+                    className={`px-2.5 py-1 rounded-lg text-[11px] font-bold transition-colors ${
+                      lowStockSubFilter === tab.id
+                        ? 'bg-slate-900 dark:bg-amber-500 text-white dark:text-slate-950'
+                        : 'bg-white dark:bg-slate-800 border border-slate-200 dark:border-slate-700 text-slate-600 dark:text-slate-300'
+                    }`}
+                  >
+                    {tab.label}
+                  </button>
+                ))}
+              </div>
+            )}
+
+            {filteredLowStock.length === 0 ? (
               <div className="p-8 text-center text-xs text-slate-400 flex flex-col items-center gap-2">
                 <PackageCheck className="w-9 h-9 text-emerald-500 opacity-75" />
-                <span>{isAr ? 'جميع المنتجات فوق الحد الأدنى المحدد' : 'All stock levels are healthy'}</span>
+                <span>
+                  {lowStockProducts.length === 0
+                    ? isAr
+                      ? 'جميع المنتجات فوق الحد الأدنى المحدد'
+                      : 'All stock levels are healthy'
+                    : isAr
+                    ? 'لا توجد سلع في هذا المستوى'
+                    : 'No items in this severity filter'}
+                </span>
               </div>
             ) : (
               <div className="divide-y divide-slate-100 dark:divide-slate-800">
-                {lowStockProducts.map((p: Product) => {
+                {filteredLowStock.map((p: Product) => {
+                  const isOut = p.stock <= 0;
                   const isBelowFive = p.stock < 5;
                   const isCritical = isBelowFive || (p.lowStockThreshold > 0 && p.stock <= p.lowStockThreshold * 0.2);
                   return (
@@ -837,19 +973,22 @@ export const AlertsView: React.FC = () => {
                           <span className="font-extrabold text-xs sm:text-sm text-slate-900 dark:text-white">
                             {p.name}
                           </span>
-                          {isBelowFive && (
+                          {isOut ? (
+                            <span className="px-2 py-0.5 rounded-md text-[10px] font-black bg-rose-700 text-white">
+                              {isAr ? 'نفذ تماماً (0)' : 'Out of Stock'}
+                            </span>
+                          ) : isBelowFive ? (
                             <span className="px-2 py-0.5 rounded-md text-[10px] font-black bg-rose-600 text-white">
                               {isAr ? 'باقي قل من 5 — خاصها كوموند!' : '< 5 Left — Reorder!'}
                             </span>
-                          )}
-                          {!isBelowFive && isCritical && (
+                          ) : isCritical ? (
                             <span className="px-2 py-0.5 rounded-md text-[10px] font-black bg-rose-600 text-white">
                               {isAr ? 'حرج < 20%' : 'Critical < 20%'}
                             </span>
-                          )}
+                          ) : null}
                           {restockedIds[p.id] && (
-                            <span className="px-2 py-0.5 rounded-md text-[10px] font-bold bg-emerald-100 text-emerald-700 dark:bg-emerald-950 dark:text-emerald-300">
-                              {isAr ? 'تم التوريد' : 'Restocked'}
+                            <span className="px-2 py-0.5 rounded-md text-[10px] font-bold bg-emerald-100 text-emerald-700 dark:bg-emerald-950 dark:text-emerald-300 tabular-nums">
+                              {isAr ? `تم التوريد (+${restockedIds[p.id]})` : `Restocked (+${restockedIds[p.id]})`}
                             </span>
                           )}
                         </div>
@@ -867,15 +1006,22 @@ export const AlertsView: React.FC = () => {
                         </div>
                       </div>
 
-                      <div className="flex items-center gap-2 shrink-0">
-                        <button
-                          type="button"
-                          onClick={() => handleQuickRestock(p.id)}
-                          className="min-h-[42px] px-3.5 py-2 rounded-xl bg-emerald-600 hover:bg-emerald-700 text-white text-xs font-extrabold flex items-center gap-1.5 transition-colors whitespace-nowrap"
-                        >
-                          <PackagePlus className="w-3.5 h-3.5" />
-                          <span>+20 {isAr ? 'توريد' : 'Restock'}</span>
-                        </button>
+                      <div className="flex flex-wrap items-center gap-1.5 shrink-0">
+                        {[5, 10, 20, 50].map((qty) => (
+                          <button
+                            key={qty}
+                            type="button"
+                            onClick={() => handleQuickRestock(p.id, qty)}
+                            className={`min-h-[38px] px-2.5 py-1.5 rounded-xl text-xs font-black font-mono tabular-nums flex items-center gap-1 transition-colors whitespace-nowrap ${
+                              qty === 20
+                                ? 'bg-emerald-600 hover:bg-emerald-700 text-white'
+                                : 'bg-emerald-50 dark:bg-emerald-950/60 hover:bg-emerald-100 border border-emerald-200 dark:border-emerald-800 text-emerald-700 dark:text-emerald-300'
+                            }`}
+                          >
+                            {qty === 20 && <PackagePlus className="w-3.5 h-3.5" />}
+                            <span>+{qty}</span>
+                          </button>
+                        ))}
                       </div>
                     </div>
                   );
@@ -895,9 +1041,34 @@ export const AlertsView: React.FC = () => {
                   {isAr ? 'تنبيهات تاريخ الصلاحية' : 'Expiry Alerts'} ({expiringSoonProducts.length})
                 </h2>
               </div>
+              {expiringSoonProducts.length > 0 && (
+                <div className="flex flex-wrap items-center gap-1.5">
+                  {(
+                    [
+                      { id: 'all', label: isAr ? 'الكل' : 'All' },
+                      { id: 'expired', label: isAr ? 'منتهي' : 'Expired' },
+                      { id: 'week', label: isAr ? '<= 7 أيام' : '<= 7d' },
+                      { id: 'month', label: isAr ? '<= 30 يوم' : '<= 30d' }
+                    ] as const
+                  ).map((sub) => (
+                    <button
+                      key={sub.id}
+                      type="button"
+                      onClick={() => setExpirySubFilter(sub.id)}
+                      className={`px-2.5 py-1 rounded-lg text-[11px] font-bold transition-colors ${
+                        expirySubFilter === sub.id
+                          ? 'bg-rose-600 text-white'
+                          : 'bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-700 text-slate-600 dark:text-slate-300'
+                      }`}
+                    >
+                      {sub.label}
+                    </button>
+                  ))}
+                </div>
+              )}
             </div>
 
-            {expiringSoonProducts.length === 0 ? (
+            {filteredExpiring.length === 0 ? (
               <div className="p-8 text-center text-xs text-slate-400 flex flex-col items-center gap-2">
                 <PackageCheck className="w-9 h-9 text-emerald-500 opacity-75" />
                 <span>
@@ -906,7 +1077,7 @@ export const AlertsView: React.FC = () => {
               </div>
             ) : (
               <div className="divide-y divide-slate-100 dark:divide-slate-800">
-                {expiringSoonProducts.map((p: Product) => {
+                {filteredExpiring.map((p: Product) => {
                   const today = new Date();
                   today.setHours(0, 0, 0, 0);
                   const exp = p.expiryDate ? new Date(p.expiryDate) : null;
@@ -914,45 +1085,123 @@ export const AlertsView: React.FC = () => {
                     ? Math.round((exp.getTime() - today.getTime()) / (1000 * 60 * 60 * 24))
                     : 0;
                   const isExpired = diffDays < 0;
+                  const isEditingDate = editingExpiryId === p.id;
 
                   return (
                     <div
                       key={p.id}
-                      className="p-3.5 sm:p-4 flex flex-col sm:flex-row sm:items-center justify-between gap-3 hover:bg-slate-50 dark:hover:bg-slate-800/40"
+                      className={`p-3.5 sm:p-4 flex flex-col lg:flex-row lg:items-center justify-between gap-3 transition-colors ${
+                        isExpired
+                          ? 'bg-rose-50/60 dark:bg-rose-950/25'
+                          : diffDays <= 7
+                          ? 'bg-amber-50/40 dark:bg-amber-950/15'
+                          : 'hover:bg-slate-50 dark:hover:bg-slate-800/40'
+                      }`}
                     >
                       <div className="min-w-0">
-                        <div className="font-extrabold text-xs sm:text-sm text-slate-900 dark:text-white">
-                          {p.name}
+                        <div className="font-extrabold text-xs sm:text-sm text-slate-900 dark:text-white flex flex-wrap items-center gap-2">
+                          <span>{p.name}</span>
+                          {discountedIds[p.id] && (
+                            <span className="px-2 py-0.5 rounded-md text-[10px] font-black bg-emerald-100 text-emerald-700 dark:bg-emerald-950 dark:text-emerald-300">
+                              {isAr ? `تم التخفيض (${p.price.toFixed(2)} ${currencySymbol})` : `Discounted`}
+                            </span>
+                          )}
                         </div>
-                        <div className="flex flex-wrap items-center gap-2 mt-1 text-xs">
+                        <div className="flex flex-wrap items-center gap-2 mt-1 text-xs tabular-nums">
                           <span
                             className={`px-2 py-0.5 rounded-md text-[10px] font-black ${
                               isExpired
-                                ? 'bg-rose-100 text-rose-700 dark:bg-rose-950 dark:text-rose-300'
-                                : 'bg-amber-100 text-amber-700 dark:bg-amber-950 dark:text-amber-300'
+                                ? 'bg-rose-600 text-white'
+                                : diffDays <= 7
+                                ? 'bg-amber-500 text-white'
+                                : 'bg-amber-100 text-amber-800 dark:bg-amber-950 dark:text-amber-300'
                             }`}
                           >
                             {isExpired
                               ? isAr
-                                ? 'منتهي الصلاحية'
-                                : 'Expired'
+                                ? `منتهي الصلاحية (${Math.abs(diffDays)} يوم)`
+                                : `Expired (${Math.abs(diffDays)}d ago)`
+                              : diffDays === 0
+                              ? isAr
+                                ? 'ينتهي اليوم!'
+                                : 'Expires today!'
                               : isAr
                               ? `ينتهي خلال ${diffDays} يوم`
                               : `${diffDays}d left`}
                           </span>
                           <span className="font-mono text-slate-500 dark:text-slate-400">
-                            {p.expiryDate}
+                            {p.expiryDate} · {isAr ? 'الكمية:' : 'Qty:'} {p.stock} · {p.price.toFixed(2)} {currencySymbol}
                           </span>
                         </div>
                       </div>
 
-                      <button
-                        type="button"
-                        onClick={() => setCurrentTab('inventory')}
-                        className="min-h-[42px] px-3.5 py-2 rounded-xl bg-slate-100 dark:bg-slate-800 hover:bg-slate-200 dark:hover:bg-slate-700 text-slate-800 dark:text-slate-200 text-xs font-bold shrink-0"
-                      >
-                        {isAr ? 'معاينة في المخزون' : 'Inspect in Inventory'}
-                      </button>
+                      <div className="flex flex-wrap items-center gap-1.5 shrink-0">
+                        {isEditingDate ? (
+                          <div className="flex items-center gap-1">
+                            <input
+                              type="date"
+                              value={draftExpiryDate}
+                              onChange={(e) => setDraftExpiryDate(e.target.value)}
+                              className="px-2 py-1.5 rounded-xl bg-white dark:bg-slate-950 border border-slate-300 dark:border-slate-700 text-xs font-mono"
+                            />
+                            <button
+                              type="button"
+                              onClick={() => {
+                                if (draftExpiryDate) {
+                                  updateProduct(p.id, { expiryDate: draftExpiryDate });
+                                }
+                                setEditingExpiryId(null);
+                              }}
+                              className="min-h-[36px] px-2.5 rounded-xl bg-emerald-600 text-white text-xs font-black flex items-center gap-1"
+                            >
+                              <Check className="w-3.5 h-3.5" />
+                            </button>
+                          </div>
+                        ) : (
+                          <button
+                            type="button"
+                            onClick={() => {
+                              setEditingExpiryId(p.id);
+                              setDraftExpiryDate(p.expiryDate || '');
+                            }}
+                            className="min-h-[38px] px-2.5 py-1.5 rounded-xl bg-white dark:bg-slate-800 border border-slate-200 dark:border-slate-700 text-slate-700 dark:text-slate-200 text-xs font-bold"
+                          >
+                            {isAr ? 'تحديث التاريخ' : 'Edit Date'}
+                          </button>
+                        )}
+
+                        {!isExpired && (
+                          <button
+                            type="button"
+                            onClick={() => handleApplyExpiryDiscount(p)}
+                            className="min-h-[38px] px-3 py-1.5 rounded-xl bg-amber-500 hover:bg-amber-600 text-slate-950 text-xs font-black flex items-center gap-1"
+                            title={isAr ? 'تخفيض الثمن بنسبة 30% لتسريع البيع قبل الانتهاء' : 'Discount 30%'}
+                          >
+                            <Percent className="w-3.5 h-3.5" />
+                            <span>{isAr ? 'تخفيض -30%' : '-30% Sale'}</span>
+                          </button>
+                        )}
+
+                        {p.stock > 0 && (
+                          <button
+                            type="button"
+                            onClick={() => handleWriteOffExpired(p)}
+                            className="min-h-[38px] px-3 py-1.5 rounded-xl bg-rose-600 hover:bg-rose-700 text-white text-xs font-black flex items-center gap-1"
+                            title={isAr ? 'تسجيل الكمية كتالف وتصفير المخزون' : 'Write off expired stock'}
+                          >
+                            <Trash2 className="w-3.5 h-3.5" />
+                            <span>{isAr ? 'إتلاف (0)' : 'Write Off'}</span>
+                          </button>
+                        )}
+
+                        <button
+                          type="button"
+                          onClick={() => setCurrentTab('inventory')}
+                          className="min-h-[38px] px-3 py-1.5 rounded-xl bg-slate-100 dark:bg-slate-800 hover:bg-slate-200 dark:hover:bg-slate-700 text-slate-800 dark:text-slate-200 text-xs font-bold shrink-0"
+                        >
+                          {isAr ? 'المخزون' : 'Inventory'}
+                        </button>
+                      </div>
                     </div>
                   );
                 })}

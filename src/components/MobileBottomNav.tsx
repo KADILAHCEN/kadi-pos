@@ -66,7 +66,7 @@ export const MobileBottomNav: React.FC<MobileBottomNavProps> = ({ onSelectProtec
     cpuAlerts.length +
     unresolvedTheftAlerts.length;
 
-  const primaryTabs: AppTabId[] = ['home_summary', 'pos', 'inventory', 'customers', 'orders'];
+  const primaryTabs: AppTabId[] = ['home_summary', 'pos', 'inventory', 'customers'];
   const isMoreTabActive = !primaryTabs.includes(currentTab);
 
   const navigateTab = (tabId: AppTabId) => {
@@ -79,7 +79,7 @@ export const MobileBottomNav: React.FC<MobileBottomNavProps> = ({ onSelectProtec
       {/* Compact Centered Mobile Bottom Tab Bar (<1024px) */}
       <nav
         aria-label={isAr ? 'التنقل السريع للهاتف' : 'Mobile Navigation'}
-        className="lg:hidden fixed bottom-2 left-1/2 -translate-x-1/2 z-40 w-[min(94vw,356px)] h-[52px] bg-white/95 dark:bg-slate-900/95 backdrop-blur-md border border-slate-200 dark:border-slate-800 rounded-2xl px-1 flex items-center justify-around gap-0.5 shadow-xl"
+        className="lg:hidden fixed bottom-2 left-1/2 -translate-x-1/2 z-40 w-[min(97vw,416px)] h-[52px] bg-white/95 dark:bg-slate-900/95 backdrop-blur-md border border-slate-200 dark:border-slate-800 rounded-2xl px-1 flex items-center justify-around gap-0.5 shadow-xl"
       >
         {primaryTabs.map((tabId) => {
           const { definition, IconComponent, colorPreset } = resolveTabVisual(tabId, customizations);
@@ -92,31 +92,49 @@ export const MobileBottomNav: React.FC<MobileBottomNavProps> = ({ onSelectProtec
             : definition.shortLabelEn;
 
           return (
-            <button
-              key={tabId}
-              type="button"
-              onClick={() => navigateTab(tabId)}
-              className={`relative flex-1 min-h-[44px] py-1 px-0.5 rounded-xl flex flex-col items-center justify-center gap-0.5 transition-colors ${
-                isActive
-                  ? `${colorPreset.mobileActiveBgClass} ${colorPreset.mobileActiveTextClass} font-extrabold`
-                  : 'text-slate-500 dark:text-slate-400 hover:text-slate-900 dark:hover:text-white font-semibold'
-              }`}
-            >
-              <div className="relative">
-                <IconComponent className="w-4 h-4" />
-                {isProtected && (
-                  <Lock className="w-2.5 h-2.5 text-amber-500 absolute -top-1 -end-1.5" />
-                )}
-                {tabId === 'pos' && heldTickets.length > 0 && (
-                  <span className="absolute -top-1.5 -end-2.5 px-1 min-w-[14px] h-3.5 flex items-center justify-center rounded-full bg-amber-500 text-white text-[8px] font-black tabular-nums">
-                    {heldTickets.length}
+            <React.Fragment key={tabId}>
+              <button
+                type="button"
+                onClick={() => navigateTab(tabId)}
+                className={`relative flex-1 min-h-[44px] py-1 px-0.5 rounded-xl flex flex-col items-center justify-center gap-0.5 transition-colors ${
+                  isActive
+                    ? `${colorPreset.mobileActiveBgClass} ${colorPreset.mobileActiveTextClass} font-extrabold`
+                    : 'text-slate-500 dark:text-slate-400 hover:text-slate-900 dark:hover:text-white font-semibold'
+                }`}
+              >
+                <div className="relative">
+                  <IconComponent className="w-4 h-4" />
+                  {isProtected && (
+                    <Lock className="w-2.5 h-2.5 text-amber-500 absolute -top-1 -end-1.5" />
+                  )}
+                  {tabId === 'pos' && heldTickets.length > 0 && (
+                    <span className="absolute -top-1.5 -end-2.5 px-1 min-w-[14px] h-3.5 flex items-center justify-center rounded-full bg-amber-500 text-white text-[8px] font-black tabular-nums">
+                      {heldTickets.length}
+                    </span>
+                  )}
+                </div>
+                <span className="text-[9px] leading-tight whitespace-nowrap truncate max-w-full">
+                  {label}
+                </span>
+              </button>
+
+              {tabId === 'pos' && (
+                <button
+                  type="button"
+                  onClick={() => {
+                    setShowMoreSheet(false);
+                    window.dispatchEvent(new CustomEvent('kadi:open-price-checker'));
+                  }}
+                  aria-label={isAr ? 'شحال الثمن - فحص السعر بالكاميرا والباركود' : 'Price Checker'}
+                  className="relative flex-1 min-h-[44px] py-1 px-0.5 rounded-xl flex flex-col items-center justify-center gap-0.5 transition-colors bg-amber-100/90 dark:bg-amber-950/60 text-amber-800 dark:text-amber-300 border border-amber-300/70 dark:border-amber-700/60 hover:bg-amber-200/80 dark:hover:bg-amber-900/60 active:scale-95 font-extrabold"
+                >
+                  <Tag className="w-4 h-4 shrink-0" />
+                  <span className="text-[9px] leading-tight whitespace-nowrap truncate max-w-full">
+                    {isAr ? 'شحال الثمن' : isFr ? 'Prix' : 'Price'}
                   </span>
-                )}
-              </div>
-              <span className="text-[9px] leading-tight whitespace-nowrap truncate max-w-full">
-                {label}
-              </span>
-            </button>
+                </button>
+              )}
+            </React.Fragment>
           );
         })}
 

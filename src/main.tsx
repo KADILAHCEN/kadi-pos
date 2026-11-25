@@ -1,7 +1,12 @@
 import { createRoot } from 'react-dom/client';
+import { registerSW } from 'virtual:pwa-register';
 import App from './App.tsx';
 import { AppErrorBoundary } from './components/AppErrorBoundary.tsx';
 import './index.css';
+
+if (import.meta.env.PROD && typeof window !== 'undefined' && 'serviceWorker' in navigator) {
+  registerSW({ immediate: true });
+}
 
 if (import.meta.env.DEV && typeof window !== 'undefined' && 'serviceWorker' in navigator) {
   navigator.serviceWorker

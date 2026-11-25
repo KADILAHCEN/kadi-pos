@@ -543,10 +543,10 @@ const PosMainContent: React.FC = () => {
         lowStockProducts.length > 0 &&
         currentTab !== 'inventory' &&
         currentTab !== 'alerts' && (
-          <div className="bg-amber-50 dark:bg-amber-950/75 border-b border-amber-200 dark:border-amber-800/80 px-2.5 sm:px-4 py-1 flex flex-nowrap items-center justify-between gap-2 text-[11px] shrink-0 transition-colors">
+          <div className="bg-amber-50 dark:bg-amber-950/75 border-b border-amber-200 dark:border-amber-800/80 px-2.5 sm:px-3 py-0.5 flex flex-nowrap items-center justify-between gap-1.5 text-[10px] shrink-0 transition-colors">
             <div className="flex items-center gap-1.5 min-w-0 flex-1">
-              <span className="p-1 rounded-md bg-rose-600 text-white shrink-0 animate-pulse">
-                <AlertTriangle className="w-3 h-3" />
+              <span className="p-0.5 rounded bg-rose-600 text-white shrink-0 animate-pulse">
+                <AlertTriangle className="w-2.5 h-2.5" />
               </span>
               <div className="truncate">
                 <span className="font-extrabold text-amber-950 dark:text-amber-200">

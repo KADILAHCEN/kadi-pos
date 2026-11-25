@@ -77,7 +77,8 @@ export const AnalyticsView: React.FC = () => {
   const [showReportModal, setShowReportModal] = useState(false);
   const [pdfToast, setPdfToast] = useState<string | null>(null);
   const [copiedShopEarSheet, setCopiedShopEarSheet] = useState(false);
-  const [activeChartMetric, setActiveChartMetric] = useState<'both' | 'sales' | 'profit'>('both');
+  const [chartGranularity, setChartGranularity] = useState<'daily' | 'weekly'>('daily');
+  const [activeChartMetric, setActiveChartMetric] = useState<'both' | 'profit' | 'orders' | 'sales'>('both');
   const [chartType, setChartType] = useState<'bar' | 'line'>('bar');
   const [expensePeriodFilter, setExpensePeriodFilter] = useState<'all' | 'today' | 'month'>('all');
   const [expenseCatFilter, setExpenseCatFilter] = useState<'all' | ExpenseCategory>('all');
@@ -305,9 +306,100 @@ export const AnalyticsView: React.FC = () => {
     return list;
   }, [completedOrders, isAr, isFr]);
 
-  const thirtyDayTotalSales = useMemo(() => {
-    return last30DaysTrend.reduce((sum, it) => sum + it.sales, 0);
-  }, [last30DaysTrend]);
+  const weeklySalesTrend = useMemo(() => {
+    // Build 8 Monday-to-Sunday weekly buckets ending with current week
+    const dailyMap = new Map(last30DaysTrend.map((d) => [d.date, d]));
+    const now = new Date();
+    now.setHours(0, 0, 0, 0);
+    const dayOfWeek = (now.getDay() + 6) % 7; // Monday = 0 .. Sunday = 6
+    const currentWeekMonday = new Date(now);
+    currentWeekMonday.setDate(now.getDate() - dayOfWeek);
+
+    const weeks: Array<{
+      date: string;
+      displayDate: string;
+      weekdayName: string;
+      sales: number;
+      profit: number;
+      ordersCount: number;
+    }> = [];
+
+    for (let w = 7; w >= 0; w--) {
+      const start = new Date(currentWeekMonday);
+      start.setDate(currentWeekMonday.getDate() - w * 7);
+      const end = new Date(start);
+      end.setDate(start.getDate() + 6);
+
+      let sales = 0;
+      let profit = 0;
+      let ordersCount = 0;
+
+      for (let dIdx = 0; dIdx < 7; dIdx++) {
+        const cur = new Date(start);
+        cur.setDate(start.getDate() + dIdx);
+        if (cur.getTime() > now.getTime()) continue;
+        const isoDate = `${cur.getFullYear()}-${String(cur.getMonth() + 1).padStart(2, '0')}-${String(cur.getDate()).padStart(2, '0')}`;
+
+        const realMatches = completedOrders.filter((o) => o.date && o.date.startsWith(isoDate));
+        if (realMatches.length > 0) {
+          sales += realMatches.reduce((s, o) => s + (o.grandTotal || 0), 0);
+          profit += realMatches.reduce((s, o) => s + (o.profitTotal || 0), 0);
+          ordersCount += realMatches.length;
+        } else {
+          const cachedDay = dailyMap.get(isoDate);
+          if (cachedDay) {
+            sales += cachedDay.sales;
+            profit += cachedDay.profit;
+            ordersCount += cachedDay.ordersCount;
+          }
+        }
+      }
+
+      const startLbl = start.toLocaleDateString(isAr ? 'ar-MA' : 'fr-FR', {
+        day: 'numeric',
+        month: 'numeric'
+      });
+      const endLbl = end.toLocaleDateString(isAr ? 'ar-MA' : 'fr-FR', {
+        day: 'numeric',
+        month: 'numeric'
+      });
+
+      const weekLabel =
+        w === 0
+          ? isAr
+            ? 'هذا الأسبوع'
+            : 'This Week'
+          : w === 1
+          ? isAr
+            ? 'الأسبوع الماضي'
+            : 'Last Week'
+          : startLbl;
+
+      weeks.push({
+        date: `${startLbl} – ${endLbl}`,
+        displayDate: weekLabel,
+        weekdayName: `${startLbl} – ${endLbl}`,
+        sales: Number(sales.toFixed(2)),
+        profit: Number(profit.toFixed(2)),
+        ordersCount
+      });
+    }
+
+    return weeks;
+  }, [completedOrders, last30DaysTrend, isAr]);
+
+  const activeSalesTrend = chartGranularity === 'daily' ? last30DaysTrend : weeklySalesTrend;
+
+  const activeTrendTotals = useMemo(() => {
+    return activeSalesTrend.reduce(
+      (acc, it) => ({
+        sales: acc.sales + it.sales,
+        profit: acc.profit + it.profit,
+        ordersCount: acc.ordersCount + it.ordersCount
+      }),
+      { sales: 0, profit: 0, ordersCount: 0 }
+    );
+  }, [activeSalesTrend]);
 
   const expenseMetrics = useMemo(() => computeExpenseMetrics(expenses), [expenses]);
   const netProfitAfterExpenses = totalProfit - expenseMetrics.allTimeTotal;
@@ -1043,24 +1135,73 @@ export const AnalyticsView: React.FC = () => {
       {/* Sales Comparison Chart (Today vs Yesterday, Week vs Last Week, By Category) */}
       <SalesComparisonChartSection />
 
-      {/* 30-Day Daily Sales Revenue Trend Line Chart (Recharts) */}
+      {/* Interactive Daily / Weekly Sales, Profit & Orders Count Chart (Recharts) */}
       <div className="p-6 rounded-3xl bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 shadow-xs space-y-4">
-        <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 pb-3 border-b border-slate-100 dark:border-slate-800">
+        <div className="flex flex-col lg:flex-row lg:items-center justify-between gap-3 pb-3 border-b border-slate-100 dark:border-slate-800">
           <div>
             <div className="flex items-center gap-2">
               <BarChart3 className="w-5 h-5 text-emerald-600" />
               <h3 className="font-extrabold text-sm text-slate-900 dark:text-white">
-                {isAr ? 'اتجاه المبيعات والأرباح اليومية خلال آخر 30 يوماً' : 'Daily Sales & Profit Trend (Last 30 Days)'}
+                {chartGranularity === 'daily'
+                  ? isAr
+                    ? 'المبيعات والأرباح والطلبات اليومية (آخر 30 يوماً)'
+                    : 'Daily Sales, Profit & Orders (Last 30 Days)'
+                  : isAr
+                  ? 'المبيعات والأرباح والطلبات الأسبوعية (آخر 8 أسابيع)'
+                  : 'Weekly Sales, Profit & Orders (Last 8 Weeks)'}
               </h3>
             </div>
-            <p className="text-xs text-slate-500 mt-0.5">
-              {isAr
-                ? `إجمالي مبيعات الفترة: ${thirtyDayTotalSales.toFixed(2)} ${currencySymbol}`
-                : `Total Period Revenue: ${thirtyDayTotalSales.toFixed(2)} ${currencySymbol}`}
-            </p>
+            <div className="flex flex-wrap items-center gap-3 text-xs text-slate-500 mt-1 font-mono tabular-nums">
+              <span>
+                {isAr ? 'المبيعات:' : 'Sales:'}{' '}
+                <strong className="text-emerald-600 dark:text-emerald-400">
+                  {activeTrendTotals.sales.toFixed(2)} {currencySymbol}
+                </strong>
+              </span>
+              <span>·</span>
+              <span>
+                {isAr ? 'الأرباح:' : 'Profit:'}{' '}
+                <strong className="text-indigo-600 dark:text-indigo-400">
+                  +{activeTrendTotals.profit.toFixed(2)} {currencySymbol}
+                </strong>
+              </span>
+              <span>·</span>
+              <span>
+                {isAr ? 'عدد الطلبات:' : 'Orders:'}{' '}
+                <strong className="text-amber-600 dark:text-amber-400">
+                  {activeTrendTotals.ordersCount} {isAr ? 'طلب' : 'orders'}
+                </strong>
+              </span>
+            </div>
           </div>
 
           <div className="flex flex-wrap items-center gap-2">
+            {/* Granularity Selector: Daily vs Weekly */}
+            <div className="flex items-center gap-1 p-1 bg-slate-100 dark:bg-slate-800 rounded-xl text-xs font-bold border border-slate-200 dark:border-slate-700">
+              <button
+                type="button"
+                onClick={() => setChartGranularity('daily')}
+                className={`px-3 py-1 rounded-lg transition-colors ${
+                  chartGranularity === 'daily'
+                    ? 'bg-slate-900 dark:bg-white text-white dark:text-slate-900 shadow-2xs font-black'
+                    : 'text-slate-600 dark:text-slate-300 hover:text-slate-900 dark:hover:text-white'
+                }`}
+              >
+                {isAr ? 'يومي' : 'Daily'}
+              </button>
+              <button
+                type="button"
+                onClick={() => setChartGranularity('weekly')}
+                className={`px-3 py-1 rounded-lg transition-colors ${
+                  chartGranularity === 'weekly'
+                    ? 'bg-slate-900 dark:bg-white text-white dark:text-slate-900 shadow-2xs font-black'
+                    : 'text-slate-600 dark:text-slate-300 hover:text-slate-900 dark:hover:text-white'
+                }`}
+              >
+                {isAr ? 'أسبوعي' : 'Weekly'}
+              </button>
+            </div>
+
             {/* Chart Type Selector: Bar vs Line */}
             <div className="flex items-center gap-1 p-1 bg-slate-100 dark:bg-slate-800 rounded-xl text-xs font-bold border border-slate-200 dark:border-slate-700">
               <button
@@ -1089,52 +1230,63 @@ export const AnalyticsView: React.FC = () => {
               </button>
             </div>
 
-            {/* Metric Selector: Both / Sales / Profit */}
-            <div className="flex items-center gap-1 p-1 bg-slate-100 dark:bg-slate-800 rounded-xl text-xs font-bold">
+            {/* Metric Selector: Profit vs Orders Count vs Sales vs Both */}
+            <div className="flex items-center gap-1 p-1 bg-slate-100 dark:bg-slate-800 rounded-xl text-xs font-bold border border-slate-200 dark:border-slate-700">
               <button
                 type="button"
-                onClick={() => setActiveChartMetric('both')}
+                onClick={() => setActiveChartMetric('profit')}
                 className={`px-2.5 py-1 rounded-lg transition-colors ${
-                  activeChartMetric === 'both'
-                    ? 'bg-white dark:bg-slate-900 text-slate-900 dark:text-white shadow-2xs'
-                    : 'text-slate-500 dark:text-slate-300 hover:text-slate-900 dark:hover:text-white'
+                  activeChartMetric === 'profit'
+                    ? 'bg-indigo-600 text-white shadow-2xs'
+                    : 'text-slate-600 dark:text-slate-300 hover:text-slate-900 dark:hover:text-white'
                 }`}
               >
-                {isAr ? 'الكل' : 'Both'}
+                {isAr ? 'الأرباح' : 'Profit'}
+              </button>
+              <button
+                type="button"
+                onClick={() => setActiveChartMetric('orders')}
+                className={`px-2.5 py-1 rounded-lg transition-colors ${
+                  activeChartMetric === 'orders'
+                    ? 'bg-amber-500 text-slate-950 shadow-2xs font-black'
+                    : 'text-slate-600 dark:text-slate-300 hover:text-slate-900 dark:hover:text-white'
+                }`}
+              >
+                {isAr ? 'عدد الطلبات' : 'Orders Count'}
               </button>
               <button
                 type="button"
                 onClick={() => setActiveChartMetric('sales')}
                 className={`px-2.5 py-1 rounded-lg transition-colors ${
                   activeChartMetric === 'sales'
-                    ? 'bg-white dark:bg-slate-900 text-emerald-600 dark:text-emerald-400 shadow-2xs'
-                    : 'text-slate-500 dark:text-slate-300 hover:text-slate-900 dark:hover:text-white'
+                    ? 'bg-emerald-600 text-white shadow-2xs'
+                    : 'text-slate-600 dark:text-slate-300 hover:text-slate-900 dark:hover:text-white'
                 }`}
               >
                 {isAr ? 'المبيعات' : 'Sales'}
               </button>
               <button
                 type="button"
-                onClick={() => setActiveChartMetric('profit')}
+                onClick={() => setActiveChartMetric('both')}
                 className={`px-2.5 py-1 rounded-lg transition-colors ${
-                  activeChartMetric === 'profit'
-                    ? 'bg-white dark:bg-slate-900 text-indigo-600 dark:text-indigo-400 shadow-2xs'
-                    : 'text-slate-500 dark:text-slate-300 hover:text-slate-900 dark:hover:text-white'
+                  activeChartMetric === 'both'
+                    ? 'bg-white dark:bg-slate-900 text-slate-900 dark:text-white shadow-2xs'
+                    : 'text-slate-600 dark:text-slate-300 hover:text-slate-900 dark:hover:text-white'
                 }`}
               >
-                {isAr ? 'الأرباح' : 'Profit'}
+                {isAr ? 'المبيعات والأرباح' : 'Sales + Profit'}
               </button>
             </div>
           </div>
         </div>
 
-        {/* Recharts Canvas: Switchable between BarChart and LineChart */}
-        <div className="w-full h-72 pt-2">
+        {/* Recharts Canvas: Switchable between BarChart and LineChart, Daily/Weekly, and Profit/Orders/Sales */}
+        <div className="w-full h-72 pt-2" dir="ltr">
           <ResponsiveContainer width="100%" height="100%">
             {chartType === 'bar' ? (
               <BarChart
-                data={last30DaysTrend}
-                margin={{ top: 10, right: 10, left: 0, bottom: 0 }}
+                data={activeSalesTrend}
+                margin={{ top: 10, right: 12, left: 0, bottom: 0 }}
               >
                 <CartesianGrid strokeDasharray="3 3" stroke={isDark ? '#1e293b' : '#e2e8f0'} strokeOpacity={isDark ? 0.85 : 0.6} />
                 <XAxis
@@ -1144,26 +1296,36 @@ export const AnalyticsView: React.FC = () => {
                   tickLine={false}
                 />
                 <YAxis
+                  allowDecimals={activeChartMetric !== 'orders'}
                   tick={{ fontSize: 11, fill: isDark ? '#b7c6db' : '#64748b' }}
                   axisLine={{ stroke: isDark ? '#26344a' : '#cbd5e1' }}
                   tickLine={false}
-                  tickFormatter={(val) => `${val}`}
+                  tickFormatter={(val) =>
+                    activeChartMetric === 'orders' ? `${val}` : `${val}`
+                  }
                 />
                 <Tooltip
-                  content={({ active, payload, label }) => {
+                  content={({ active, payload }) => {
                     if (active && payload && payload.length) {
-                      const item = payload[0].payload;
+                      const item = payload[0].payload as (typeof activeSalesTrend)[number];
+                      const margin =
+                        item.sales > 0 ? ((item.profit / item.sales) * 100).toFixed(1) : '0.0';
                       return (
-                        <div className="bg-slate-900 text-white p-3 rounded-xl shadow-xl text-xs space-y-1 font-mono border border-slate-700">
-                          <div className="font-bold text-slate-300 font-sans">{item.date}</div>
+                        <div className="bg-slate-900 text-white p-3 rounded-xl shadow-xl text-xs space-y-1 font-mono border border-slate-700" dir={isAr ? 'rtl' : 'ltr'}>
+                          <div className="font-bold text-slate-200 font-sans">
+                            {chartGranularity === 'weekly'
+                              ? `${item.displayDate} (${item.date})`
+                              : `${item.weekdayName} · ${item.date}`}
+                          </div>
                           <div className="text-emerald-400 font-bold">
                             {isAr ? 'المبيعات:' : 'Sales:'} {item.sales.toFixed(2)} {currencySymbol}
                           </div>
                           <div className="text-indigo-300 font-bold">
-                            {isAr ? 'صافي الربح:' : 'Profit:'} +{item.profit.toFixed(2)} {currencySymbol}
+                            {isAr ? 'الأرباح:' : 'Profit:'} +{item.profit.toFixed(2)} {currencySymbol} ({margin}%)
                           </div>
-                          <div className="text-slate-400 text-[10px] font-sans">
-                            {item.ordersCount} {isAr ? 'فاتورة' : 'orders'}
+                          <div className="text-amber-400 font-bold font-sans">
+                            {isAr ? 'عدد الطلبات:' : 'Orders:'} {item.ordersCount}{' '}
+                            {isAr ? 'طلب' : 'orders'}
                           </div>
                         </div>
                       );
@@ -1174,8 +1336,33 @@ export const AnalyticsView: React.FC = () => {
                 <Legend
                   wrapperStyle={{ fontSize: 12, paddingTop: 10 }}
                   formatter={(val) => {
-                    if (val === 'sales') return isAr ? 'المبيعات اليومية (MAD)' : 'Daily Sales (MAD)';
-                    if (val === 'profit') return isAr ? 'صافي الربح اليومي (MAD)' : 'Daily Net Profit (MAD)';
+                    if (val === 'sales') {
+                      return chartGranularity === 'daily'
+                        ? isAr
+                          ? `المبيعات اليومية (${currencySymbol})`
+                          : `Daily Sales (${currencySymbol})`
+                        : isAr
+                        ? `المبيعات الأسبوعية (${currencySymbol})`
+                        : `Weekly Sales (${currencySymbol})`;
+                    }
+                    if (val === 'profit') {
+                      return chartGranularity === 'daily'
+                        ? isAr
+                          ? `الأرباح اليومية (${currencySymbol})`
+                          : `Daily Profit (${currencySymbol})`
+                        : isAr
+                        ? `الأرباح الأسبوعية (${currencySymbol})`
+                        : `Weekly Profit (${currencySymbol})`;
+                    }
+                    if (val === 'ordersCount') {
+                      return chartGranularity === 'daily'
+                        ? isAr
+                          ? 'عدد الطلبات اليومية'
+                          : 'Daily Orders Count'
+                        : isAr
+                        ? 'عدد الطلبات الأسبوعية'
+                        : 'Weekly Orders Count';
+                    }
                     return val;
                   }}
                 />
@@ -1184,7 +1371,7 @@ export const AnalyticsView: React.FC = () => {
                     dataKey="sales"
                     name="sales"
                     fill="#059669"
-                    radius={[4, 4, 0, 0]}
+                    radius={[5, 5, 0, 0]}
                   />
                 )}
                 {(activeChartMetric === 'both' || activeChartMetric === 'profit') && (
@@ -1192,14 +1379,22 @@ export const AnalyticsView: React.FC = () => {
                     dataKey="profit"
                     name="profit"
                     fill="#6366f1"
-                    radius={[4, 4, 0, 0]}
+                    radius={[5, 5, 0, 0]}
+                  />
+                )}
+                {activeChartMetric === 'orders' && (
+                  <Bar
+                    dataKey="ordersCount"
+                    name="ordersCount"
+                    fill="#f59e0b"
+                    radius={[5, 5, 0, 0]}
                   />
                 )}
               </BarChart>
             ) : (
               <LineChart
-                data={last30DaysTrend}
-                margin={{ top: 10, right: 10, left: 0, bottom: 0 }}
+                data={activeSalesTrend}
+                margin={{ top: 10, right: 12, left: 0, bottom: 0 }}
               >
                 <CartesianGrid strokeDasharray="3 3" stroke={isDark ? '#1e293b' : '#e2e8f0'} strokeOpacity={isDark ? 0.85 : 0.6} />
                 <XAxis
@@ -1209,26 +1404,34 @@ export const AnalyticsView: React.FC = () => {
                   tickLine={false}
                 />
                 <YAxis
+                  allowDecimals={activeChartMetric !== 'orders'}
                   tick={{ fontSize: 11, fill: isDark ? '#b7c6db' : '#64748b' }}
                   axisLine={{ stroke: isDark ? '#26344a' : '#cbd5e1' }}
                   tickLine={false}
                   tickFormatter={(val) => `${val}`}
                 />
                 <Tooltip
-                  content={({ active, payload, label }) => {
+                  content={({ active, payload }) => {
                     if (active && payload && payload.length) {
-                      const item = payload[0].payload;
+                      const item = payload[0].payload as (typeof activeSalesTrend)[number];
+                      const margin =
+                        item.sales > 0 ? ((item.profit / item.sales) * 100).toFixed(1) : '0.0';
                       return (
-                        <div className="bg-slate-900 text-white p-3 rounded-xl shadow-xl text-xs space-y-1 font-mono border border-slate-700">
-                          <div className="font-bold text-slate-300 font-sans">{item.date}</div>
+                        <div className="bg-slate-900 text-white p-3 rounded-xl shadow-xl text-xs space-y-1 font-mono border border-slate-700" dir={isAr ? 'rtl' : 'ltr'}>
+                          <div className="font-bold text-slate-200 font-sans">
+                            {chartGranularity === 'weekly'
+                              ? `${item.displayDate} (${item.date})`
+                              : `${item.weekdayName} · ${item.date}`}
+                          </div>
                           <div className="text-emerald-400 font-bold">
                             {isAr ? 'المبيعات:' : 'Sales:'} {item.sales.toFixed(2)} {currencySymbol}
                           </div>
                           <div className="text-indigo-300 font-bold">
-                            {isAr ? 'صافي الربح:' : 'Profit:'} +{item.profit.toFixed(2)} {currencySymbol}
+                            {isAr ? 'الأرباح:' : 'Profit:'} +{item.profit.toFixed(2)} {currencySymbol} ({margin}%)
                           </div>
-                          <div className="text-slate-400 text-[10px] font-sans">
-                            {item.ordersCount} {isAr ? 'فاتورة' : 'orders'}
+                          <div className="text-amber-400 font-bold font-sans">
+                            {isAr ? 'عدد الطلبات:' : 'Orders:'} {item.ordersCount}{' '}
+                            {isAr ? 'طلب' : 'orders'}
                           </div>
                         </div>
                       );
@@ -1239,8 +1442,33 @@ export const AnalyticsView: React.FC = () => {
                 <Legend
                   wrapperStyle={{ fontSize: 12, paddingTop: 10 }}
                   formatter={(val) => {
-                    if (val === 'sales') return isAr ? 'المبيعات اليومية (MAD)' : 'Daily Sales (MAD)';
-                    if (val === 'profit') return isAr ? 'صافي الربح اليومي (MAD)' : 'Daily Net Profit (MAD)';
+                    if (val === 'sales') {
+                      return chartGranularity === 'daily'
+                        ? isAr
+                          ? `المبيعات اليومية (${currencySymbol})`
+                          : `Daily Sales (${currencySymbol})`
+                        : isAr
+                        ? `المبيعات الأسبوعية (${currencySymbol})`
+                        : `Weekly Sales (${currencySymbol})`;
+                    }
+                    if (val === 'profit') {
+                      return chartGranularity === 'daily'
+                        ? isAr
+                          ? `الأرباح اليومية (${currencySymbol})`
+                          : `Daily Profit (${currencySymbol})`
+                        : isAr
+                        ? `الأرباح الأسبوعية (${currencySymbol})`
+                        : `Weekly Profit (${currencySymbol})`;
+                    }
+                    if (val === 'ordersCount') {
+                      return chartGranularity === 'daily'
+                        ? isAr
+                          ? 'عدد الطلبات اليومية'
+                          : 'Daily Orders Count'
+                        : isAr
+                        ? 'عدد الطلبات الأسبوعية'
+                        : 'Weekly Orders Count';
+                    }
                     return val;
                   }}
                 />
@@ -1261,10 +1489,21 @@ export const AnalyticsView: React.FC = () => {
                     dataKey="profit"
                     name="profit"
                     stroke="#6366f1"
-                    strokeWidth={2}
-                    strokeDasharray="4 4"
-                    dot={{ r: 2.5, fill: '#6366f1' }}
-                    activeDot={{ r: 5, fill: '#4f46e5' }}
+                    strokeWidth={2.5}
+                    strokeDasharray={activeChartMetric === 'both' ? '4 4' : undefined}
+                    dot={{ r: 3, fill: '#6366f1' }}
+                    activeDot={{ r: 6, fill: '#4f46e5' }}
+                  />
+                )}
+                {activeChartMetric === 'orders' && (
+                  <Line
+                    type="monotone"
+                    dataKey="ordersCount"
+                    name="ordersCount"
+                    stroke="#f59e0b"
+                    strokeWidth={2.5}
+                    dot={{ r: 3.5, fill: '#f59e0b' }}
+                    activeDot={{ r: 6, fill: '#d97706' }}
                   />
                 )}
               </LineChart>

@@ -722,6 +722,9 @@ export interface FirestoreSyncState {
   devices: ConnectedDeviceInfo[];
   activeDevicesCount: number;
   hasPendingLocalChanges: boolean;
+  fromCache: boolean;
+  hasPendingWrites: boolean;
+  lastSyncedAtIso: string | null;
   storeExistsInCloud: boolean;
   lastError: string | null;
 }

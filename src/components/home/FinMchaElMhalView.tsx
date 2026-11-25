@@ -21,7 +21,9 @@ import {
   Receipt,
   Calendar,
   Coins,
-  CheckCircle2
+  CheckCircle2,
+  Tag,
+  ShoppingBag
 } from 'lucide-react';
 
 interface FinMchaElMhalViewProps {
@@ -875,6 +877,26 @@ export const FinMchaElMhalView: React.FC<FinMchaElMhalViewProps> = ({ onNavigate
                 </div>
               ))}
             </div>
+          </button>
+        </div>
+
+        {/* Desktop Bottom Quick Bar: البيع + شحال الثمن */}
+        <div className="hidden lg:flex items-center justify-end gap-3 pt-2 border-t border-slate-200 dark:border-slate-800">
+          <button
+            type="button"
+            onClick={() => go('pos')}
+            className="px-4 py-2 rounded-xl bg-emerald-600 hover:bg-emerald-700 text-white text-xs font-black flex items-center gap-2 transition-colors whitespace-nowrap shrink-0"
+          >
+            <ShoppingBag className="w-4 h-4 shrink-0" />
+            <span>البيع</span>
+          </button>
+          <button
+            type="button"
+            onClick={() => window.dispatchEvent(new CustomEvent('kadi:open-price-checker'))}
+            className="px-4 py-2 rounded-xl bg-amber-400 hover:bg-amber-500 text-slate-950 text-xs font-black flex items-center gap-2 transition-colors whitespace-nowrap shrink-0"
+          >
+            <Tag className="w-4 h-4 shrink-0" />
+            <span>شحال الثمن</span>
           </button>
         </div>
       </div>

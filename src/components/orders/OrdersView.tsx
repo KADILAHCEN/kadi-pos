@@ -49,6 +49,7 @@ export const OrdersView: React.FC = () => {
   const [selectedReceipt, setSelectedReceipt] = useState<Order | null>(null);
   const [receiptViewMode, setReceiptViewMode] = useState<'thermal' | 'detailed'>('thermal');
   const [pdfFeedback, setPdfFeedback] = useState<{ ok: boolean; msg: string } | null>(null);
+  const [refundConfirmOrder, setRefundConfirmOrder] = useState<Order | null>(null);
 
   const handleDirectDownloadPdf = (order: Order) => {
     try {
@@ -133,9 +134,14 @@ export const OrdersView: React.FC = () => {
   });
 
   const handleRefund = (order: Order) => {
-    if (confirm(isAr ? `هل أنت متأكد من استرجاع الفاتورة ${order.orderNumber} وإعادة السلع إلى المخزون؟` : `Refund order ${order.orderNumber} and restore stock?`)) {
-      refundOrder(order.id, true);
-    }
+    setRefundConfirmOrder(order);
+  };
+
+  const confirmRefundNow = () => {
+    if (!refundConfirmOrder) return;
+    refundOrder(refundConfirmOrder.id, true);
+    if (settings.enableSoundEffects) playSound('click');
+    setRefundConfirmOrder(null);
   };
 
   const exportSalesCsv = () => {
@@ -482,6 +488,52 @@ export const OrdersView: React.FC = () => {
           initialViewMode={receiptViewMode}
           onClose={() => setSelectedReceipt(null)}
         />
+      )}
+
+      {/* Refund Confirmation Modal */}
+      {refundConfirmOrder && (
+        <div
+          className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-slate-950/65 backdrop-blur-xs"
+          onClick={() => setRefundConfirmOrder(null)}
+        >
+          <div
+            onClick={(e) => e.stopPropagation()}
+            className="w-full max-w-sm bg-white dark:bg-slate-900 rounded-2xl p-5 shadow-2xl border border-slate-200 dark:border-slate-800 space-y-4 animate-in fade-in zoom-in-95 duration-150"
+          >
+            <div className="flex items-start gap-3">
+              <div className="w-10 h-10 rounded-xl bg-rose-100 dark:bg-rose-950/60 text-rose-600 dark:text-rose-400 flex items-center justify-center shrink-0">
+                <RotateCcw className="w-5 h-5" />
+              </div>
+              <div>
+                <h3 className="font-extrabold text-sm text-slate-900 dark:text-white">
+                  {isAr ? 'استرجاع الفاتورة' : 'Refund Invoice'}
+                </h3>
+                <p className="text-xs text-slate-600 dark:text-slate-400 mt-1 leading-relaxed">
+                  {isAr
+                    ? `هل أنت متأكد من استرجاع الفاتورة ${refundConfirmOrder.orderNumber} (${refundConfirmOrder.grandTotal.toFixed(2)} ${currencySymbol}) وإعادة السلع إلى المخزون؟`
+                    : `Refund order ${refundConfirmOrder.orderNumber} (${refundConfirmOrder.grandTotal.toFixed(2)} ${currencySymbol}) and restore items to stock?`}
+                </p>
+              </div>
+            </div>
+
+            <div className="flex items-center justify-end gap-2 pt-1">
+              <button
+                type="button"
+                onClick={() => setRefundConfirmOrder(null)}
+                className="px-4 py-2 rounded-xl border border-slate-200 dark:border-slate-700 text-xs font-bold text-slate-600 dark:text-slate-300 hover:bg-slate-100 dark:hover:bg-slate-800"
+              >
+                {isAr ? 'إلغاء' : 'Cancel'}
+              </button>
+              <button
+                type="button"
+                onClick={confirmRefundNow}
+                className="px-4 py-2 rounded-xl bg-rose-600 hover:bg-rose-700 text-white text-xs font-extrabold shadow-xs"
+              >
+                {isAr ? 'تأكيد الاسترجاع' : 'Confirm Refund'}
+              </button>
+            </div>
+          </div>
+        </div>
       )}
     </div>
   );

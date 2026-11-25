@@ -51,7 +51,8 @@ export const CustomersView: React.FC = () => {
     currencySymbol,
     language,
     settings,
-    orders
+    orders,
+    isOnline
   } = usePos();
 
   const t = getT(language);
@@ -66,11 +67,11 @@ export const CustomersView: React.FC = () => {
   // Search by Name AND Phone
   const [searchQuery, setSearchQuery] = useState('');
 
-  // Status Filter: 'all' | 'debtors' | 'over_limit' | 'settled'
-  const [statusFilter, setStatusFilter] = useState<'all' | 'debtors' | 'over_limit' | 'settled'>('all');
+  // Status Filter: 'all' | 'debtors' | 'overdue' | 'over_limit' | 'settled'
+  const [statusFilter, setStatusFilter] = useState<'all' | 'debtors' | 'overdue' | 'over_limit' | 'settled'>('all');
 
   // Sort & View mode for Credit Ledger
-  const [sortBy, setSortBy] = useState<'debt_desc' | 'recent' | 'over_limit' | 'name'>('debt_desc');
+  const [sortBy, setSortBy] = useState<'debt_desc' | 'overdue' | 'recent' | 'over_limit' | 'name'>('debt_desc');
   const [viewMode, setViewMode] = useState<'cards' | 'table'>('cards');
 
   // Modals state
@@ -88,6 +89,7 @@ export const CustomersView: React.FC = () => {
   const [showCreditGmailModal, setShowCreditGmailModal] = useState(false);
   const [creditLimitModalCustomer, setCreditLimitModalCustomer] = useState<Customer | null>(null);
   const [draftCreditLimit, setDraftCreditLimit] = useState<string>('');
+  const [deletingCustomer, setDeletingCustomer] = useState<Customer | null>(null);
 
   // Form states for Add Customer
   const [newName, setNewName] = useState('');
@@ -116,6 +118,8 @@ export const CustomersView: React.FC = () => {
       string,
       {
         latestTxDate?: string;
+        daysInactive: number;
+        isOverdue: boolean;
         txCount: number;
         totalDebtTaken: number;
         totalPaid: number;
@@ -126,7 +130,9 @@ export const CustomersView: React.FC = () => {
     >();
 
     for (const c of customers) {
-      const txs = creditTransactions.filter((tx) => tx.customerId === c.id);
+      const txs = creditTransactions
+        .filter((tx) => tx.customerId === c.id)
+        .sort((a, b) => new Date(b.date).getTime() - new Date(a.date).getTime());
       const totalDebtTaken = txs
         .filter((tx) => tx.type === 'debt')
         .reduce((s, tx) => s + tx.amount, 0);
@@ -139,8 +145,16 @@ export const CustomersView: React.FC = () => {
       const limitUsagePct =
         c.creditLimit && c.creditLimit > 0 ? Math.round((c.balance / c.creditLimit) * 100) : 0;
 
+      const refIso = txs[0]?.date || c.createdAt;
+      const daysInactive = refIso
+        ? Math.max(0, Math.floor((Date.now() - new Date(refIso).getTime()) / 86_400_000))
+        : 0;
+      const isOverdue = c.balance > 0 && daysInactive >= 15;
+
       map.set(c.id, {
         latestTxDate: txs[0]?.date,
+        daysInactive,
+        isOverdue,
         txCount: txs.length,
         totalDebtTaken,
         totalPaid,
@@ -170,6 +184,8 @@ export const CustomersView: React.FC = () => {
       let matchesStatus = true;
       if (statusFilter === 'debtors') {
         matchesStatus = c.balance > 0;
+      } else if (statusFilter === 'overdue') {
+        matchesStatus = Boolean(customerStatsMap.get(c.id)?.isOverdue);
       } else if (statusFilter === 'over_limit') {
         matchesStatus = Boolean(c.creditLimit && c.creditLimit > 0 && c.balance > c.creditLimit);
       } else if (statusFilter === 'settled') {
@@ -182,6 +198,11 @@ export const CustomersView: React.FC = () => {
     return [...filtered].sort((a, b) => {
       if (activeTab === 'loyalty') {
         return b.totalSpent - a.totalSpent || b.points - a.points;
+      }
+      if (sortBy === 'overdue') {
+        const aDays = a.balance > 0 ? (customerStatsMap.get(a.id)?.daysInactive ?? 0) : -1;
+        const bDays = b.balance > 0 ? (customerStatsMap.get(b.id)?.daysInactive ?? 0) : -1;
+        return bDays - aDays || b.balance - a.balance;
       }
       if (sortBy === 'over_limit') {
         const aOver = a.creditLimit && a.balance > a.creditLimit ? 1 : 0;
@@ -209,6 +230,7 @@ export const CustomersView: React.FC = () => {
   const metrics = useMemo(() => {
     const totalDebt = customers.reduce((sum, c) => sum + (c.balance > 0 ? c.balance : 0), 0);
     const debtorsCount = customers.filter((c) => c.balance > 0).length;
+    const overdueCount = customers.filter((c) => customerStatsMap.get(c.id)?.isOverdue).length;
     const overLimitCount = customers.filter(
       (c) => c.creditLimit && c.creditLimit > 0 && c.balance > c.creditLimit
     ).length;
@@ -227,13 +249,14 @@ export const CustomersView: React.FC = () => {
     return {
       totalDebt,
       debtorsCount,
+      overdueCount,
       overLimitCount,
       settledCount,
       totalPaymentsReceived,
       collectionRatePct,
       lastTransaction
     };
-  }, [customers, creditTransactions]);
+  }, [customers, creditTransactions, customerStatsMap]);
 
   const selectedPageCustomer = useMemo(() => {
     if (!selectedCustomerPageId) return null;
@@ -329,10 +352,15 @@ export const CustomersView: React.FC = () => {
 
     if (result.success) {
       const remaining = Math.max(0, Number((settleModalCustomer.balance - paidAmount).toFixed(2)));
+      const offlineSuffix = !isOnline
+        ? isAr
+          ? ' (محفوظ محلياً أوفلاين وسيتزامن تلقائياً)'
+          : ' (saved offline locally)'
+        : '';
       setPaymentToast(
         isAr
-          ? `تم تسجيل دفع الدين (${paidAmount.toFixed(2)} ${currencySymbol}) للزبون "${settleModalCustomer.name}" — المتبقي: ${remaining.toFixed(2)} ${currencySymbol}`
-          : `Debt payment (${paidAmount.toFixed(2)} ${currencySymbol}) recorded for "${settleModalCustomer.name}"`
+          ? `تم تسجيل دفع الدين (${paidAmount.toFixed(2)} ${currencySymbol}) للزبون "${settleModalCustomer.name}" — المتبقي: ${remaining.toFixed(2)} ${currencySymbol}${offlineSuffix}`
+          : `Debt payment (${paidAmount.toFixed(2)} ${currencySymbol}) recorded for "${settleModalCustomer.name}"${offlineSuffix}`
       );
       setTimeout(() => setPaymentToast(null), 4000);
     }
@@ -348,7 +376,24 @@ export const CustomersView: React.FC = () => {
     e.preventDefault();
     if (!addDebtModalCustomer || newDebtAmount <= 0) return;
 
-    addCreditDebt(addDebtModalCustomer.id, newDebtAmount, newDebtNotes.trim() || undefined);
+    const res = addCreditDebt(
+      addDebtModalCustomer.id,
+      newDebtAmount,
+      newDebtNotes.trim() || undefined
+    );
+    if (res.success) {
+      const offlineSuffix = !isOnline
+        ? isAr
+          ? ' (محفوظ محلياً أوفلاين)'
+          : ' (saved offline)'
+        : '';
+      setPaymentToast(
+        isAr
+          ? `تم تقييد كريدي جديد (${newDebtAmount.toFixed(2)} ${currencySymbol}) على "${addDebtModalCustomer.name}"${offlineSuffix}`
+          : `Added ${newDebtAmount.toFixed(2)} ${currencySymbol} credit for "${addDebtModalCustomer.name}"${offlineSuffix}`
+      );
+      setTimeout(() => setPaymentToast(null), 4000);
+    }
     setAddDebtModalCustomer(null);
     setNewDebtAmount(0);
     setNewDebtNotes('');
@@ -708,6 +753,7 @@ export const CustomersView: React.FC = () => {
           {[
             { id: 'all' as const, label: isAr ? 'الكل' : 'All', count: customers.length },
             { id: 'debtors' as const, label: isAr ? 'عليهم الدين' : 'Has Debt', count: metrics.debtorsCount },
+            { id: 'overdue' as const, label: isAr ? 'متأخر +15 يوم' : 'Overdue 15d+', count: metrics.overdueCount },
             { id: 'over_limit' as const, label: isAr ? 'تجاوز السقف' : 'Over Limit', count: metrics.overLimitCount },
             { id: 'settled' as const, label: isAr ? 'خالصين' : 'Settled', count: metrics.settledCount }
           ].map((chip) => {
@@ -719,7 +765,7 @@ export const CustomersView: React.FC = () => {
                 onClick={() => setStatusFilter(chip.id)}
                 className={`px-3 py-1.5 rounded-xl text-xs font-bold transition-all shrink-0 flex items-center gap-1.5 ${
                   isSelected
-                    ? chip.id === 'debtors' || chip.id === 'over_limit'
+                    ? chip.id === 'debtors' || chip.id === 'over_limit' || chip.id === 'overdue'
                       ? 'bg-rose-600 text-white shadow-xs'
                       : 'bg-emerald-600 text-white shadow-xs'
                     : 'bg-slate-100 dark:bg-slate-800 text-slate-600 dark:text-slate-400 hover:bg-slate-200 dark:hover:bg-slate-700'
@@ -740,11 +786,16 @@ export const CustomersView: React.FC = () => {
             <ArrowUpDown className="w-3.5 h-3.5 text-slate-400" />
             <select
               value={sortBy}
-              onChange={(e) => setSortBy(e.target.value as 'debt_desc' | 'recent' | 'over_limit' | 'name')}
+              onChange={(e) =>
+                setSortBy(e.target.value as 'debt_desc' | 'overdue' | 'recent' | 'over_limit' | 'name')
+              }
               className="bg-transparent text-xs font-bold text-slate-700 dark:text-slate-200 focus:outline-hidden"
             >
               <option value="debt_desc" className="bg-white dark:bg-slate-900">
                 {isAr ? 'الأعلى ديناً' : 'Highest Debt'}
+              </option>
+              <option value="overdue" className="bg-white dark:bg-slate-900">
+                {isAr ? 'الأكثر تأخراً أولاً' : 'Most Overdue First'}
               </option>
               <option value="recent" className="bg-white dark:bg-slate-900">
                 {isAr ? 'الأحدث حركة' : 'Recent Activity'}
@@ -996,11 +1047,18 @@ export const CustomersView: React.FC = () => {
                       </div>
 
                       {/* Status Badge */}
-                      <div>
+                      <div className="flex flex-col items-end gap-1">
                         {cStats?.isOverLimit ? (
                           <span className="px-2.5 py-1 rounded-xl text-[10px] font-extrabold bg-rose-100 text-rose-800 dark:bg-rose-950/80 dark:text-rose-300 border border-rose-300 dark:border-rose-800 flex items-center gap-1 shrink-0">
                             <ShieldAlert className="w-3 h-3 text-rose-600" />
                             <span>{isAr ? 'تجاوز السقف' : 'Over Limit'}</span>
+                          </span>
+                        ) : cStats?.isOverdue ? (
+                          <span className="px-2.5 py-1 rounded-xl text-[10px] font-extrabold bg-rose-100 text-rose-800 dark:bg-rose-950/80 dark:text-rose-300 border border-rose-300 dark:border-rose-800 flex items-center gap-1 shrink-0 tabular-nums">
+                            <Clock className="w-3 h-3 text-rose-600" />
+                            <span>
+                              {isAr ? `متأخر (${cStats.daysInactive} يوم)` : `Overdue (${cStats.daysInactive}d)`}
+                            </span>
                           </span>
                         ) : hasDebt ? (
                           <span className="px-2.5 py-1 rounded-xl text-[10px] font-extrabold bg-amber-100 text-amber-800 dark:bg-amber-950/80 dark:text-amber-300 border border-amber-300 dark:border-amber-800 flex items-center gap-1 shrink-0">
@@ -1047,9 +1105,22 @@ export const CustomersView: React.FC = () => {
                           </div>
                         </div>
 
-                        {/* Fast Action: Settle vs Add */}
+                        {/* Fast Action: Settle + Add Debt */}
                         <div className="flex items-center gap-1.5">
-                          {hasDebt ? (
+                          <button
+                            type="button"
+                            onClick={() => {
+                              setAddDebtModalCustomer(cust);
+                              setNewDebtAmount(0);
+                              setNewDebtNotes('');
+                            }}
+                            className="px-2.5 py-1.5 text-xs font-black rounded-xl bg-white dark:bg-slate-900 border border-amber-300 dark:border-amber-700 hover:bg-amber-50 dark:hover:bg-amber-950/40 text-amber-800 dark:text-amber-300 transition-colors flex items-center gap-1"
+                            title={isAr ? 'تقييد كريدي جديد على الحساب' : 'Record Credit'}
+                          >
+                            <Plus className="w-3.5 h-3.5" />
+                            <span>{hasDebt ? (isAr ? 'دين' : 'Debt') : isAr ? 'تقييد كريدي' : 'Add Credit'}</span>
+                          </button>
+                          {hasDebt && (
                             <button
                               type="button"
                               onClick={() => openCreatePaymentModal(cust)}
@@ -1057,21 +1128,7 @@ export const CustomersView: React.FC = () => {
                               title={isAr ? 'إنشاء دفع الدين وتسديد الكريدي' : 'Settle Debt'}
                             >
                               <Check className="w-3.5 h-3.5 stroke-[3]" />
-                              <span>{isAr ? 'خلص الدين' : 'Settle'}</span>
-                            </button>
-                          ) : (
-                            <button
-                              type="button"
-                              onClick={() => {
-                                setAddDebtModalCustomer(cust);
-                                setNewDebtAmount(0);
-                                setNewDebtNotes('');
-                              }}
-                              className="px-3 py-1.5 text-xs font-bold rounded-xl bg-slate-200 dark:bg-slate-700 hover:bg-slate-300 text-slate-700 dark:text-slate-200 transition-colors flex items-center gap-1"
-                              title={isAr ? 'تقييد كريدي جديد على الحساب' : 'Record Credit'}
-                            >
-                              <Plus className="w-3.5 h-3.5" />
-                              <span>{isAr ? 'تقييد كريدي' : 'Add Credit'}</span>
+                              <span>{isAr ? 'خلص' : 'Settle'}</span>
                             </button>
                           )}
                         </div>
@@ -1200,19 +1257,7 @@ export const CustomersView: React.FC = () => {
                     {/* Delete Customer */}
                     <button
                       type="button"
-                      onClick={() => {
-                        if (
-                          confirm(
-                            isAr
-                              ? `هل أنت متأكد من حذف العميل "${cust.name}" نهائياً من النظام؟${
-                                  hasDebt ? `\n⚠️ تنبيه: العميل ما زال بذمته ${cust.balance} درهم كريدي!` : ''
-                                }`
-                              : `Delete customer "${cust.name}"?`
-                          )
-                        ) {
-                          deleteCustomer(cust.id);
-                        }
-                      }}
+                      onClick={() => setDeletingCustomer(cust)}
                       className="p-1.5 text-slate-400 hover:text-rose-600 rounded-lg hover:bg-rose-50 dark:hover:bg-rose-950/40 transition-colors"
                       title={isAr ? 'حذف العميل' : 'Delete'}
                     >
@@ -2422,6 +2467,63 @@ export const CustomersView: React.FC = () => {
         isOpen={showCreditGmailModal}
         onClose={() => setShowCreditGmailModal(false)}
       />
+
+      {deletingCustomer && (
+        <div
+          className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-slate-950/65 backdrop-blur-xs"
+          onClick={() => setDeletingCustomer(null)}
+        >
+          <div
+            onClick={(e) => e.stopPropagation()}
+            className="w-full max-w-sm bg-white dark:bg-slate-900 rounded-2xl p-5 shadow-2xl border border-slate-200 dark:border-slate-800 space-y-4 animate-in fade-in zoom-in-95 duration-150"
+          >
+            <div className="flex items-start gap-3">
+              <div className="w-10 h-10 rounded-xl bg-rose-100 dark:bg-rose-950/60 text-rose-600 dark:text-rose-400 flex items-center justify-center shrink-0">
+                <Trash2 className="w-5 h-5" />
+              </div>
+              <div>
+                <h3 className="font-extrabold text-sm text-slate-900 dark:text-white">
+                  {isAr ? 'حذف الزبون' : 'Delete Customer'}
+                </h3>
+                <p className="text-xs text-slate-600 dark:text-slate-400 mt-1 leading-relaxed">
+                  {isAr
+                    ? `هل أنت متأكد من حذف "${deletingCustomer.name}" نهائياً من النظام؟`
+                    : `Are you sure you want to permanently delete "${deletingCustomer.name}"?`}
+                </p>
+                {deletingCustomer.balance > 0 && (
+                  <div className="mt-2 p-2.5 rounded-xl bg-amber-50 dark:bg-amber-950/40 border border-amber-200 dark:border-amber-800 text-[11px] font-bold text-amber-800 dark:text-amber-200 flex items-center gap-1.5">
+                    <AlertTriangle className="w-4 h-4 text-amber-600 shrink-0" />
+                    <span>
+                      {isAr
+                        ? `تنبيه: ما زال بذمته ${deletingCustomer.balance.toFixed(2)} ${currencySymbol} كريدي!`
+                        : `Warning: Customer still owes ${deletingCustomer.balance.toFixed(2)} ${currencySymbol}!`}
+                    </span>
+                  </div>
+                )}
+              </div>
+            </div>
+            <div className="flex items-center justify-end gap-2 pt-1">
+              <button
+                type="button"
+                onClick={() => setDeletingCustomer(null)}
+                className="px-4 py-2 rounded-xl border border-slate-200 dark:border-slate-700 text-xs font-bold text-slate-600 dark:text-slate-300 hover:bg-slate-100 dark:hover:bg-slate-800"
+              >
+                {isAr ? 'إلغاء' : 'Cancel'}
+              </button>
+              <button
+                type="button"
+                onClick={() => {
+                  deleteCustomer(deletingCustomer.id);
+                  setDeletingCustomer(null);
+                }}
+                className="px-4 py-2 rounded-xl bg-rose-600 hover:bg-rose-700 text-white text-xs font-extrabold shadow-xs"
+              >
+                {isAr ? 'تأكيد الحذف' : 'Delete'}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 };

@@ -75,6 +75,12 @@ import {
   loadCpuRecordsFromIndexedDB,
   saveSupplierInvoicesToIndexedDB,
   loadSupplierInvoicesFromIndexedDB,
+  saveCustomersToIndexedDB,
+  loadCustomersFromIndexedDB,
+  saveCreditTransactionsToIndexedDB,
+  loadCreditTransactionsFromIndexedDB,
+  saveStockMovementsToIndexedDB,
+  loadStockMovementsFromIndexedDB,
   safeLocalStorageSet
 } from '../utils/storage';
 import { getExpenseCategoryLabel, getLocalTodayYMD } from '../utils/expenses';
@@ -1842,9 +1848,27 @@ export const PosProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
     ];
     return safeReadStorageArray<StockMovement>('kadi_pos_stock_movements_v3', defaultMovements);
   });
+  const stockMovementsHydratedRef = useRef(false);
 
   useEffect(() => {
-    safeLocalStorageSet('kadi_pos_stock_movements', JSON.stringify(stockMovements));
+    let cancelled = false;
+    loadStockMovementsFromIndexedDB().then((dbMoves) => {
+      if (cancelled) return;
+      if (dbMoves && dbMoves.length > 0) {
+        setStockMovements(dbMoves);
+      }
+      stockMovementsHydratedRef.current = true;
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  useEffect(() => {
+    safeLocalStorageSet('kadi_pos_stock_movements_v3', JSON.stringify(stockMovements.slice(0, 300)));
+    if (stockMovementsHydratedRef.current) {
+      void saveStockMovementsToIndexedDB(stockMovements);
+    }
   }, [stockMovements]);
 
   const [stocktakeHistory, setStocktakeHistory] = useState<StocktakeSessionRecord[]>(() =>
@@ -2561,27 +2585,39 @@ export const PosProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
   }, [products, dispatchLowStockNotifications]);
 
   const lowStockProducts = useMemo(() => {
-    return products.filter(
-      (p) => p.stock < 5 || (p.lowStockThreshold > 0 && p.stock <= p.lowStockThreshold)
-    );
+    return products
+      .filter((p) => p.stock < 5 || (p.lowStockThreshold > 0 && p.stock <= p.lowStockThreshold))
+      .sort((a, b) => {
+        if (a.stock <= 0 && b.stock > 0) return -1;
+        if (b.stock <= 0 && a.stock > 0) return 1;
+        const aRatio = a.stock / Math.max(1, a.lowStockThreshold || 5);
+        const bRatio = b.stock / Math.max(1, b.lowStockThreshold || 5);
+        return aRatio - bRatio || a.stock - b.stock;
+      });
   }, [products]);
 
   const criticalLowStockProducts = useMemo(() => {
-    return products.filter(
+    return lowStockProducts.filter(
       (p) => p.stock < 5 || (p.lowStockThreshold > 0 && p.stock <= p.lowStockThreshold * 0.2)
     );
-  }, [products]);
+  }, [lowStockProducts]);
 
   const expiringSoonProducts = useMemo(() => {
     const today = new Date();
     today.setHours(0, 0, 0, 0);
     const thirtyDaysMs = 30 * 24 * 60 * 60 * 1000;
-    return products.filter((p) => {
-      if (!p.expiryDate) return false;
-      const exp = new Date(p.expiryDate);
-      if (isNaN(exp.getTime())) return false;
-      return exp.getTime() - today.getTime() <= thirtyDaysMs;
-    });
+    return products
+      .filter((p) => {
+        if (!p.expiryDate) return false;
+        const exp = new Date(p.expiryDate);
+        if (isNaN(exp.getTime())) return false;
+        return exp.getTime() - today.getTime() <= thirtyDaysMs;
+      })
+      .sort((a, b) => {
+        const aTime = a.expiryDate ? new Date(a.expiryDate).getTime() : Number.MAX_SAFE_INTEGER;
+        const bTime = b.expiryDate ? new Date(b.expiryDate).getTime() : Number.MAX_SAFE_INTEGER;
+        return aTime - bTime;
+      });
   }, [products]);
 
   // Cart & Active Ticket
@@ -2963,9 +2999,32 @@ export const PosProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
   const [customers, setCustomers] = useState<Customer[]>(() =>
     safeReadStorageArray<Customer>('kadi_pos_customers', initialCustomers)
   );
+  const customersHydratedRef = useRef(false);
+
+  useEffect(() => {
+    let cancelled = false;
+    loadCustomersFromIndexedDB().then((dbCustomers) => {
+      if (cancelled) return;
+      if (dbCustomers && dbCustomers.length > 0) {
+        setCustomers(dbCustomers);
+      } else {
+        const cloudBackup = loadLocalCloudBackup();
+        if (cloudBackup?.customers && cloudBackup.customers.length > 0) {
+          setCustomers(cloudBackup.customers);
+        }
+      }
+      customersHydratedRef.current = true;
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, []);
 
   useEffect(() => {
     safeLocalStorageSet('kadi_pos_customers', JSON.stringify(customers));
+    if (customersHydratedRef.current) {
+      void saveCustomersToIndexedDB(customers);
+    }
   }, [customers]);
 
   // Automatic Real-time Trade Zakat Calculation (حساب آلي عند تجاوز نصاب 85 جم ذهب)
@@ -2980,9 +3039,32 @@ export const PosProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
       initialCreditTransactions
     )
   );
+  const creditTxsHydratedRef = useRef(false);
+
+  useEffect(() => {
+    let cancelled = false;
+    loadCreditTransactionsFromIndexedDB().then((dbTxs) => {
+      if (cancelled) return;
+      if (dbTxs && dbTxs.length > 0) {
+        setCreditTransactions(dbTxs);
+      } else {
+        const cloudBackup = loadLocalCloudBackup();
+        if (cloudBackup?.creditTransactions && cloudBackup.creditTransactions.length > 0) {
+          setCreditTransactions(cloudBackup.creditTransactions);
+        }
+      }
+      creditTxsHydratedRef.current = true;
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, []);
 
   useEffect(() => {
     safeLocalStorageSet('kadi_pos_credit_transactions_v1', JSON.stringify(creditTransactions));
+    if (creditTxsHydratedRef.current) {
+      void saveCreditTransactionsToIndexedDB(creditTransactions);
+    }
   }, [creditTransactions]);
 
   const addCustomer = (customerData: Omit<Customer, 'id' | 'points' | 'balance' | 'tier' | 'totalSpent' | 'ordersCount' | 'createdAt'> & { balance?: number }) => {
@@ -5280,7 +5362,9 @@ export const PosProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
     setProducts(initialProducts);
     setCategories(initialCategories);
     setCustomers(initialCustomers);
+    void saveCustomersToIndexedDB(initialCustomers);
     setCreditTransactions(initialCreditTransactions);
+    void saveCreditTransactionsToIndexedDB(initialCreditTransactions);
     setSettings(initialSettings);
     setCurrentShift(initialShift);
     setBranches(initialBranches);
@@ -5305,6 +5389,8 @@ export const PosProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
     setActivityLogs(initialActivityLogs);
     setTheftAlerts([]);
     setActiveTheftToasts([]);
+    setStockMovements([]);
+    void saveStockMovementsToIndexedDB([]);
     setStocktakeHistory([]);
     setCurrentEmergencySession(null);
     setEmergencySessions([]);
@@ -5371,9 +5457,11 @@ export const PosProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
       }
       if (data.customers && Array.isArray(data.customers)) {
         setCustomers(data.customers);
+        void saveCustomersToIndexedDB(data.customers);
       }
       if (data.creditTransactions && Array.isArray(data.creditTransactions)) {
         setCreditTransactions(data.creditTransactions);
+        void saveCreditTransactionsToIndexedDB(data.creditTransactions);
       }
       const importedNormalizedSettings =
         data.settings && isPlainRecord(data.settings)
@@ -5488,6 +5576,9 @@ export const PosProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
   const [storeExistsInCloud, setStoreExistsInCloud] = useState<boolean>(false);
   const [cloudSyncingNow, setCloudSyncingNow] = useState<boolean>(false);
   const [cloudSyncError, setCloudSyncError] = useState<string | null>(null);
+  const [cloudFromCache, setCloudFromCache] = useState<boolean>(true);
+  const [cloudHasPendingWrites, setCloudHasPendingWrites] = useState<boolean>(false);
+  const [cloudLastSyncedAtIso, setCloudLastSyncedAtIso] = useState<string | null>(null);
   const [hasPendingLocalChanges, setHasPendingLocalChanges] = useState<boolean>(
     () => !!getPendingCloudSyncFlag()
   );
@@ -5612,6 +5703,8 @@ export const PosProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
         setCloudDevices([]);
         setStoreExistsInCloud(false);
         setCloudSyncError(null);
+        setCloudFromCache(true);
+        setCloudHasPendingWrites(false);
       }
     });
     return () => unsub();
@@ -5675,6 +5768,9 @@ export const PosProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
         setCloudUpdatedBy(writtenDoc.updatedBy);
         setStoreExistsInCloud(true);
         setHasPendingLocalChanges(false);
+        setCloudFromCache(false);
+        setCloudHasPendingWrites(false);
+        setCloudLastSyncedAtIso(new Date().toISOString());
         setCloudSyncError(null);
       } catch (err) {
         const msg = err instanceof Error ? err.message : String(err);
@@ -5706,6 +5802,12 @@ export const PosProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
 
     const unsubscribe = subscribeStoreSyncDoc(
       (remoteDoc, meta) => {
+        setCloudFromCache(meta.fromCache);
+        setCloudHasPendingWrites(meta.hasPendingWrites);
+        if (!meta.fromCache && !meta.hasPendingWrites) {
+          setCloudLastSyncedAtIso(new Date().toISOString());
+        }
+
         if (!remoteDoc) {
           setStoreExistsInCloud(false);
           if (!meta.fromCache) {
@@ -6116,6 +6218,11 @@ export const PosProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
     };
 
     const handlePageHide = () => {
+      try {
+        saveLocalCloudBackup(buildCurrentLocalPayload());
+      } catch {
+        // ignore backup error on page unload
+      }
       const user = auth.currentUser;
       const cached = cachedRemoteDocRef.current;
       if (!user || !cached || !navigator.onLine) return;
@@ -6145,15 +6252,47 @@ export const PosProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
       }).catch(() => {});
     };
 
+    const handleVisibilityOfflineSave = () => {
+      if (document.visibilityState === 'hidden') {
+        try {
+          saveLocalCloudBackup(buildCurrentLocalPayload());
+        } catch {
+          // ignore
+        }
+      }
+    };
+
     document.addEventListener('visibilitychange', handleVisibility);
+    document.addEventListener('visibilitychange', handleVisibilityOfflineSave);
     window.addEventListener('pagehide', handlePageHide);
 
     return () => {
       clearInterval(interval);
       document.removeEventListener('visibilitychange', handleVisibility);
+      document.removeEventListener('visibilitychange', handleVisibilityOfflineSave);
       window.removeEventListener('pagehide', handlePageHide);
     };
-  }, [isOnline, firebaseUser, pushCurrentStoreToCloud]);
+  }, [isOnline, firebaseUser, pushCurrentStoreToCloud, buildCurrentLocalPayload]);
+
+  // Always flush local backup on pagehide/background even while offline or unauthenticated
+  useEffect(() => {
+    const flushLocalSnapshot = () => {
+      try {
+        saveLocalCloudBackup(buildCurrentLocalPayload());
+      } catch {
+        // ignore
+      }
+    };
+    const onVisChange = () => {
+      if (document.visibilityState === 'hidden') flushLocalSnapshot();
+    };
+    window.addEventListener('pagehide', flushLocalSnapshot);
+    document.addEventListener('visibilitychange', onVisChange);
+    return () => {
+      window.removeEventListener('pagehide', flushLocalSnapshot);
+      document.removeEventListener('visibilitychange', onVisChange);
+    };
+  }, [buildCurrentLocalPayload]);
 
   // Online / Offline listeners: seamlessly switch between Firestore & localStorage and auto-sync on reconnect
   useEffect(() => {
@@ -6169,6 +6308,7 @@ export const PosProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
 
     const handleOffline = () => {
       setIsOnline(false);
+      setCloudFromCache(true);
     };
 
     window.addEventListener('online', handleOnline);
@@ -6388,7 +6528,7 @@ export const PosProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
       status = 'auth_required';
     } else if (cloudSyncError) {
       status = 'error';
-    } else if (cloudSyncingNow) {
+    } else if (cloudSyncingNow || cloudHasPendingWrites || hasPendingLocalChanges) {
       status = 'syncing';
     } else {
       status = 'synced';
@@ -6417,6 +6557,9 @@ export const PosProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
       devices: cloudDevices,
       activeDevicesCount,
       hasPendingLocalChanges,
+      fromCache: !isOnline || !isSignedIn ? true : cloudFromCache,
+      hasPendingWrites: cloudHasPendingWrites,
+      lastSyncedAtIso: cloudLastSyncedAtIso,
       storeExistsInCloud,
       lastError: cloudSyncError
     };
@@ -6425,6 +6568,9 @@ export const PosProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
     isOnline,
     cloudSyncError,
     cloudSyncingNow,
+    cloudFromCache,
+    cloudHasPendingWrites,
+    cloudLastSyncedAtIso,
     cloudDevices,
     deviceName,
     cloudIsOwner,

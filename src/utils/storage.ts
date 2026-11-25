@@ -21,11 +21,12 @@ import {
   RemoteOrder,
   DeliveryZone,
   CpuQuarterRecord,
-  SupplierInvoice
+  SupplierInvoice,
+  CreditTransaction
 } from '../types';
 
 const DB_NAME = 'kadi_pos_indexed_db';
-const DB_VERSION = 6;
+const DB_VERSION = 7;
 
 export const STORES = {
   PRODUCTS: 'products',
@@ -34,6 +35,7 @@ export const STORES = {
   OFFLINE_SALES_QUEUE: 'offline_sales_queue',
   STOCK_MOVEMENTS: 'stock_movements',
   CUSTOMERS: 'customers',
+  CREDIT_TRANSACTIONS: 'credit_transactions',
   SHIFTS_HISTORY: 'shifts_history',
   BRANCHES: 'branches',
   BRANCH_TRANSFERS: 'branch_transfers',
@@ -66,6 +68,7 @@ export function getDB(): Promise<IDBDatabase> {
           STORES.OFFLINE_SALES_QUEUE,
           STORES.STOCK_MOVEMENTS,
           STORES.CUSTOMERS,
+          STORES.CREDIT_TRANSACTIONS,
           STORES.SHIFTS_HISTORY,
           STORES.BRANCHES,
           STORES.BRANCH_TRANSFERS,
@@ -273,6 +276,11 @@ export async function migrateFromLocalStorage(): Promise<boolean> {
     const lsCustomers = safeLocalStorageGet<Customer[]>('kadi_pos_customers', []);
     if (lsCustomers.length > 0) {
       await saveList(STORES.CUSTOMERS, lsCustomers);
+    }
+
+    const lsCreditTxs = safeLocalStorageGet<CreditTransaction[]>('kadi_pos_credit_transactions_v1', []);
+    if (lsCreditTxs.length > 0) {
+      await saveList(STORES.CREDIT_TRANSACTIONS, lsCreditTxs);
     }
 
     const lsMovements = safeLocalStorageGet<StockMovement[]>('kadi_pos_stock_movements_v3', []);
@@ -492,6 +500,37 @@ export async function loadSupplierInvoicesFromIndexedDB(): Promise<SupplierInvoi
       String(b.createdAt || '').localeCompare(String(a.createdAt || ''))
   );
 }
+
+export async function saveCustomersToIndexedDB(customers: Customer[]): Promise<boolean> {
+  return saveList(STORES.CUSTOMERS, customers);
+}
+
+export async function loadCustomersFromIndexedDB(): Promise<Customer[] | null> {
+  return loadList<Customer>(STORES.CUSTOMERS);
+}
+
+export async function saveCreditTransactionsToIndexedDB(
+  txs: CreditTransaction[]
+): Promise<boolean> {
+  return saveList(STORES.CREDIT_TRANSACTIONS, txs);
+}
+
+export async function loadCreditTransactionsFromIndexedDB(): Promise<CreditTransaction[] | null> {
+  const rows = await loadList<CreditTransaction>(STORES.CREDIT_TRANSACTIONS);
+  if (!rows) return null;
+  return rows.sort((a, b) => new Date(b.date).getTime() - new Date(a.date).getTime());
+}
+
+export async function saveStockMovementsToIndexedDB(movements: StockMovement[]): Promise<boolean> {
+  return saveList(STORES.STOCK_MOVEMENTS, movements);
+}
+
+export async function loadStockMovementsFromIndexedDB(): Promise<StockMovement[] | null> {
+  const rows = await loadList<StockMovement>(STORES.STOCK_MOVEMENTS);
+  if (!rows) return null;
+  return rows.sort((a, b) => new Date(b.date).getTime() - new Date(a.date).getTime());
+}
+
 
 
 

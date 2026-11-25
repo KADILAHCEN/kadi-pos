@@ -26,7 +26,7 @@ export const ActivityLogSection: React.FC = () => {
 
   const [selectedCategory, setSelectedCategory] = useState<ActivityLogCategory | 'all'>('all');
   const [searchQuery, setSearchQuery] = useState('');
-  const [copiedToast, setCopiedToast] = useState(false);
+  const [confirmingClear, setConfirmingClear] = useState(false);
 
   // Filtered logs
   const filteredLogs = useMemo(() => {
@@ -101,15 +101,8 @@ export const ActivityLogSection: React.FC = () => {
   };
 
   const handleClear = () => {
-    if (
-      confirm(
-        isAr
-          ? 'هل أنت متأكد من تفريغ ومسح سجل النشاطات والعمليات؟'
-          : 'Are you sure you want to clear the audit activity log?'
-      )
-    ) {
-      clearActivityLogs();
-    }
+    clearActivityLogs();
+    setConfirmingClear(false);
   };
 
   const getCategoryDetails = (cat: ActivityLogCategory) => {
@@ -210,15 +203,34 @@ export const ActivityLogSection: React.FC = () => {
           </button>
 
           {activityLogs.length > 0 && (
-            <button
-              type="button"
-              onClick={handleClear}
-              className="flex items-center gap-1 px-2.5 py-1.5 rounded-xl text-slate-400 hover:text-rose-600 hover:bg-rose-50 dark:hover:bg-rose-950/40 text-xs font-bold transition-colors"
-              title={isAr ? 'تفريغ السجل' : 'Clear Log'}
-            >
-              <Trash2 className="w-3.5 h-3.5" />
-              <span className="hidden sm:inline">{isAr ? 'تفريغ' : 'Clear'}</span>
-            </button>
+            confirmingClear ? (
+              <div className="flex items-center gap-1.5 bg-rose-50 dark:bg-rose-950/50 border border-rose-200 dark:border-rose-800 px-2 py-1 rounded-xl">
+                <button
+                  type="button"
+                  onClick={handleClear}
+                  className="px-2 py-0.5 rounded-lg bg-rose-600 hover:bg-rose-700 text-white text-[11px] font-extrabold"
+                >
+                  {isAr ? 'تأكيد المسح' : 'Confirm'}
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setConfirmingClear(false)}
+                  className="px-2 py-0.5 rounded-lg bg-white dark:bg-slate-800 text-slate-600 dark:text-slate-300 text-[11px] font-bold"
+                >
+                  {isAr ? 'إلغاء' : 'Cancel'}
+                </button>
+              </div>
+            ) : (
+              <button
+                type="button"
+                onClick={() => setConfirmingClear(true)}
+                className="flex items-center gap-1 px-2.5 py-1.5 rounded-xl text-slate-400 hover:text-rose-600 hover:bg-rose-50 dark:hover:bg-rose-950/40 text-xs font-bold transition-colors"
+                title={isAr ? 'تفريغ السجل' : 'Clear Log'}
+              >
+                <Trash2 className="w-3.5 h-3.5" />
+                <span className="hidden sm:inline">{isAr ? 'تفريغ' : 'Clear'}</span>
+              </button>
+            )
           )}
         </div>
       </div>

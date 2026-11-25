@@ -8,6 +8,12 @@ import { playSound } from '../../utils/audio';
 import { BarcodeScannerModal } from '../pos/BarcodeScannerModal';
 import { parsePurchaseInvoiceXml } from '../../utils/xmlInvoiceParser';
 import {
+  assessImageSharpness,
+  loadBlobToImage,
+  runOfflineInvoiceNumberOcr
+} from '../../utils/offlineInvoiceOcr';
+import { safeLocalStorageSet } from '../../utils/storage';
+import {
   Camera,
   Upload,
   X,
@@ -61,7 +67,10 @@ interface ScannedLineItem {
   suggestedMarginPct?: number;
   unitType: UnitType;
   source?: 'vision' | 'manual';
+  linePreviewDataUrl?: string;
 }
+
+const INVOICE_SCAN_DRAFT_KEY = 'kadi_pos_invoice_scan_draft_v1';
 
 interface ScannedInvoiceResponse {
   items?: VisionInvoiceItem[];
@@ -331,6 +340,13 @@ export const PurchaseInvoiceScanModal: React.FC = () => {
   const [isScanning, setIsScanning] = useState(false);
   const [scanError, setScanError] = useState<string | null>(null);
   const [scanNotice, setScanNotice] = useState<string | null>(null);
+  const [sharpnessNotice, setSharpnessNotice] = useState<{
+    isBlurry: boolean;
+    isTooDark: boolean;
+    message: string;
+  } | null>(null);
+  const [allowMissingIce, setAllowMissingIce] = useState(false);
+  const [hasSavedDraftBanner, setHasSavedDraftBanner] = useState(false);
   const [completedMessage, setCompletedMessage] = useState<string | null>(null);
   const [quickCatalogQuery, setQuickCatalogQuery] = useState('');
   const [showBarcodeCamScanner, setShowBarcodeCamScanner] = useState(false);
@@ -401,6 +417,9 @@ export const PurchaseInvoiceScanModal: React.FC = () => {
     setIsScanning(false);
     setScanError(null);
     setScanNotice(null);
+    setSharpnessNotice(null);
+    setAllowMissingIce(false);
+    setHasSavedDraftBanner(false);
     setCompletedMessage(null);
     setQuickCatalogQuery('');
     setShowBarcodeCamScanner(false);
@@ -416,6 +435,66 @@ export const PurchaseInvoiceScanModal: React.FC = () => {
     setItems(initialEntryMethod === 'manual' ? [buildEmptyManualRow()] : []);
   };
 
+  const clearSavedDraft = () => {
+    try {
+      localStorage.removeItem(INVOICE_SCAN_DRAFT_KEY);
+    } catch {
+      // ignore
+    }
+    setHasSavedDraftBanner(false);
+  };
+
+  // Persist active draft locally so accidental modal closes or offline sessions never lose invoice items
+  useEffect(() => {
+    if (!isOpen || completedMessage) return;
+    const hasMeaningfulContent =
+      supplierName.trim().length > 0 ||
+      supplierIce.trim().length > 0 ||
+      invoiceNumber.trim().length > 0 ||
+      manualTotalAmount.trim().length > 0 ||
+      items.some((it) => it.rawName.trim() || it.matchedProductId || it.unitCost > 0);
+    if (!hasMeaningfulContent) return;
+
+    try {
+      const compactItems = items.map(({ linePreviewDataUrl: _dropImg, ...rest }) => rest);
+      safeLocalStorageSet(
+        INVOICE_SCAN_DRAFT_KEY,
+        JSON.stringify({
+          invoiceMode,
+          entryMethod,
+          supplierName,
+          supplierIce,
+          supplierPhone,
+          invoiceNumber,
+          invoiceDate,
+          dueDate,
+          manualTotalAmount,
+          paidAmount,
+          invoiceNotes,
+          items: compactItems,
+          savedAt: new Date().toISOString()
+        })
+      );
+    } catch {
+      // ignore draft quota errors
+    }
+  }, [
+    isOpen,
+    completedMessage,
+    invoiceMode,
+    entryMethod,
+    supplierName,
+    supplierIce,
+    supplierPhone,
+    invoiceNumber,
+    invoiceDate,
+    dueDate,
+    manualTotalAmount,
+    paidAmount,
+    invoiceNotes,
+    items
+  ]);
+
   useEffect(() => {
     const handleOpen = (evt: Event) => {
       const detail = (
@@ -423,6 +502,47 @@ export const PurchaseInvoiceScanModal: React.FC = () => {
       ).detail;
       const startManual = Boolean(detail?.manualEntry);
       resetFormState(detail?.defaultMode || 'official_ice', startManual ? 'manual' : 'camera');
+
+      // Restore any unfinished local invoice draft automatically
+      try {
+        const rawDraft = localStorage.getItem(INVOICE_SCAN_DRAFT_KEY);
+        if (rawDraft) {
+          const parsedDraft = JSON.parse(rawDraft) as {
+            invoiceMode?: PurchaseInvoiceMode;
+            entryMethod?: 'camera' | 'manual';
+            supplierName?: string;
+            supplierIce?: string;
+            supplierPhone?: string;
+            invoiceNumber?: string;
+            invoiceDate?: string;
+            dueDate?: string;
+            manualTotalAmount?: string;
+            paidAmount?: string;
+            invoiceNotes?: string;
+            items?: ScannedLineItem[];
+          };
+          const hasItems = Array.isArray(parsedDraft.items) && parsedDraft.items.length > 0;
+          if (hasItems || parsedDraft.supplierName || parsedDraft.manualTotalAmount) {
+            if (parsedDraft.invoiceMode) setInvoiceMode(parsedDraft.invoiceMode);
+            if (parsedDraft.supplierName) setSupplierName(parsedDraft.supplierName);
+            if (parsedDraft.supplierIce) setSupplierIce(parsedDraft.supplierIce);
+            if (parsedDraft.supplierPhone) setSupplierPhone(parsedDraft.supplierPhone);
+            if (parsedDraft.invoiceNumber) setInvoiceNumber(parsedDraft.invoiceNumber);
+            if (parsedDraft.invoiceDate) setInvoiceDate(parsedDraft.invoiceDate);
+            if (parsedDraft.dueDate) setDueDate(parsedDraft.dueDate);
+            if (parsedDraft.manualTotalAmount) setManualTotalAmount(parsedDraft.manualTotalAmount);
+            if (parsedDraft.paidAmount) setPaidAmount(parsedDraft.paidAmount);
+            if (parsedDraft.invoiceNotes) setInvoiceNotes(parsedDraft.invoiceNotes);
+            if (hasItems && parsedDraft.items) setItems(parsedDraft.items);
+            setHasSavedDraftBanner(true);
+            setIsOpen(true);
+            return;
+          }
+        }
+      } catch {
+        // ignore corrupt draft
+      }
+
       setIsOpen(true);
       if (!startManual) {
         // Ask for Camera permission & open fast camera when opening in camera mode
@@ -766,6 +886,7 @@ export const PurchaseInvoiceScanModal: React.FC = () => {
 
       let base64 = '';
       let requestMimeType = 'image/jpeg';
+      setSharpnessNotice(null);
 
       if (isPdfFile) {
         if (blob.size > 18 * 1024 * 1024) {
@@ -789,13 +910,85 @@ export const PurchaseInvoiceScanModal: React.FC = () => {
         const prepared = await prepareInvoiceImageForVision(blob, 2200, 0.9, nextRotation);
         base64 = prepared.base64;
         setPreviewDataUrl(prepared.dataUrl);
+
+        // Quick client-side image sharpness & lighting audit (helps merchants retake blurry/dark shots)
+        try {
+          const checkImg = await loadBlobToImage(blob);
+          const sharpness = assessImageSharpness(checkImg);
+          const isTooDark = sharpness.reason === 'dark' || sharpness.meanLuminance < 65;
+          if (sharpness.isBlurry || isTooDark) {
+            setSharpnessNotice({
+              isBlurry: sharpness.isBlurry,
+              isTooDark,
+              message: isTooDark
+                ? isAr
+                  ? 'الصورة مظلمة شوية — شغّل الفلاش باش تكون الأرقام أوضح.'
+                  : 'Photo looks dark — turn on Flash for clearer invoice digits.'
+                : isAr
+                ? 'الصورة مهزوزة شوية — إلا كانت الأرقام ما واضحاش عاود صورها قريبة وثابتة.'
+                : 'Photo looks slightly blurry — retake closer and steady if numbers look off.'
+            });
+          }
+        } catch {
+          // Sharpness check optional
+        }
       }
 
+      const tryOfflineOcrFallback = async (reasonPrefixAr: string, reasonPrefixEn: string): Promise<boolean> => {
+        if (isPdfFile) return false;
+        try {
+          const img = await loadBlobToImage(blob);
+          const offlineResult = await runOfflineInvoiceNumberOcr(img);
+          if (offlineResult.detectedTotal > 0 && !manualTotalAmount) {
+            setManualTotalAmount(offlineResult.detectedTotal.toFixed(2));
+          }
+          if (offlineResult.rows.length > 0) {
+            const offlineRows: ScannedLineItem[] = offlineResult.rows.map((row, idx) => {
+              const cost = row.unitCost > 0 ? row.unitCost : row.lineTotal / Math.max(1, row.quantity);
+              const total = row.lineTotal > 0 ? row.lineTotal : Number((row.quantity * cost).toFixed(2));
+              const suggestedSell = cost > 0 ? Number((cost * 1.2).toFixed(2)) : 0;
+              return {
+                id: `offline-ocr-${Date.now()}-${idx}`,
+                include: true,
+                barcode: '',
+                rawName: '',
+                matchedProductId: '',
+                quantity: Math.max(1, Number(row.quantity) || 1),
+                unitCost: Number(Math.max(0, cost).toFixed(2)),
+                lineTotal: Number(Math.max(0, total).toFixed(2)),
+                sellPrice: suggestedSell,
+                suggestedMarginPct: 20,
+                unitType: 'piece',
+                source: 'vision',
+                linePreviewDataUrl: row.linePreviewDataUrl
+              };
+            });
+            setItems(offlineRows);
+            setScanNotice(
+              isAr
+                ? `${reasonPrefixAr} — تقراو ${offlineRows.length} سطور بالأرقام محلياً (اختار سمية كل سلعة من القائمة بجانب الصورة).`
+                : `${reasonPrefixEn} — Extracted ${offlineRows.length} numeric rows locally (pick each product name next to its snippet).`
+            );
+            if (settings.enableSoundEffects) playSound('success');
+            setIsScanning(false);
+            return true;
+          }
+        } catch {
+          // ignore offline OCR fallback errors
+        }
+        return false;
+      };
+
       if (typeof navigator !== 'undefined' && !navigator.onLine) {
+        const ok = await tryOfflineOcrFallback(
+          '📴 وضع أوفلاين (بدون أنترنت)',
+          '📴 Offline Mode'
+        );
+        if (ok) return;
         setScanError(
           isAr
-            ? 'ما كاينش أنترنت دابا باش Gemini Vision يقرا الفاتورة. شغّل الأنترنت واضغط "حاول مرة أخرى" أو دخّل يدوياً.'
-            : 'No internet connection for Gemini Vision. Reconnect and retry, or enter manually.'
+            ? 'ما كاينش أنترنت دابا وما تقدرناش نقراو سطور واضحين أوفلاين. شغّل الأنترنت واضغط "حاول مرة أخرى" أو دخّل يدوياً.'
+            : 'Offline and no clear rows detected locally. Reconnect and retry, or enter manually.'
         );
         setIsScanning(false);
         return;
@@ -815,6 +1008,11 @@ export const PurchaseInvoiceScanModal: React.FC = () => {
       if (controller.signal.aborted) return;
 
       if (!res.ok || parsed.isNonJson || !parsed.data) {
+        const offlineRecovered = await tryOfflineOcrFallback(
+          '⚡ قراءة محلية سريعة (تعذر خادم Vision)',
+          '⚡ Local OCR Fallback'
+        );
+        if (offlineRecovered) return;
         const errPayload = !Array.isArray(parsed.data) ? parsed.data?.error : undefined;
         setScanError(
           errPayload ||
@@ -865,6 +1063,11 @@ export const PurchaseInvoiceScanModal: React.FC = () => {
       }
 
       if (visionItems.length === 0) {
+        const offlineRecovered = await tryOfflineOcrFallback(
+          '⚡ قراءة الأرقام محلياً',
+          '⚡ Local Numeric Fallback'
+        );
+        if (offlineRecovered) return;
         setScanError(
           isAr
             ? 'ما قراش السلع واضحين. عاود صور الفاتورة قريبة، من الفوق، فالضو — ولا اضغط "دخل يدوياً".'
@@ -1203,11 +1406,11 @@ export const PurchaseInvoiceScanModal: React.FC = () => {
         return;
       }
       const cleanIceDigits = supplierIce.replace(/[^0-9]/g, '');
-      if (cleanIceDigits.length !== 15) {
+      if (cleanIceDigits.length > 0 && cleanIceDigits.length !== 15 && !allowMissingIce) {
         setScanError(
           isAr
-            ? 'ICE خاصو يكون 15 رقم بالضبط'
-            : 'ICE must be exactly 15 digits'
+            ? 'رقم ICE غير مكتمل (خاصو 15 رقم أو امسحو إذا ما كاينش فالبون).'
+            : 'ICE must be 15 digits or cleared if not printed on the slip.'
         );
         return;
       }
@@ -1355,6 +1558,7 @@ export const PurchaseInvoiceScanModal: React.FC = () => {
         ? `✅ تزادت الكميات فـ المخزون (${updatedExistingCount} محدثة، ${createdNewCount} جديدة) فـ وضع نوار/بوار بلا تسجيل أرقام.`
         : `✅ Stock updated (${updatedExistingCount + createdNewCount} items) in Stock-Only mode (no archive).`;
 
+    clearSavedDraft();
     setCompletedMessage(doneText);
     window.dispatchEvent(
       new CustomEvent('kadi:purchase-invoice-completed', {
@@ -1365,6 +1569,22 @@ export const PurchaseInvoiceScanModal: React.FC = () => {
     window.setTimeout(() => {
       closeModal();
     }, 1500);
+  };
+
+  const applyBatchMarginToNewItems = (marginPct: number) => {
+    setItems((prev) =>
+      prev.map((it) => {
+        if (it.unitCost <= 0) return it;
+        if (it.matchedProductId) return it;
+        const computedSell = Number((it.unitCost * (1 + marginPct / 100)).toFixed(2));
+        return {
+          ...it,
+          sellPrice: computedSell,
+          suggestedMarginPct: marginPct
+        };
+      })
+    );
+    if (settings.enableSoundEffects) playSound('click');
   };
 
   if (!isOpen) return null;
@@ -1412,6 +1632,27 @@ export const PurchaseInvoiceScanModal: React.FC = () => {
 
         {/* Scrollable Body */}
         <form onSubmit={handleConfirmRestock} className="flex-1 overflow-y-auto p-4 sm:p-5 space-y-4">
+          {/* DRAFT RECOVERY BANNER */}
+          {hasSavedDraftBanner && (
+            <div className="px-3.5 py-2 rounded-2xl bg-indigo-50 dark:bg-indigo-950/40 border border-indigo-200 dark:border-indigo-800 flex flex-wrap items-center justify-between gap-2 text-xs">
+              <span className="font-bold text-indigo-900 dark:text-indigo-200">
+                {isAr
+                  ? '💾 تم استرجاع مسودة الفاتورة غير المكتملة تلقائياً.'
+                  : '💾 Restored your unsaved invoice draft.'}
+              </span>
+              <button
+                type="button"
+                onClick={() => {
+                  clearSavedDraft();
+                  resetFormState(invoiceMode, entryMethod);
+                }}
+                className="px-2.5 py-1 rounded-lg bg-white dark:bg-slate-900 border border-indigo-300 dark:border-indigo-700 text-[11px] font-black text-indigo-700 dark:text-indigo-300 hover:bg-indigo-100"
+              >
+                {isAr ? 'مسح المسودة والبدء من جديد' : 'Clear Draft'}
+              </button>
+            </div>
+          )}
+
           {/* ENTRY METHOD SWITCHER: Camera Scan vs Direct Manual Entry */}
           <div className="grid grid-cols-2 gap-2 p-1 rounded-2xl bg-slate-100 dark:bg-slate-800/80 border border-slate-200 dark:border-slate-700">
             <button
@@ -1740,6 +1981,14 @@ export const PurchaseInvoiceScanModal: React.FC = () => {
                   className="w-full max-h-72 object-cover"
                 />
 
+                {/* Corner alignment frame for faster steady receipt capture */}
+                <div className="absolute inset-4 pointer-events-none">
+                  <div className="absolute top-0 start-0 w-5 h-5 border-t-2 border-s-2 border-amber-400/90 rounded-tl-md" />
+                  <div className="absolute top-0 end-0 w-5 h-5 border-t-2 border-e-2 border-amber-400/90 rounded-tr-md" />
+                  <div className="absolute bottom-10 start-0 w-5 h-5 border-b-2 border-s-2 border-amber-400/90 rounded-bl-md" />
+                  <div className="absolute bottom-10 end-0 w-5 h-5 border-b-2 border-e-2 border-amber-400/90 rounded-br-md" />
+                </div>
+
                 {/* Screen Fill-Light Flash Assist overlay when hardware LED flash isn't present */}
                 {flashOn && !torchSupported && (
                   <div className="absolute inset-0 bg-white/30 pointer-events-none mix-blend-screen" />
@@ -1992,6 +2241,31 @@ export const PurchaseInvoiceScanModal: React.FC = () => {
             </div>
           )}
 
+          {sharpnessNotice && !isLiveCameraOpen && (
+            <div className="px-3.5 py-2.5 rounded-2xl bg-amber-50 dark:bg-amber-950/40 border border-amber-300 dark:border-amber-700 text-amber-900 dark:text-amber-200 text-xs font-bold flex flex-wrap items-center justify-between gap-2">
+              <div className="flex items-center gap-2">
+                <AlertTriangle className="w-4 h-4 text-amber-600 shrink-0" />
+                <span>{sharpnessNotice.message}</span>
+              </div>
+              <button
+                type="button"
+                onClick={() => {
+                  if (sharpnessNotice.isTooDark) setFlashOn(true);
+                  void startLiveCamera();
+                }}
+                className="px-2.5 py-1 rounded-lg bg-amber-400 hover:bg-amber-500 text-slate-950 text-[11px] font-black shrink-0"
+              >
+                {sharpnessNotice.isTooDark
+                  ? isAr
+                    ? 'عاود بالفلاش'
+                    : 'Retake + Flash'
+                  : isAr
+                  ? 'عاود التصوير'
+                  : 'Retake Photo'}
+              </button>
+            </div>
+          )}
+
           {scanError && (
             <div className="p-4 rounded-2xl border bg-rose-50 dark:bg-rose-950/45 border-rose-300 dark:border-rose-800 text-rose-900 dark:text-rose-200 space-y-2.5">
               <div className="flex items-start gap-2.5 text-xs font-black">
@@ -2010,6 +2284,21 @@ export const PurchaseInvoiceScanModal: React.FC = () => {
                     <span>{isAr ? 'حاول مرة أخرى' : 'Try Again'}</span>
                   </button>
                 )}
+                {supplierIce.replace(/[^0-9]/g, '').length > 0 &&
+                  supplierIce.replace(/[^0-9]/g, '').length < 15 &&
+                  !allowMissingIce && (
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setSupplierIce('');
+                        setAllowMissingIce(true);
+                        setScanError(null);
+                      }}
+                      className="px-3.5 py-2 rounded-xl bg-white dark:bg-slate-900 border border-rose-300 dark:border-rose-700 text-rose-700 dark:text-rose-300 text-xs font-black"
+                    >
+                      {isAr ? 'حفظ بدون ICE' : 'Save Without ICE'}
+                    </button>
+                  )}
                 <button
                   type="button"
                   onClick={addManualLineAndFocus}
@@ -2107,13 +2396,13 @@ export const PurchaseInvoiceScanModal: React.FC = () => {
                 <div>
                   <div className="flex items-center justify-between gap-1 mb-1">
                     <label className="block font-bold text-slate-700 dark:text-slate-300">
-                      {isAr ? 'رقم ICE (15 رقم) *' : 'ICE Number (15 digits) *'}
+                      {isAr ? 'رقم ICE (اختياري / 15 رقم)' : 'ICE Number (Optional / 15 digits)'}
                     </label>
                     <span
                       className={`text-[10px] font-mono font-black tabular-nums ${
                         supplierIce.replace(/[^0-9]/g, '').length === 15
                           ? 'text-emerald-600 dark:text-emerald-400'
-                          : 'text-amber-600 dark:text-amber-400'
+                          : 'text-slate-400'
                       }`}
                     >
                       {supplierIce.replace(/[^0-9]/g, '').length}/15
@@ -2324,6 +2613,24 @@ export const PurchaseInvoiceScanModal: React.FC = () => {
                 </span>
               </h3>
               <div className="flex flex-wrap items-center gap-2">
+                {items.some((it) => !it.matchedProductId && it.unitCost > 0) &&
+                  invoiceMode !== 'informal_noir' && (
+                    <div className="flex items-center gap-1 bg-slate-100 dark:bg-slate-800 px-2 py-1 rounded-xl border border-slate-200 dark:border-slate-700">
+                      <span className="text-[10px] font-bold text-slate-500 dark:text-slate-400">
+                        {isAr ? 'هامش الجدد:' : 'New margin:'}
+                      </span>
+                      {[10, 15, 20, 30].map((pct) => (
+                        <button
+                          key={pct}
+                          type="button"
+                          onClick={() => applyBatchMarginToNewItems(pct)}
+                          className="px-1.5 py-0.5 rounded-md bg-white dark:bg-slate-900 hover:bg-emerald-50 dark:hover:bg-emerald-950 border border-slate-200 dark:border-slate-700 text-[10px] font-black text-emerald-700 dark:text-emerald-400 tabular-nums"
+                        >
+                          +{pct}%
+                        </button>
+                      ))}
+                    </div>
+                  )}
                 <button
                   type="button"
                   onClick={() => {
@@ -2419,6 +2726,13 @@ export const PurchaseInvoiceScanModal: React.FC = () => {
                           />
                         </td>
                         <td className="py-2 px-2.5 min-w-[175px] space-y-1">
+                          {it.linePreviewDataUrl && (
+                            <img
+                              src={it.linePreviewDataUrl}
+                              alt={isAr ? 'سطر من الفاتورة' : 'Receipt line snippet'}
+                              className="w-full h-8 object-contain rounded bg-white border border-slate-200 dark:border-slate-700 mb-1"
+                            />
+                          )}
                           <input
                             ref={idx === 0 ? firstRowInputRef : undefined}
                             type="text"

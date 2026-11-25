@@ -131,6 +131,10 @@ export const CartRegister: React.FC<CartRegisterProps> = ({
   const [pendingQuickCredit, setPendingQuickCredit] = useState(false);
   const [showTodaySalesList, setShowTodaySalesList] = useState(false);
 
+  // Inline cart item quantity editor state
+  const [editingQtyId, setEditingQtyId] = useState<string | null>(null);
+  const [editingQtyDraft, setEditingQtyDraft] = useState<string>('');
+
   const todaySalesSummary = useMemo(() => {
     const todayStr = new Date().toDateString();
     const todayOrders = orders.filter(
@@ -218,6 +222,64 @@ export const CartRegister: React.FC<CartRegisterProps> = ({
     setHoldTitle('');
     setShowHoldModal(false);
   };
+
+  const commitInlineQuantity = (item: CartItem) => {
+    const raw = parseFloat(editingQtyDraft.replace(',', '.'));
+    setEditingQtyId(null);
+    if (!Number.isFinite(raw) || raw <= 0) {
+      return;
+    }
+    const cleanQty = Number(raw.toFixed(2));
+    const targetProd = products.find((p) => p.id === item.productId);
+    if (targetProd) {
+      const otherCartQty = cart
+        .filter((ci) => ci.productId === item.productId && ci.id !== item.id)
+        .reduce((sum, ci) => sum + ci.quantity, 0);
+      const maxAllowed = Math.max(0, Number((targetProd.stock - otherCartQty).toFixed(2)));
+      if (cleanQty > maxAllowed) {
+        playSound('error');
+        setStockLimitNotice(
+          isAr
+            ? `نفذ - المتوفر من ${item.productName} هو ${maxAllowed}`
+            : isFr
+            ? `Stock max pour ${item.productNameEn || item.productName}: ${maxAllowed}`
+            : `Max available for ${item.productNameEn || item.productName}: ${maxAllowed}`
+        );
+        if (stockNoticeTimerRef.current) window.clearTimeout(stockNoticeTimerRef.current);
+        stockNoticeTimerRef.current = window.setTimeout(() => setStockLimitNotice(null), 2600);
+        if (maxAllowed > 0) {
+          setCartItemQuantity(item.id, maxAllowed);
+        }
+        return;
+      }
+    }
+    setCartItemQuantity(item.id, cleanQty);
+  };
+
+  // F8 = 1-tap Quick Cash, F9 = Detailed Checkout when cart has items
+  useEffect(() => {
+    const handleCheckoutShortcuts = (e: KeyboardEvent) => {
+      if (cart.length === 0) return;
+      if (
+        showAddCustomerModal ||
+        showDiscountModal ||
+        showHoldModal ||
+        showQuickCreditModal ||
+        showPriceOverrideModal
+      ) {
+        return;
+      }
+      if (e.key === 'F8') {
+        e.preventDefault();
+        handleInstantCashCheckout();
+      } else if (e.key === 'F9') {
+        e.preventDefault();
+        onOpenCheckout();
+      }
+    };
+    window.addEventListener('keydown', handleCheckoutShortcuts);
+    return () => window.removeEventListener('keydown', handleCheckoutShortcuts);
+  });
 
   return (
     <div className="w-full lg:w-96 xl:w-[420px] flex flex-col h-full bg-white dark:bg-slate-900 border-l rtl:border-l-0 rtl:border-r border-slate-200 dark:border-slate-800 shrink-0">
@@ -393,9 +455,33 @@ export const CartRegister: React.FC<CartRegisterProps> = ({
         {cart.length === 0 ? (
           <div className="flex flex-col items-center justify-center h-full text-center p-6 text-slate-400">
             <ShoppingBag className="w-12 h-12 mb-3 stroke-1 text-slate-300 dark:text-slate-700" />
-            <p className="text-xs font-semibold leading-relaxed max-w-[200px]">
+            <p className="text-xs font-semibold leading-relaxed max-w-[220px]">
               {t.empty_cart}
             </p>
+            <div className="mt-4 flex flex-wrap items-center justify-center gap-2">
+              {heldTickets.length > 0 && (
+                <button
+                  type="button"
+                  onClick={onOpenHeldTickets}
+                  className="px-3 py-1.5 rounded-xl bg-amber-50 dark:bg-amber-950/40 border border-amber-200 dark:border-amber-800 text-amber-700 dark:text-amber-300 text-[11px] font-extrabold flex items-center gap-1.5 hover:bg-amber-100 transition-colors"
+                >
+                  <PauseCircle className="w-3.5 h-3.5" />
+                  <span>
+                    {isAr ? `فواتير معلقة (${heldTickets.length})` : `Held (${heldTickets.length})`}
+                  </span>
+                </button>
+              )}
+              {todaySalesSummary.count > 0 && (
+                <button
+                  type="button"
+                  onClick={() => setCurrentTab('orders')}
+                  className="px-3 py-1.5 rounded-xl bg-emerald-50 dark:bg-emerald-950/40 border border-emerald-200 dark:border-emerald-800 text-emerald-700 dark:text-emerald-300 text-[11px] font-extrabold flex items-center gap-1.5 hover:bg-emerald-100 transition-colors"
+                >
+                  <Receipt className="w-3.5 h-3.5" />
+                  <span>{isAr ? `سجل اليوم (${todaySalesSummary.count})` : `Today (${todaySalesSummary.count})`}</span>
+                </button>
+              )}
+            </div>
           </div>
         ) : (
           <>
@@ -569,9 +655,39 @@ export const CartRegister: React.FC<CartRegisterProps> = ({
                       >
                         -
                       </button>
-                      <span className="w-10 text-center font-bold text-xs tabular-nums text-slate-900 dark:text-white">
-                        {item.quantity}
-                      </span>
+                      {editingQtyId === item.id ? (
+                        <input
+                          type="text"
+                          inputMode="decimal"
+                          autoFocus
+                          value={editingQtyDraft}
+                          onFocus={(e) => e.target.select()}
+                          onChange={(e) => setEditingQtyDraft(e.target.value)}
+                          onBlur={() => commitInlineQuantity(item)}
+                          onKeyDown={(e) => {
+                            if (e.key === 'Enter') {
+                              e.preventDefault();
+                              commitInlineQuantity(item);
+                            } else if (e.key === 'Escape') {
+                              setEditingQtyId(null);
+                            }
+                          }}
+                          className="w-12 h-6 text-center font-bold text-xs tabular-nums bg-white dark:bg-slate-900 border border-emerald-500 rounded-md text-slate-900 dark:text-white focus:outline-none"
+                        />
+                      ) : (
+                        <button
+                          type="button"
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            setEditingQtyId(item.id);
+                            setEditingQtyDraft(String(item.quantity));
+                          }}
+                          className="w-10 h-6 rounded-md text-center font-bold text-xs tabular-nums text-slate-900 dark:text-white hover:bg-white dark:hover:bg-slate-700 transition-colors cursor-text"
+                          title={isAr ? 'اضغط لتعديل الكمية مباشرة' : 'Click to edit quantity'}
+                        >
+                          {item.quantity}
+                        </button>
+                      )}
                       <button
                         type="button"
                         onClick={(e) => {
@@ -692,9 +808,11 @@ export const CartRegister: React.FC<CartRegisterProps> = ({
               type="button"
               onClick={handleInstantCashCheckout}
               className="py-3 px-3 rounded-xl font-black text-sm text-white bg-emerald-600 hover:bg-emerald-700 active:scale-[0.98] transition-all flex items-center justify-center gap-1.5 shadow-md shadow-emerald-600/20"
+              title={isAr ? 'دفع نقدي فوري (F8)' : 'Quick Cash (F8)'}
             >
               <Banknote className="w-4 h-4 shrink-0" />
               <span>{isAr ? 'خلص كاش' : isFr ? 'Cash Rapide' : 'Quick Cash'}</span>
+              <kbd className="hidden xl:inline-block px-1 py-0.5 text-[9px] font-mono rounded bg-emerald-700/80 text-emerald-100">F8</kbd>
             </button>
 
             <button
@@ -712,10 +830,12 @@ export const CartRegister: React.FC<CartRegisterProps> = ({
             type="button"
             onClick={onOpenCheckout}
             className="w-full py-2.5 px-4 rounded-xl font-extrabold text-xs sm:text-sm text-slate-700 dark:text-slate-200 bg-white dark:bg-slate-800 border border-slate-200 dark:border-slate-700 hover:border-emerald-500 active:scale-[0.99] transition-all flex items-center justify-between"
+            title={isAr ? 'فتح الدفع المفصل (F9)' : 'Detailed Checkout (F9)'}
           >
             <div className="flex items-center gap-2">
               <CreditCard className="w-4 h-4 text-emerald-600 dark:text-emerald-400" />
               <span>{isAr ? 'دفع مفصل / طرق أخرى (بطاقة، نقط...)' : t.charge}</span>
+              <kbd className="hidden xl:inline-block px-1.5 py-0.5 text-[10px] font-mono rounded bg-slate-100 dark:bg-slate-700 text-slate-500 dark:text-slate-300">F9</kbd>
             </div>
             <span className="tabular-nums font-mono text-sm font-black tracking-wide text-emerald-700 dark:text-emerald-400">
               {cartGrandTotal.toFixed(2)} {currencySymbol}

@@ -51,6 +51,7 @@ export const BulkUpdateModal: React.FC<BulkUpdateModalProps> = ({
   const parsedStockVal = parseFloat(stockValueInput.replace(',', '.'));
   const stockValue = Number.isFinite(parsedStockVal) && parsedStockVal >= 0 ? parsedStockVal : 0;
   const [stockReason, setStockReason] = useState<string>('');
+  const [validationError, setValidationError] = useState<string | null>(null);
 
   if (!isOpen || selectedProducts.length === 0) return null;
 
@@ -118,9 +119,14 @@ export const BulkUpdateModal: React.FC<BulkUpdateModalProps> = ({
   const handleSubmit = (e: React.FormEvent) => {
     e.preventDefault();
     if (!applyPriceUpdate && !applyStockUpdate) {
-      alert(isAr ? 'يرجى تفعيل خيار تعديل الأسعار أو المخزون على الأقل.' : 'Please select at least one update option (Price or Stock).');
+      setValidationError(
+        isAr
+          ? 'يرجى تفعيل خيار تعديل الأسعار أو المخزون على الأقل.'
+          : 'Please select at least one update option (Price or Stock).'
+      );
       return;
     }
+    setValidationError(null);
 
     const updates = selectedProducts.map((p) => {
       const changes: Partial<Product> = {};
@@ -485,6 +491,16 @@ export const BulkUpdateModal: React.FC<BulkUpdateModalProps> = ({
                   </div>
                 )}
               </div>
+            </div>
+          )}
+
+          {validationError && (
+            <div
+              role="alert"
+              className="p-3 rounded-xl bg-rose-50 dark:bg-rose-950/50 border border-rose-200 dark:border-rose-800 text-rose-700 dark:text-rose-300 text-xs font-bold flex items-center gap-2"
+            >
+              <AlertCircle className="w-4 h-4 shrink-0" />
+              <span>{validationError}</span>
             </div>
           )}
 

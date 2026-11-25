@@ -67,6 +67,7 @@ export const ImportProductsModal: React.FC<ImportProductsModalProps> = ({
   const [isProcessing, setIsProcessing] = useState<boolean>(false);
   const [searchPreview, setSearchPreview] = useState<string>('');
   const [filterValidOnly, setFilterValidOnly] = useState<boolean>(false);
+  const [uploadError, setUploadError] = useState<string | null>(null);
 
   // Import Result Stats
   const [resultStats, setResultStats] = useState<{
@@ -208,6 +209,7 @@ export const ImportProductsModal: React.FC<ImportProductsModalProps> = ({
   };
 
   const processFile = (file: File) => {
+    setUploadError(null);
     setFileName(file.name);
     setFileSize((file.size / 1024).toFixed(1) + ' KB');
     setIsProcessing(true);
@@ -225,7 +227,8 @@ export const ImportProductsModal: React.FC<ImportProductsModalProps> = ({
         });
 
         if (jsonRows.length === 0) {
-          alert(isAr ? 'الملف فارغ أو لا يحتوي على بيانات صالحة' : 'The file is empty');
+          playSound('error');
+          setUploadError(isAr ? 'الملف فارغ أو لا يحتوي على بيانات صالحة' : 'The file is empty or has no valid rows');
           setIsProcessing(false);
           return;
         }
@@ -399,7 +402,8 @@ export const ImportProductsModal: React.FC<ImportProductsModalProps> = ({
         setStep('preview');
         playSound('beep');
       } catch (err: any) {
-        alert(isAr ? `حدث خطأ أثناء قراءة الملف: ${err.message}` : `Error reading file: ${err.message}`);
+        playSound('error');
+        setUploadError(isAr ? `حدث خطأ أثناء قراءة الملف: ${err.message}` : `Error reading file: ${err.message}`);
       } finally {
         setIsProcessing(false);
       }
@@ -516,6 +520,25 @@ export const ImportProductsModal: React.FC<ImportProductsModalProps> = ({
           {/* STEP 1: Upload or Download Template */}
           {step === 'upload' && (
             <div className="space-y-6">
+              {uploadError && (
+                <div
+                  role="alert"
+                  className="p-3.5 rounded-2xl bg-rose-50 dark:bg-rose-950/50 border border-rose-200 dark:border-rose-800 text-rose-700 dark:text-rose-300 text-xs font-bold flex items-center justify-between gap-2"
+                >
+                  <div className="flex items-center gap-2">
+                    <AlertTriangle className="w-4 h-4 shrink-0" />
+                    <span>{uploadError}</span>
+                  </div>
+                  <button
+                    type="button"
+                    onClick={() => setUploadError(null)}
+                    className="p-1 rounded-lg hover:bg-rose-100 dark:hover:bg-rose-900/50"
+                  >
+                    <X className="w-4 h-4" />
+                  </button>
+                </div>
+              )}
+
               {/* Ready Template Download Banner */}
               <div className="p-4 rounded-2xl bg-emerald-50/70 dark:bg-emerald-950/40 border border-emerald-200 dark:border-emerald-800/60 flex flex-col sm:flex-row items-start sm:items-center justify-between gap-4">
                 <div className="flex items-start gap-3">

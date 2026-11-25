@@ -203,6 +203,7 @@ export const InventoryView: React.FC = () => {
   const [showBulkModal, setShowBulkModal] = useState(false);
   const [showBarcodeScanner, setShowBarcodeScanner] = useState(false);
   const [showCatalogGmailModal, setShowCatalogGmailModal] = useState(false);
+  const [showSeedDemoConfirm, setShowSeedDemoConfirm] = useState(false);
   const [selectedProductForAdjust, setSelectedProductForAdjust] = useState<Product | null>(null);
   const [productToast, setProductToast] = useState<string | null>(null);
   const [highlightedProductId, setHighlightedProductId] = useState<string | null>(null);
@@ -894,11 +895,7 @@ export const InventoryView: React.FC = () => {
             </button>
 
             <button
-              onClick={() => {
-                if (confirm(isAr ? 'هل تريد توليد وتجربة كتالوج ضخم يحتوي على أكثر من 2000 صنف غذائي مغربي متنوع لاختبار سعة وسرعة النظام؟' : 'Generate 2,000+ Moroccan grocery items demo?')) {
-                  seedLargeCatalogDemo(2000);
-                }
-              }}
+              onClick={() => setShowSeedDemoConfirm(true)}
               className="px-3 py-2 text-xs font-bold rounded-xl bg-purple-50 dark:bg-purple-950/40 border border-purple-200 dark:border-purple-800 text-purple-700 dark:text-purple-300 hover:bg-purple-100 transition-colors flex items-center gap-1.5 shadow-2xs"
               title={isAr ? 'توليد واختبار أكثر من 2000 منتج مغربي فوراً' : 'Generate 2,000+ products demo'}
             >
@@ -2520,6 +2517,53 @@ export const InventoryView: React.FC = () => {
         onClose={() => setShowCatalogGmailModal(false)}
         selectedProducts={selectedProductsList}
       />
+
+      {showSeedDemoConfirm && (
+        <div
+          className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-slate-950/65 backdrop-blur-xs"
+          onClick={() => setShowSeedDemoConfirm(false)}
+        >
+          <div
+            onClick={(e) => e.stopPropagation()}
+            className="w-full max-w-sm bg-white dark:bg-slate-900 rounded-2xl p-5 shadow-2xl border border-slate-200 dark:border-slate-800 space-y-4 animate-in fade-in zoom-in-95 duration-150"
+          >
+            <div className="flex items-start gap-3">
+              <div className="w-10 h-10 rounded-xl bg-purple-100 dark:bg-purple-950/60 text-purple-600 dark:text-purple-400 flex items-center justify-center shrink-0">
+                <Sparkles className="w-5 h-5" />
+              </div>
+              <div>
+                <h3 className="font-extrabold text-sm text-slate-900 dark:text-white">
+                  {isAr ? 'توليد كتالوج تجريبي (+2000 صنف)' : 'Generate 2,000+ Demo Items'}
+                </h3>
+                <p className="text-xs text-slate-600 dark:text-slate-400 mt-1 leading-relaxed">
+                  {isAr
+                    ? 'هل تريد توليد كتالوج ضخم يحتوي على أكثر من 2000 صنف غذائي مغربي متنوع لاختبار سعة وسرعة النظام؟'
+                    : 'Generate 2,000+ Moroccan grocery items to test catalog speed and capacity?'}
+                </p>
+              </div>
+            </div>
+            <div className="flex items-center justify-end gap-2 pt-1">
+              <button
+                type="button"
+                onClick={() => setShowSeedDemoConfirm(false)}
+                className="px-4 py-2 rounded-xl border border-slate-200 dark:border-slate-700 text-xs font-bold text-slate-600 dark:text-slate-300 hover:bg-slate-100 dark:hover:bg-slate-800"
+              >
+                {isAr ? 'إلغاء' : 'Cancel'}
+              </button>
+              <button
+                type="button"
+                onClick={() => {
+                  setShowSeedDemoConfirm(false);
+                  seedLargeCatalogDemo(2000);
+                }}
+                className="px-4 py-2 rounded-xl bg-purple-600 hover:bg-purple-700 text-white text-xs font-extrabold shadow-xs"
+              >
+                {isAr ? 'توليد +2000 صنف' : 'Generate 2,000+'}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 };

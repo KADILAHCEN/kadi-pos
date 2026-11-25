@@ -475,11 +475,11 @@ If audio is provided, transcribe what was said verbatim into "transcript" in Ara
 
       const cleanBase64 = imageBase64.replace(/^data:[^;]+;base64,/, '');
 
-      const visionItemsInstruction = `You are a world-class multimodal document Vision AI specialized in reading ANY Moroccan invoice (photo or PDF), wholesale receipt, dairy delivery slip, thermal supermarket ticket, or handwritten hanout carnet/bon.
-Understand the FULL document visually just like Meta AI:
+      const visionInvoiceInstruction = `You are a world-class multimodal document Vision AI specialized in reading ANY Moroccan invoice (photo or PDF), wholesale receipt, dairy delivery slip, thermal supermarket ticket, or handwritten hanout carnet/bon.
+Understand the FULL document visually:
 1. AUTO-CORRECT SCENE & GEOMETRY:
    - The paper may be tilted, rotated sideways/upside-down, crumpled, wrinkled, creased, poorly lit, a multi-page PDF, or photographed on a patterned Moroccan carpet (زربية), wooden table, tiled floor, or counter.
-   - Ignore the carpet/background completely, mentally straighten and un-wrinkle the invoice, and read the whole document with full visual layout comprehension — NOT naive flat-line OCR.
+   - Ignore the carpet/background completely, mentally straighten and un-wrinkle the invoice, and read the whole document with full visual layout comprehension.
 2. SUPPORT ANY MOROCCAN HANOUT & WHOLESALE INVOICE FORMAT:
    - ATACADAO, Marjane, Carrefour, Bim, Metro, Supeco, Asswak Assalam.
    - Dairy / الحليبة delivery slips & invoices: Centrale Danone (سنطرال / دانون), Jibal (جبال), Colainor (كولينور), Jaouda (جودة), Chergui (شرقي), Copag.
@@ -492,11 +492,11 @@ Understand the FULL document visually just like Meta AI:
    - If "prix" (unit price) is missing but "total" and "quantite" are visible, compute prix = total / quantite.
    - If "total" is missing but "quantite" and "prix" are visible, compute total = quantite * prix.
    - If no barcode/EAN is printed on that line, return "" for "barcode".
-   - Skip footer/summary/payment rows (TOTAL, TOTAL TTC, TOTAL HT, TVA, SOUS-TOTAL, NET A PAYER, ESPECE, RENDU, TIMBRE, ICE, IF, RC).
-4. OUTPUT FORMAT (STRICT):
-   - Return ONLY a JSON array of objects matching exactly: [{"barcode": "", "nom": "...", "quantite": 0, "prix": 0, "total": 0}]`;
+   - Skip footer/summary/payment rows (TOTAL, TOTAL TTC, TOTAL HT, TVA, SOUS-TOTAL, NET A PAYER, ESPECE, RENDU, TIMBRE, ICE, IF, RC) from "items", and put document totals & supplier header in "invoice".
+4. HEADER METADATA ("invoice"):
+   - Extract supplierName, supplierIce (exact 15 digits only if printed, else ""), supplierPhone, invoiceNumber, invoiceDate (YYYY-MM-DD if present else ""), hasOfficialMarkers, isHandwritten, totalHt, tvaAmount, totalTtc, totalAmount.`;
 
-      const callVisionItems = () =>
+      const callUnifiedVision = () =>
         ai.models.generateContent({
           model: GEMINI_MODEL,
           contents: {
@@ -508,102 +508,79 @@ Understand the FULL document visually just like Meta AI:
                 }
               },
               {
-                text: 'Read the full Moroccan invoice document (photo or PDF: ATACADAO, dairy/الحليبة like Centrale/Danone/Jibal/Colainor, wholesale, or handwritten bon; auto-correct tilt, wrinkles, rotation, or carpet background). Extract every product with barcode (digits if printed else ""), nom, quantite, prix (unit cost MAD), and total (line total MAD). Return only JSON: [{"barcode": "", "nom": "...", "quantite": 0, "prix": 0, "total": 0}].'
+                text: 'Read the full Moroccan invoice document (photo or PDF: ATACADAO, dairy/الحليبة like Centrale/Danone/Jibal/Colainor, wholesale, or handwritten bon; auto-correct tilt, wrinkles, rotation, or carpet background). Extract header metadata into "invoice" and every purchased product line into "items" with barcode (digits if printed else ""), nom, quantite, prix (unit cost MAD), and total (line total MAD).'
               }
             ]
           },
           config: {
-            systemInstruction: visionItemsInstruction,
+            systemInstruction: visionInvoiceInstruction,
             thinkingConfig: { thinkingLevel: ThinkingLevel.MEDIUM },
-            responseMimeType: 'application/json',
-            responseSchema: {
-              type: Type.ARRAY,
-              items: {
-                type: Type.OBJECT,
-                properties: {
-                  barcode: {
-                    type: Type.STRING,
-                    description: 'EAN barcode or article code printed on the line item, or empty string if absent'
-                  },
-                  nom: {
-                    type: Type.STRING,
-                    description: 'Clean product name as written on the invoice'
-                  },
-                  quantite: {
-                    type: Type.NUMBER,
-                    description: 'Purchased quantity (> 0)'
-                  },
-                  prix: {
-                    type: Type.NUMBER,
-                    description: 'Unit price in MAD'
-                  },
-                  total: {
-                    type: Type.NUMBER,
-                    description: 'Total line price in MAD'
-                  }
-                },
-                required: ['nom', 'quantite', 'prix', 'total']
-              }
-            }
-          }
-        });
-
-      const callInvoiceMeta = () =>
-        ai.models.generateContent({
-          model: GEMINI_MODEL,
-          contents: {
-            parts: [
-              {
-                inlineData: {
-                  mimeType: normalizedMime,
-                  data: cleanBase64
-                }
-              },
-              {
-                text: 'Extract only header/footer metadata from this Moroccan invoice (photo or PDF, even if tilted or on a carpet): supplierName, supplierIce (exact 15 digits only if present), supplierPhone, invoiceNumber, invoiceDate (YYYY-MM-DD), hasOfficialMarkers, isHandwritten, totalHt (Total HT before tax), tvaAmount (TVA tax amount), totalTtc (Total TTC / Net a payer), totalAmount.'
-              }
-            ]
-          },
-          config: {
-            thinkingConfig: { thinkingLevel: ThinkingLevel.LOW },
             responseMimeType: 'application/json',
             responseSchema: {
               type: Type.OBJECT,
               properties: {
-                supplierName: { type: Type.STRING },
-                supplierIce: { type: Type.STRING },
-                supplierPhone: { type: Type.STRING },
-                invoiceNumber: { type: Type.STRING },
-                invoiceDate: { type: Type.STRING },
-                hasOfficialMarkers: { type: Type.BOOLEAN },
-                isHandwritten: { type: Type.BOOLEAN },
-                totalHt: { type: Type.NUMBER },
-                tvaAmount: { type: Type.NUMBER },
-                totalTtc: { type: Type.NUMBER },
-                totalAmount: { type: Type.NUMBER }
-              }
+                invoice: {
+                  type: Type.OBJECT,
+                  properties: {
+                    supplierName: { type: Type.STRING },
+                    supplierIce: { type: Type.STRING },
+                    supplierPhone: { type: Type.STRING },
+                    invoiceNumber: { type: Type.STRING },
+                    invoiceDate: { type: Type.STRING },
+                    hasOfficialMarkers: { type: Type.BOOLEAN },
+                    isHandwritten: { type: Type.BOOLEAN },
+                    totalHt: { type: Type.NUMBER },
+                    tvaAmount: { type: Type.NUMBER },
+                    totalTtc: { type: Type.NUMBER },
+                    totalAmount: { type: Type.NUMBER }
+                  }
+                },
+                items: {
+                  type: Type.ARRAY,
+                  items: {
+                    type: Type.OBJECT,
+                    properties: {
+                      barcode: {
+                        type: Type.STRING,
+                        description: 'EAN barcode or article code printed on the line item, or empty string if absent'
+                      },
+                      nom: {
+                        type: Type.STRING,
+                        description: 'Clean product name as written on the invoice'
+                      },
+                      quantite: {
+                        type: Type.NUMBER,
+                        description: 'Purchased quantity (> 0)'
+                      },
+                      prix: {
+                        type: Type.NUMBER,
+                        description: 'Unit price in MAD'
+                      },
+                      total: {
+                        type: Type.NUMBER,
+                        description: 'Total line price in MAD'
+                      }
+                    },
+                    required: ['nom', 'quantite', 'prix', 'total']
+                  }
+                }
+              },
+              required: ['invoice', 'items']
             }
           }
         });
 
       const runVisionWithRetry = async () => {
         try {
-          return await callVisionItems();
+          return await callUnifiedVision();
         } catch (firstErr) {
           console.warn('Retrying Gemini Vision invoice scan after transient error:', firstErr);
           await new Promise((r) => setTimeout(r, 450));
-          return await callVisionItems();
+          return await callUnifiedVision();
         }
       };
 
-      const [itemsResult, metaResult] = await Promise.allSettled([
-        runVisionWithRetry(),
-        callInvoiceMeta()
-      ]);
-
-      if (itemsResult.status === 'rejected') {
-        throw itemsResult.reason;
-      }
+      const visionResult = await runVisionWithRetry();
 
       type RawVisionItem = {
         barcode?: unknown;
@@ -613,8 +590,31 @@ Understand the FULL document visually just like Meta AI:
         total?: unknown;
       };
 
-      const rawItems = safeParseGeminiJson<RawVisionItem[]>(itemsResult.value.text || '[]', []);
-      const normalizedItems = (Array.isArray(rawItems) ? rawItems : [])
+      type RawMeta = {
+        supplierName?: unknown;
+        supplierIce?: unknown;
+        supplierPhone?: unknown;
+        invoiceNumber?: unknown;
+        invoiceDate?: unknown;
+        hasOfficialMarkers?: unknown;
+        isHandwritten?: unknown;
+        totalHt?: unknown;
+        tvaAmount?: unknown;
+        totalTtc?: unknown;
+        totalAmount?: unknown;
+      };
+
+      const parsedUnified = safeParseGeminiJson<
+        { invoice?: RawMeta; items?: RawVisionItem[] } | RawVisionItem[]
+      >(visionResult.text || '{}', { invoice: {}, items: [] });
+
+      const rawItems: RawVisionItem[] = Array.isArray(parsedUnified)
+        ? parsedUnified
+        : Array.isArray(parsedUnified?.items)
+        ? parsedUnified.items
+        : [];
+
+      const normalizedItems = rawItems
         .map((it) => {
           const barcode = String(it?.barcode ?? '')
             .replace(/[^0-9A-Za-z-]/g, '')
@@ -645,23 +645,7 @@ Understand the FULL document visually just like Meta AI:
         return res.json(normalizedItems);
       }
 
-      const metaFallback = {
-        supplierName: '',
-        supplierIce: '',
-        supplierPhone: '',
-        invoiceNumber: '',
-        invoiceDate: '',
-        hasOfficialMarkers: false,
-        isHandwritten: false,
-        totalHt: 0,
-        tvaAmount: 0,
-        totalTtc: 0,
-        totalAmount: 0
-      };
-      const meta =
-        metaResult.status === 'fulfilled'
-          ? safeParseGeminiJson<typeof metaFallback>(metaResult.value.text || '{}', metaFallback)
-          : metaFallback;
+      const meta: RawMeta = !Array.isArray(parsedUnified) && parsedUnified?.invoice ? parsedUnified.invoice : {};
 
       const itemsSum = Number(
         normalizedItems.reduce((sum, it) => sum + (it.total || it.quantite * it.prix), 0).toFixed(2)
