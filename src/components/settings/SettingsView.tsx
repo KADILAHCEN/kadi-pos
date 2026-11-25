@@ -47,7 +47,9 @@ import {
   Gift,
   Wifi,
   WifiOff,
-  SlidersHorizontal
+  SlidersHorizontal,
+  Eye,
+  EyeOff
 } from 'lucide-react';
 import { OFFICIAL_APP_URL, buildQrImageUrl, openExternalLinkSafely } from '../../utils/remoteCatalog';
 import { PWAInstallButton } from '../pwa/PWAInstallButton';
@@ -190,13 +192,13 @@ export const SettingsView: React.FC = () => {
 
   // RBAC & PIN Protection Settings
   const [protectInventoryWithPin, setProtectInventoryWithPin] = useState<boolean>(
-    settings.protectInventoryWithPin ?? true
+    settings.protectInventoryWithPin ?? false
   );
   const [protectSettingsWithPin, setProtectSettingsWithPin] = useState<boolean>(
-    settings.protectSettingsWithPin ?? true
+    settings.protectSettingsWithPin ?? false
   );
   const [requirePinForRestoreDefaults, setRequirePinForRestoreDefaults] = useState<boolean>(
-    settings.requirePinForRestoreDefaults ?? true
+    settings.requirePinForRestoreDefaults ?? false
   );
   const [allowCashierRestoreDefaults, setAllowCashierRestoreDefaults] = useState<boolean>(
     settings.allowCashierRestoreDefaults ?? false
@@ -204,6 +206,8 @@ export const SettingsView: React.FC = () => {
   const [showRestoreDefaultsModal, setShowRestoreDefaultsModal] = useState(false);
   const [restorePinInput, setRestorePinInput] = useState('');
   const [restorePermissionError, setRestorePermissionError] = useState<string | null>(null);
+  const [showManagerPinValue, setShowManagerPinValue] = useState(false);
+  const [pinSavedToast, setPinSavedToast] = useState(false);
 
   // New User Form State
   const [showAddUserModal, setShowAddUserModal] = useState(false);
@@ -318,6 +322,20 @@ export const SettingsView: React.FC = () => {
     if (settings.printerName) setPrinterName(settings.printerName);
     if (settings.printerConnectionType) setPrinterConnectionType(settings.printerConnectionType);
   }, [settings.printerName, settings.printerConnectionType]);
+
+  useEffect(() => {
+    setProtectInventoryWithPin(settings.protectInventoryWithPin ?? false);
+    setProtectSettingsWithPin(settings.protectSettingsWithPin ?? false);
+    setRequirePinForRestoreDefaults(settings.requirePinForRestoreDefaults ?? false);
+    setAllowCashierRestoreDefaults(settings.allowCashierRestoreDefaults ?? false);
+    setManagerPin(settings.managerPin || '1234');
+  }, [
+    settings.protectInventoryWithPin,
+    settings.protectSettingsWithPin,
+    settings.requirePinForRestoreDefaults,
+    settings.allowCashierRestoreDefaults,
+    settings.managerPin
+  ]);
 
   // Zakat al-Tijarah & 85g Gold Nisab Settings
   const [goldPricePerGram, setGoldPricePerGram] = useState<number>(settings.goldPricePerGram ?? 750);
@@ -2273,7 +2291,11 @@ export const SettingsView: React.FC = () => {
               <input
                 type="checkbox"
                 checked={protectInventoryWithPin}
-                onChange={(e) => setProtectInventoryWithPin(e.target.checked)}
+                onChange={(e) => {
+                  const val = e.target.checked;
+                  setProtectInventoryWithPin(val);
+                  updateSettings({ protectInventoryWithPin: val });
+                }}
                 className="w-4 h-4 text-emerald-600 rounded cursor-pointer"
               />
             </div>
@@ -2283,19 +2305,18 @@ export const SettingsView: React.FC = () => {
                 <Shield className="w-4 h-4 text-emerald-500" />
                 <div>
                   <div className="text-xs font-bold text-slate-900 dark:text-white">
-                    {isAr ? 'حماية الإعدادات برمز PIN' : 'Protect Settings with PIN'}
+                    {isAr ? 'إلغاء الحماية على الإعدادات والكود السري' : 'Settings & Secret Code Open Access'}
                   </div>
-                  <div className="text-[10px] text-slate-400">
-                    {isAr ? 'منع الكاشير من تغيير إعدادات المتجر' : 'Restrict settings to manager'}
+                  <div className="text-[10px] text-emerald-600 dark:text-emerald-400 font-semibold">
+                    {isAr
+                      ? 'تم إلغاء القفل برقم سري على الإعدادات للوصول المباشر والتعديل'
+                      : 'PIN lock on Settings & Secret Code is disabled for direct access'}
                   </div>
                 </div>
               </div>
-              <input
-                type="checkbox"
-                checked={protectSettingsWithPin}
-                onChange={(e) => setProtectSettingsWithPin(e.target.checked)}
-                className="w-4 h-4 text-emerald-600 rounded cursor-pointer"
-              />
+              <span className="px-2 py-0.5 rounded-lg bg-emerald-100 dark:bg-emerald-950 text-emerald-700 dark:text-emerald-300 text-[10px] font-black shrink-0">
+                {isAr ? 'مفتوح' : 'Open'}
+              </span>
             </div>
 
             <div className="flex items-center justify-between p-2 rounded-xl bg-white dark:bg-slate-800 border border-slate-200/80 dark:border-slate-700">
@@ -2347,23 +2368,57 @@ export const SettingsView: React.FC = () => {
             </div>
           </div>
 
-          {/* Manager PIN Input */}
-          <div className="max-w-xs">
-            <label className="block text-xs font-semibold text-slate-700 dark:text-slate-300 mb-1">
-              {isAr ? 'رمز مرور المدير الرئيسي (Manager PIN)' : 'Primary Manager Security PIN'}
+          {/* Manager PIN Input (Open access, instant save & show/hide) */}
+          <div className="max-w-md space-y-2 p-3.5 rounded-2xl bg-slate-50 dark:bg-slate-800/40 border border-slate-200 dark:border-slate-800">
+            <label className="block text-xs font-bold text-slate-800 dark:text-slate-200">
+              {isAr ? 'إعدادات الكود السري للمدير (Manager PIN)' : 'Primary Manager Security PIN'}
             </label>
-            <div className="relative">
-              <input
-                type="password"
-                maxLength={6}
-                value={managerPin}
-                onChange={(e) => setManagerPin(e.target.value)}
-                placeholder="1234"
-                className="w-full px-3.5 py-2.5 text-sm font-mono font-bold tracking-widest bg-slate-50 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 rounded-xl focus:border-emerald-500"
-              />
-              <span className="absolute end-3 top-1/2 -translate-y-1/2 text-[11px] text-slate-400">
-                {isAr ? 'الافتراضي: 1234' : 'Default: 1234'}
+            <div className="flex items-center gap-2">
+              <div className="relative flex-1">
+                <input
+                  type={showManagerPinValue ? 'text' : 'password'}
+                  maxLength={6}
+                  value={managerPin}
+                  onChange={(e) => setManagerPin(e.target.value)}
+                  placeholder="1234"
+                  className="w-full px-3.5 py-2.5 pe-10 text-sm font-mono font-bold tracking-widest bg-white dark:bg-slate-800 border border-slate-200 dark:border-slate-700 rounded-xl focus:border-emerald-500"
+                />
+                <button
+                  type="button"
+                  onClick={() => setShowManagerPinValue((prev) => !prev)}
+                  className="absolute end-2.5 top-1/2 -translate-y-1/2 p-1 text-slate-400 hover:text-slate-700 dark:hover:text-slate-200"
+                  title={showManagerPinValue ? (isAr ? 'إخفاء الرمز' : 'Hide PIN') : (isAr ? 'إظهار الرمز' : 'Show PIN')}
+                >
+                  {showManagerPinValue ? <EyeOff className="w-4 h-4" /> : <Eye className="w-4 h-4" />}
+                </button>
+              </div>
+              <button
+                type="button"
+                onClick={() => {
+                  const cleanPin = managerPin.trim() || '1234';
+                  setManagerPin(cleanPin);
+                  updateSettings({
+                    managerPin: cleanPin,
+                    protectSettingsWithPin: false
+                  });
+                  setPinSavedToast(true);
+                  window.setTimeout(() => setPinSavedToast(false), 2500);
+                }}
+                className="px-3.5 py-2.5 rounded-xl bg-emerald-600 hover:bg-emerald-700 text-white text-xs font-bold flex items-center gap-1.5 shrink-0 transition-colors"
+              >
+                <Check className="w-3.5 h-3.5" />
+                <span>{isAr ? 'حفظ الكود السري' : 'Save PIN'}</span>
+              </button>
+            </div>
+            <div className="flex items-center justify-between text-[11px]">
+              <span className="text-slate-500 dark:text-slate-400">
+                {isAr ? 'الافتراضي: 1234 — تعديل مباشر بدون قيود' : 'Default: 1234 — direct edit unlocked'}
               </span>
+              {pinSavedToast && (
+                <span className="font-bold text-emerald-600 dark:text-emerald-400">
+                  {isAr ? 'تم حفظ الكود السري ✅' : 'PIN saved ✅'}
+                </span>
+              )}
             </div>
           </div>
 

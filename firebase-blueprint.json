@@ -17,6 +17,18 @@
           "type": "object",
           "description": "Active shift cash drawer, closed shifts history, and emergency sessions."
         },
+        "customers": {
+          "type": "array",
+          "description": "Synced customers and carnet de credit balances."
+        },
+        "creditTransactions": {
+          "type": "array",
+          "description": "Synced customer credit debt and payment ledger entries."
+        },
+        "categories": {
+          "type": "array",
+          "description": "Synced store product categories."
+        },
         "lastUpdated": {
           "type": "number",
           "description": "Epoch milliseconds timestamp of latest merged store update."

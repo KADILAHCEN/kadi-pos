@@ -141,6 +141,7 @@ export interface Customer {
   creditLimit?: number; // سقف الكريدي الأقصى
   createdAt: string;
   notes?: string;
+  updatedAt?: number;
 }
 
 export interface CreditTransaction {

@@ -33,6 +33,7 @@ import { PinGateModal } from './auth/PinGateModal';
 import { KExecutivePanel } from './KExecutivePanel';
 import { PWAInstallButton } from './pwa/PWAInstallButton';
 import { POS_TAB_CATALOG, resolveTabVisual } from '../utils/tabCustomization';
+import { formatFriendlySyncError } from '../utils/firestoreSync';
 
 export const Navbar: React.FC = () => {
   const {
@@ -296,16 +297,22 @@ export const Navbar: React.FC = () => {
             isOnline &&
             cloudSyncState.isSignedIn &&
             (cloudSyncState.status === 'synced' || cloudSyncState.status === 'syncing');
+          const hasSyncError =
+            isOnline && cloudSyncState.isSignedIn && cloudSyncState.status === 'error';
           const count = cloudSyncState.activeDevicesCount;
           const shortEmail = cloudSyncState.userEmail ? cloudSyncState.userEmail.split('@')[0] : '';
           const label = isCloudSynced
             ? isAr
-              ? `متصل (${shortEmail || count}) · تزامن خدام ✅`
+              ? `متصل (${count} ${count > 1 ? 'أجهزة' : shortEmail || 'جهاز'}) ✅`
               : `Synced (${count}) ✅`
             : !isOnline
             ? isAr
               ? 'أوفلاين ⚠️'
               : 'Offline ⚠️'
+            : hasSyncError
+            ? isAr
+              ? 'خطأ مزامنة ⚠️'
+              : 'Sync Error ⚠️'
             : isAr
             ? 'غير متصل ⚠️'
             : 'Not signed in ⚠️';
@@ -337,6 +344,8 @@ export const Navbar: React.FC = () => {
                     ? isAr
                       ? 'لا يوجد إنترنت — العمل محفوظ محلياً. اضغط لإدارة الأجهزة'
                       : 'Offline — working from local cache'
+                    : hasSyncError
+                    ? formatFriendlySyncError(cloudSyncState.lastError, isAr)
                     : isAr
                     ? 'غير متصل بالسحابة — سجل الدخول بـ Google لتفعيل المزامنة'
                     : 'Click to connect Google & enable live Firestore sync'
@@ -344,18 +353,26 @@ export const Navbar: React.FC = () => {
                 className={`flex items-center gap-1.5 px-2.5 py-1 text-[11px] font-extrabold rounded-lg border transition-colors whitespace-nowrap shrink-0 ${
                   isCloudSynced
                     ? 'bg-emerald-50 dark:bg-emerald-950/60 border-emerald-200 dark:border-emerald-800 text-emerald-700 dark:text-emerald-300 hover:bg-emerald-100'
+                    : hasSyncError
+                    ? 'bg-rose-50 dark:bg-rose-950/60 border-rose-300 dark:border-rose-800 text-rose-700 dark:text-rose-300 hover:bg-rose-100'
                     : 'bg-amber-50 dark:bg-amber-950/60 border-amber-300 dark:border-amber-800 text-amber-800 dark:text-amber-300 hover:bg-amber-100'
                 }`}
               >
                 {isCloudSynced ? (
                   <Wifi className="w-3.5 h-3.5 text-emerald-600 dark:text-emerald-400 shrink-0" />
                 ) : (
-                  <WifiOff className="w-3.5 h-3.5 text-amber-600 dark:text-amber-400 shrink-0" />
+                  <WifiOff
+                    className={`w-3.5 h-3.5 shrink-0 ${
+                      hasSyncError
+                        ? 'text-rose-600 dark:text-rose-400'
+                        : 'text-amber-600 dark:text-amber-400'
+                    }`}
+                  />
                 )}
                 <span>{label}</span>
               </button>
 
-              {isOnline && !cloudSyncState.isSignedIn && (
+              {isOnline && (!cloudSyncState.isSignedIn || hasSyncError) && (
                 <button
                   type="button"
                   disabled={isSigningInGoogle}
@@ -368,12 +385,24 @@ export const Navbar: React.FC = () => {
                     }
                   }}
                   className="px-2.5 py-1 text-[11px] font-black rounded-lg bg-rose-600 hover:bg-rose-700 disabled:opacity-60 text-white shadow-xs transition-colors whitespace-nowrap shrink-0"
-                  title={isAr ? 'تسجيل الدخول بحساب Google للمزامنة الفورية' : 'Sign in with Google'}
+                  title={
+                    hasSyncError
+                      ? isAr
+                        ? 'تبديل حساب Google المصرح له بالمزامنة'
+                        : 'Switch Google Account'
+                      : isAr
+                      ? 'تسجيل الدخول بحساب Google للمزامنة الفورية'
+                      : 'Sign in with Google'
+                  }
                 >
                   {isSigningInGoogle
                     ? isAr
                       ? 'جاري الدخول...'
                       : 'Signing in...'
+                    : hasSyncError
+                    ? isAr
+                      ? 'تبديل Google'
+                      : 'Switch Google'
                     : isAr
                     ? 'دخول بـ Google'
                     : 'Google Login'}

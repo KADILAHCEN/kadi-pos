@@ -2,13 +2,16 @@ import {
   doc,
   getDoc,
   onSnapshot,
+  runTransaction,
   serverTimestamp,
-  setDoc,
   Unsubscribe
 } from 'firebase/firestore';
 import { User } from 'firebase/auth';
 import {
+  Category,
   ConnectedDeviceInfo,
+  CreditTransaction,
+  Customer,
   EmergencyOpeningSession,
   FirestoreCashState,
   Order,
@@ -29,6 +32,9 @@ const PENDING_SYNC_ACTIVITY_KEY = 'kadi_pos_cloud_pending_activity';
 const DELETED_PRODUCTS_TOMBSTONE_KEY = 'kadi_pos_deleted_products_v1';
 const KNOWN_CLOUD_PRODUCT_IDS_KEY = 'kadi_pos_known_cloud_product_ids_v1';
 
+// Devices with no heartbeat within this window are treated as idle/offline in counts
+export const DEVICE_ACTIVE_WINDOW_MS = 5 * 60 * 1000;
+
 export interface DeletedProductTombstones {
   byId: Record<string, number>;
   byBarcode: Record<string, number>;
@@ -43,6 +49,9 @@ export interface LocalStoreSyncPayload {
   products: Product[];
   sales: Order[];
   cash: FirestoreCashState;
+  customers?: Customer[];
+  creditTransactions?: CreditTransaction[];
+  categories?: Category[];
   lastUpdated: number;
   updatedBy: string;
 }
@@ -53,6 +62,45 @@ export interface FirestoreStoreDocument extends LocalStoreSyncPayload {
   ownerEmail: string;
   allowedEmails: string[];
   serverSyncedAt?: unknown;
+}
+
+export function formatFriendlySyncError(rawError: string | null | undefined, isAr = true): string {
+  if (!rawError) return '';
+  let message = rawError;
+  try {
+    const parsed = JSON.parse(rawError) as { error?: string; authInfo?: { email?: string | null } };
+    if (parsed && typeof parsed.error === 'string') {
+      message = parsed.error;
+    }
+  } catch {
+    // plain text error
+  }
+
+  const lower = message.toLowerCase();
+  if (lower.includes('permission') || lower.includes('insufficient permissions')) {
+    return isAr
+      ? 'حساب Google الحالي غير مصرح له بالوصول إلى بيانات هذا المتجر. ادخل بنفس حساب المالك أو أضف هذا البريد في قائمة المصرح لهم من جهاز المالك.'
+      : 'Permission denied: sign in with the store owner account or authorize this Google email on the owner device.';
+  }
+  if (lower.includes('offline') || lower.includes('unavailable') || lower.includes('network')) {
+    return isAr
+      ? 'تعذر الوصول إلى السحابة مؤقتاً (الاتصال ضعيف أو مقطوع). التغييرات محفوظة محلياً وستُرفع تلقائياً عند استقرار الإنترنت.'
+      : 'Cloud unreachable right now. Changes are saved locally and will sync automatically when online.';
+  }
+  if (lower.includes('quota')) {
+    return isAr
+      ? 'تم تجاوز الحد اليومي المجاني لعمليات Firestore السحابية.'
+      : 'Firestore daily free quota exceeded.';
+  }
+  if (lower.includes('maximum allowed size') || lower.includes('too large')) {
+    return isAr
+      ? 'حجم البيانات كبير جداً للمزامنة الفورية — تم ضغط النسخة السحابية وتحتاج لإعادة المحاولة.'
+      : 'Sync payload exceeded document size limit; retry with compacted snapshot.';
+  }
+  if (lower.includes('popup-closed-by-user') || lower.includes('cancelled-popup-request')) {
+    return isAr ? 'تم إغلاق نافذة تسجيل الدخول بـ Google قبل إكمال الربط.' : 'Google sign-in popup was closed.';
+  }
+  return message;
 }
 
 export function getShortDevicePlatform(): string {
@@ -115,6 +163,11 @@ export function saveLocalCloudBackup(payload: LocalStoreSyncPayload): void {
         shiftsHistory: payload.cash.shiftsHistory.slice(0, 150),
         emergencySessions: payload.cash.emergencySessions.slice(0, 100)
       },
+      customers: Array.isArray(payload.customers) ? payload.customers.slice(0, 1000) : undefined,
+      creditTransactions: Array.isArray(payload.creditTransactions)
+        ? payload.creditTransactions.slice(0, 1000)
+        : undefined,
+      categories: Array.isArray(payload.categories) ? payload.categories.slice(0, 200) : undefined,
       lastUpdated: payload.lastUpdated,
       updatedBy: payload.updatedBy
     };
@@ -137,6 +190,11 @@ export function loadLocalCloudBackup(): LocalStoreSyncPayload | null {
       products: parsed.products,
       sales: parsed.sales,
       cash: parsed.cash,
+      customers: Array.isArray(parsed.customers) ? parsed.customers : undefined,
+      creditTransactions: Array.isArray(parsed.creditTransactions)
+        ? parsed.creditTransactions
+        : undefined,
+      categories: Array.isArray(parsed.categories) ? parsed.categories : undefined,
       lastUpdated: Number(parsed.lastUpdated) || 0,
       updatedBy: typeof parsed.updatedBy === 'string' ? parsed.updatedBy : ''
     };
@@ -206,7 +264,6 @@ export function recordDeletedProductTombstone(
     current.byBarcode[cleanBarcode] = now;
   }
 
-  // Keep bounded to last 500 tombstones
   const trimMap = (rec: Record<string, number>): Record<string, number> => {
     const entries = Object.entries(rec).sort((a, b) => b[1] - a[1]).slice(0, 500);
     return Object.fromEntries(entries);
@@ -276,26 +333,39 @@ function stripUndefinedDeep<T>(input: T): T {
   return input;
 }
 
+function estimatePayloadBytes(obj: unknown): number {
+  try {
+    const json = JSON.stringify(obj);
+    if (typeof TextEncoder !== 'undefined') {
+      return new TextEncoder().encode(json).length;
+    }
+    return json.length * 2;
+  } catch {
+    return 0;
+  }
+}
+
 /**
  * Ensures outgoing document complies strictly with 1MB Firestore document limit and rule caps:
- * - products <= 2500 (strips huge inline base64 images > 4KB to keep doc compact; local IndexedDB keeps full images)
+ * - products <= 2400 (strips huge inline base64 images to keep doc compact; local IndexedDB keeps full images)
  * - sales <= 500 most recent orders
  * - shiftsHistory <= 120 most recent shifts
+ * - dynamically trims older history/sales if UTF-8 payload nears 780KB
  */
 export function compactStoreForFirestore(
   payload: LocalStoreSyncPayload
 ): LocalStoreSyncPayload {
-  const compactProducts = payload.products.slice(0, 2400).map((p) => {
+  let compactProducts = payload.products.slice(0, 2400).map((p) => {
     const clean = { ...p };
-    if (typeof clean.image === 'string' && clean.image.startsWith('data:') && clean.image.length > 4000) {
+    if (typeof clean.image === 'string' && clean.image.startsWith('data:') && clean.image.length > 2500) {
       delete clean.image;
     }
     return stripUndefinedDeep(clean);
   });
 
-  const compactSales = payload.sales.slice(0, 500).map((o) => stripUndefinedDeep({ ...o }));
+  let compactSales = payload.sales.slice(0, 500).map((o) => stripUndefinedDeep({ ...o }));
 
-  const compactCash: FirestoreCashState = {
+  let compactCash: FirestoreCashState = {
     currentShift: stripUndefinedDeep({
       ...payload.cash.currentShift,
       cashTransactions: (payload.cash.currentShift.cashTransactions || []).slice(0, 200)
@@ -309,13 +379,82 @@ export function compactStoreForFirestore(
     emergencySessions: payload.cash.emergencySessions.slice(0, 80).map((e) => stripUndefinedDeep(e))
   };
 
-  return {
-    products: compactProducts,
-    sales: compactSales,
-    cash: compactCash,
-    lastUpdated: Number(payload.lastUpdated) || Date.now(),
-    updatedBy: String(payload.updatedBy || 'device').slice(0, 160)
+  let compactCustomers = Array.isArray(payload.customers)
+    ? payload.customers.slice(0, 950).map((c) => stripUndefinedDeep({ ...c }))
+    : undefined;
+
+  let compactCreditTx = Array.isArray(payload.creditTransactions)
+    ? payload.creditTransactions.slice(0, 950).map((tx) => stripUndefinedDeep({ ...tx }))
+    : undefined;
+
+  const compactCategories = Array.isArray(payload.categories)
+    ? payload.categories.slice(0, 180).map((cat) => {
+        const clean = { ...cat };
+        if (typeof clean.image === 'string' && clean.image.startsWith('data:') && clean.image.length > 2500) {
+          delete clean.image;
+        }
+        return stripUndefinedDeep(clean);
+      })
+    : undefined;
+
+  const buildResult = (): LocalStoreSyncPayload => {
+    const res: LocalStoreSyncPayload = {
+      products: compactProducts,
+      sales: compactSales,
+      cash: compactCash,
+      lastUpdated: Number(payload.lastUpdated) || Date.now(),
+      updatedBy: String(payload.updatedBy || 'device').slice(0, 160)
+    };
+    if (compactCustomers) res.customers = compactCustomers;
+    if (compactCreditTx) res.creditTransactions = compactCreditTx;
+    if (compactCategories) res.categories = compactCategories;
+    return res;
   };
+
+  let result = buildResult();
+  const MAX_SAFE_BYTES = 780_000;
+
+  if (estimatePayloadBytes(result) > MAX_SAFE_BYTES) {
+    // Stage 1: Strip any remaining inline data images & bulky QR strings from older orders
+    compactProducts = compactProducts.map((p) => {
+      if (typeof p.image === 'string' && p.image.startsWith('data:')) {
+        const { image: _omit, ...rest } = p;
+        return rest as Product;
+      }
+      return p;
+    });
+    compactSales = compactSales.slice(0, 250).map((o) => {
+      const { zatcaQrString: _qr, ...rest } = o;
+      return rest as Order;
+    });
+    compactCash = {
+      ...compactCash,
+      shiftsHistory: compactCash.shiftsHistory.slice(0, 40),
+      emergencySessions: compactCash.emergencySessions.slice(0, 30)
+    };
+    if (compactCreditTx) compactCreditTx = compactCreditTx.slice(0, 450);
+    result = buildResult();
+  }
+
+  if (estimatePayloadBytes(result) > MAX_SAFE_BYTES) {
+    // Stage 2: Tighter bounds for huge catalogs (2,000+ demo products)
+    compactSales = compactSales.slice(0, 100);
+    compactCash = {
+      ...compactCash,
+      shiftsHistory: compactCash.shiftsHistory.slice(0, 15),
+      emergencySessions: compactCash.emergencySessions.slice(0, 10)
+    };
+    if (compactCustomers) compactCustomers = compactCustomers.slice(0, 500);
+    if (compactCreditTx) compactCreditTx = compactCreditTx.slice(0, 200);
+    result = buildResult();
+  }
+
+  while (estimatePayloadBytes(result) > MAX_SAFE_BYTES && compactProducts.length > 200) {
+    compactProducts = compactProducts.slice(0, Math.floor(compactProducts.length * 0.8));
+    result = buildResult();
+  }
+
+  return result;
 }
 
 function getItemTimestamp(item: { updatedAt?: number; syncedAt?: string; date?: string }): number {
@@ -336,9 +475,7 @@ function getItemTimestamp(item: { updatedAt?: number; syncedAt?: string; date?: 
 /**
  * Concurrent conflict-resolution merge:
  * Never blindly deletes another device's items when 2+ devices edit simultaneously.
- * - Unions products by ID, resolving collisions by item `updatedAt` or store `lastUpdated` (preserving local inline images).
- * - Unions sales orders by ID so parallel checkouts on multiple devices are ALL preserved.
- * - Unions cash drawer shifts, transactions, and emergency sessions without dropping concurrent entries.
+ * - Unions products, sales, cash, customers, creditTransactions, and categories by ID.
  */
 export function mergePosStoreData(
   local: LocalStoreSyncPayload,
@@ -358,7 +495,6 @@ export function mergePosStoreData(
 
   const mergedProductsMap = new Map<string, Product>();
 
-  // First process remote products: skip if locally deleted more recently than remote update
   remote.products.forEach((rp) => {
     const cleanBc = (rp.barcode || '').trim().toLowerCase();
     const localDelTs = Math.max(
@@ -378,7 +514,6 @@ export function mergePosStoreData(
     const localTs = lp.updatedAt || local.lastUpdated || 0;
     const remoteTs = rp.updatedAt || remote.lastUpdated || 0;
     const winner = remoteTs > localTs ? rp : remoteTs < localTs ? lp : remoteIsNewerStore ? rp : lp;
-    // Preserve high-res local image if Firestore payload stripped base64
     const preservedImage = winner.image || lp.image || rp.image;
     mergedProductsMap.set(
       rp.id,
@@ -386,7 +521,6 @@ export function mergePosStoreData(
     );
   });
 
-  // Next process local-only products (not in remote): keep ONLY if newly created locally and NOT deleted remotely
   local.products.forEach((lp) => {
     if (mergedProductsMap.has(lp.id) || remoteProductMap.has(lp.id)) return;
 
@@ -397,12 +531,10 @@ export function mergePosStoreData(
     );
     if (localDelTs > 0) return;
 
-    // If this product was previously synced to Firestore and is now missing from remoteDoc, another device deleted it
     if (knownCloudIds && knownCloudIds.has(lp.id)) {
       return;
     }
 
-    // Also if remote store snapshot is strictly newer than this item's last local timestamp and it wasn't created after remote update, drop it
     const lpTs = lp.updatedAt || 0;
     if (lpTs > 0 && (remote.lastUpdated || 0) > lpTs && knownCloudIds && knownCloudIds.size > 0) {
       return;
@@ -411,7 +543,7 @@ export function mergePosStoreData(
     mergedProductsMap.set(lp.id, lp);
   });
 
-  // 2. Merge Sales Orders by ID (never drop sales created on other devices)
+  // 2. Merge Sales Orders by ID
   const mergedSalesMap = new Map<string, Order>();
   local.sales.forEach((o) => mergedSalesMap.set(o.id, o));
 
@@ -424,7 +556,6 @@ export function mergePosStoreData(
     const localTs = getItemTimestamp(lo) || local.lastUpdated || 0;
     const remoteTs = getItemTimestamp(ro) || remote.lastUpdated || 0;
     const winner = remoteTs > localTs ? ro : remoteTs < localTs ? lo : remoteIsNewerStore ? ro : lo;
-    // Ensure refund status isn't accidentally reverted by stale snapshot
     if (
       (lo.status !== 'completed' || ro.status !== 'completed') &&
       winner.status === 'completed'
@@ -468,36 +599,40 @@ export function mergePosStoreData(
   const remoteShift = remote.cash.currentShift;
   let mergedCurrentShift: Shift;
 
-  if (localShift.id === remoteShift.id) {
-    const txMap = new Map<string, Shift['cashTransactions'][number]>();
-    (localShift.cashTransactions || []).forEach((t) => txMap.set(t.id, t));
-    (remoteShift.cashTransactions || []).forEach((t) => txMap.set(t.id, t));
-    const lTs = localShift.updatedAt || local.lastUpdated || 0;
-    const rTs = remoteShift.updatedAt || remote.lastUpdated || 0;
-    const winner =
-      remoteShift.status === 'closed' && localShift.status !== 'closed'
-        ? remoteShift
-        : localShift.status === 'closed' && remoteShift.status !== 'closed'
-        ? localShift
-        : rTs >= lTs
-        ? remoteShift
-        : localShift;
-    mergedCurrentShift = {
-      ...winner,
-      cashTransactions: Array.from(txMap.values()).sort(
-        (a, b) => Date.parse(b.date || '') - Date.parse(a.date || '')
-      )
-    };
-  } else {
-    const localOpened = Date.parse(localShift.openedAt || '') || 0;
-    const remoteOpened = Date.parse(remoteShift.openedAt || '') || 0;
-    if (remoteOpened >= localOpened) {
-      mergedCurrentShift = remoteShift;
-      if (localShift.status === 'closed') addShiftToMap(localShift, local.lastUpdated);
+  if (localShift && remoteShift) {
+    if (localShift.id === remoteShift.id) {
+      const txMap = new Map<string, Shift['cashTransactions'][number]>();
+      (localShift.cashTransactions || []).forEach((t) => txMap.set(t.id, t));
+      (remoteShift.cashTransactions || []).forEach((t) => txMap.set(t.id, t));
+      const lTs = localShift.updatedAt || local.lastUpdated || 0;
+      const rTs = remoteShift.updatedAt || remote.lastUpdated || 0;
+      const winner =
+        remoteShift.status === 'closed' && localShift.status !== 'closed'
+          ? remoteShift
+          : localShift.status === 'closed' && remoteShift.status !== 'closed'
+          ? localShift
+          : rTs >= lTs
+          ? remoteShift
+          : localShift;
+      mergedCurrentShift = {
+        ...winner,
+        cashTransactions: Array.from(txMap.values()).sort(
+          (a, b) => Date.parse(b.date || '') - Date.parse(a.date || '')
+        )
+      };
     } else {
-      mergedCurrentShift = localShift;
-      if (remoteShift.status === 'closed') addShiftToMap(remoteShift, remote.lastUpdated);
+      const localOpened = Date.parse(localShift.openedAt || '') || 0;
+      const remoteOpened = Date.parse(remoteShift.openedAt || '') || 0;
+      if (remoteOpened >= localOpened) {
+        mergedCurrentShift = remoteShift;
+        if (localShift.status === 'closed') addShiftToMap(localShift, local.lastUpdated);
+      } else {
+        mergedCurrentShift = localShift;
+        if (remoteShift.status === 'closed') addShiftToMap(remoteShift, remote.lastUpdated);
+      }
     }
+  } else {
+    mergedCurrentShift = remoteShift || localShift;
   }
 
   // Merge Emergency Sessions by ID
@@ -518,7 +653,55 @@ export function mergePosStoreData(
     }
   });
 
-  return {
+  // 4. Merge Credit Transactions by ID
+  let mergedCreditTx: CreditTransaction[] | undefined;
+  if (Array.isArray(local.creditTransactions) || Array.isArray(remote.creditTransactions)) {
+    const txMap = new Map<string, CreditTransaction>();
+    (local.creditTransactions || []).forEach((tx) => txMap.set(tx.id, tx));
+    (remote.creditTransactions || []).forEach((tx) => txMap.set(tx.id, tx));
+    mergedCreditTx = Array.from(txMap.values()).sort(
+      (a, b) => Date.parse(b.date || '') - Date.parse(a.date || '')
+    );
+  }
+
+  // 5. Merge Customers by ID (using per-customer updatedAt / store recency)
+  let mergedCustomers: Customer[] | undefined;
+  if (Array.isArray(local.customers) || Array.isArray(remote.customers)) {
+    const custMap = new Map<string, Customer>();
+    (local.customers || []).forEach((c) => custMap.set(c.id, c));
+    (remote.customers || []).forEach((rc) => {
+      const lc = custMap.get(rc.id);
+      if (!lc) {
+        custMap.set(rc.id, rc);
+        return;
+      }
+      const lTs = lc.updatedAt || local.lastUpdated || 0;
+      const rTs = rc.updatedAt || remote.lastUpdated || 0;
+      const winner = rTs > lTs ? rc : rTs < lTs ? lc : remoteIsNewerStore ? rc : lc;
+      custMap.set(rc.id, winner);
+    });
+    mergedCustomers = Array.from(custMap.values());
+  }
+
+  // 6. Merge Categories by ID (preserving local image if remote stripped base64)
+  let mergedCategories: Category[] | undefined;
+  if (Array.isArray(local.categories) || Array.isArray(remote.categories)) {
+    const catMap = new Map<string, Category>();
+    (local.categories || []).forEach((c) => catMap.set(c.id, c));
+    (remote.categories || []).forEach((rc) => {
+      const lc = catMap.get(rc.id);
+      if (!lc) {
+        catMap.set(rc.id, rc);
+        return;
+      }
+      const winner = remoteIsNewerStore ? rc : lc;
+      const preservedImage = winner.image || lc.image || rc.image;
+      catMap.set(rc.id, preservedImage ? { ...winner, image: preservedImage } : winner);
+    });
+    mergedCategories = Array.from(catMap.values());
+  }
+
+  const out: LocalStoreSyncPayload = {
     products: Array.from(mergedProductsMap.values()),
     sales: mergedSales,
     cash: {
@@ -533,6 +716,12 @@ export function mergePosStoreData(
     lastUpdated: Math.max(local.lastUpdated || 0, remote.lastUpdated || 0),
     updatedBy: remoteIsNewerStore ? remote.updatedBy : local.updatedBy
   };
+
+  if (mergedCustomers) out.customers = mergedCustomers;
+  if (mergedCreditTx) out.creditTransactions = mergedCreditTx;
+  if (mergedCategories) out.categories = mergedCategories;
+
+  return out;
 }
 
 export function sanitizeDevicesMap(
@@ -562,6 +751,34 @@ export function sanitizeDevicesMap(
   return out;
 }
 
+function parseRemoteDocData(
+  data: Partial<FirestoreStoreDocument>,
+  fallbackOwnerUid = '',
+  fallbackOwnerEmail = ''
+): FirestoreStoreDocument {
+  return {
+    products: Array.isArray(data.products) ? data.products : [],
+    sales: Array.isArray(data.sales) ? data.sales : [],
+    cash:
+      data.cash && typeof data.cash === 'object'
+        ? (data.cash as FirestoreCashState)
+        : ({} as FirestoreCashState),
+    customers: Array.isArray(data.customers) ? data.customers : undefined,
+    creditTransactions: Array.isArray(data.creditTransactions)
+      ? data.creditTransactions
+      : undefined,
+    categories: Array.isArray(data.categories) ? data.categories : undefined,
+    lastUpdated: Number(data.lastUpdated) || 0,
+    updatedBy: typeof data.updatedBy === 'string' ? data.updatedBy : '',
+    devices: sanitizeDevicesMap(data.devices),
+    ownerUid: typeof data.ownerUid === 'string' ? data.ownerUid : fallbackOwnerUid,
+    ownerEmail: typeof data.ownerEmail === 'string' ? data.ownerEmail : fallbackOwnerEmail,
+    allowedEmails: Array.isArray(data.allowedEmails)
+      ? data.allowedEmails.filter((e): e is string => typeof e === 'string').slice(0, 20)
+      : []
+  };
+}
+
 export function subscribeStoreSyncDoc(
   onRemoteData: (docData: FirestoreStoreDocument | null, meta: { fromCache: boolean }) => void,
   onSyncError: (errMsg: string) => void
@@ -569,27 +786,13 @@ export function subscribeStoreSyncDoc(
   const ref = doc(db, FIRESTORE_COLLECTION, FIRESTORE_STORE_DOC_ID);
   return onSnapshot(
     ref,
+    { includeMetadataChanges: true },
     (snapshot) => {
       if (!snapshot.exists()) {
         onRemoteData(null, { fromCache: snapshot.metadata.fromCache });
         return;
       }
-      const data = snapshot.data() as Partial<FirestoreStoreDocument>;
-      const parsed: FirestoreStoreDocument = {
-        products: Array.isArray(data.products) ? data.products : [],
-        sales: Array.isArray(data.sales) ? data.sales : [],
-        cash: data.cash && typeof data.cash === 'object'
-          ? (data.cash as FirestoreCashState)
-          : ({} as FirestoreCashState),
-        lastUpdated: Number(data.lastUpdated) || 0,
-        updatedBy: typeof data.updatedBy === 'string' ? data.updatedBy : '',
-        devices: sanitizeDevicesMap(data.devices),
-        ownerUid: typeof data.ownerUid === 'string' ? data.ownerUid : '',
-        ownerEmail: typeof data.ownerEmail === 'string' ? data.ownerEmail : '',
-        allowedEmails: Array.isArray(data.allowedEmails)
-          ? data.allowedEmails.filter((e): e is string => typeof e === 'string').slice(0, 20)
-          : []
-      };
+      const parsed = parseRemoteDocData(snapshot.data() as Partial<FirestoreStoreDocument>);
       onRemoteData(parsed, { fromCache: snapshot.metadata.fromCache });
     },
     (error) => {
@@ -624,86 +827,80 @@ export async function pushMergedStoreToFirestore(params: {
   } = params;
 
   const storeRef = doc(db, FIRESTORE_COLLECTION, FIRESTORE_STORE_DOC_ID);
-  let baseRemote = cachedRemoteDoc;
-
-  if (!baseRemote) {
-    try {
-      const snap = await getDoc(storeRef);
-      if (snap.exists()) {
-        const d = snap.data() as Partial<FirestoreStoreDocument>;
-        baseRemote = {
-          products: Array.isArray(d.products) ? d.products : [],
-          sales: Array.isArray(d.sales) ? d.sales : [],
-          cash: (d.cash || {}) as FirestoreCashState,
-          lastUpdated: Number(d.lastUpdated) || 0,
-          updatedBy: typeof d.updatedBy === 'string' ? d.updatedBy : '',
-          devices: sanitizeDevicesMap(d.devices),
-          ownerUid: typeof d.ownerUid === 'string' ? d.ownerUid : user.uid,
-          ownerEmail: typeof d.ownerEmail === 'string' ? d.ownerEmail : user.email || '',
-          allowedEmails: Array.isArray(d.allowedEmails) ? d.allowedEmails : []
-        };
-      }
-    } catch (err) {
-      handleFirestoreError(err, OperationType.GET, STORE_DOC_PATH);
-    }
-  }
-
-  const knownCloudIds = loadKnownCloudProductIds();
-  if (baseRemote) {
-    baseRemote.products.forEach((p) => knownCloudIds.add(p.id));
-  }
-  const merged = baseRemote
-    ? mergePosStoreData(localPayload, baseRemote, {
-        previouslySyncedProductIds: knownCloudIds,
-        locallyDeleted: loadDeletedProductTombstones()
-      })
-    : localPayload;
-
-  const nowMs = Date.now();
-  const nowIso = new Date(nowMs).toISOString();
-  const compact = compactStoreForFirestore({
-    ...merged,
-    lastUpdated: Math.max(nowMs, merged.lastUpdated || 0),
-    updatedBy: `${deviceId} · ${cashierName}`.slice(0, 160)
-  });
-
-  const existingDevices = sanitizeDevicesMap(baseRemote?.devices);
-  // Keep max 48 devices (trim oldest if over cap)
-  const deviceEntries = Object.entries(existingDevices)
-    .filter(([k]) => k !== deviceId)
-    .sort((a, b) => (b[1].lastUpdatedMs || 0) - (a[1].lastUpdatedMs || 0))
-    .slice(0, 45);
-
-  const nextDevices: Record<string, ConnectedDeviceInfo> = Object.fromEntries(deviceEntries);
-  nextDevices[deviceId] = {
-    deviceId,
-    deviceName: deviceName.slice(0, 64),
-    userAgent: getShortDevicePlatform().slice(0, 64),
-    cashierName: cashierName.slice(0, 64),
-    lastActivity: activityLabel.slice(0, 120),
-    lastSyncAt: nowIso,
-    lastUpdatedMs: nowMs,
-    online
-  };
-
-  const docToWrite: FirestoreStoreDocument = {
-    products: compact.products,
-    sales: compact.sales,
-    cash: compact.cash,
-    lastUpdated: compact.lastUpdated,
-    updatedBy: compact.updatedBy,
-    devices: nextDevices,
-    ownerUid: baseRemote?.ownerUid || user.uid,
-    ownerEmail: baseRemote?.ownerEmail || user.email || '',
-    allowedEmails: (baseRemote?.allowedEmails || []).slice(0, 20),
-    serverSyncedAt: serverTimestamp()
-  };
 
   try {
-    await setDoc(storeRef, docToWrite, { merge: false });
-    saveKnownCloudProductIds(docToWrite.products.map((p) => p.id));
+    const written = await runTransaction(db, async (transaction) => {
+      const snap = await transaction.get(storeRef);
+      const baseRemote = snap.exists()
+        ? parseRemoteDocData(
+            snap.data() as Partial<FirestoreStoreDocument>,
+            user.uid,
+            user.email || ''
+          )
+        : cachedRemoteDoc;
+
+      const knownCloudIds = loadKnownCloudProductIds();
+      if (baseRemote) {
+        baseRemote.products.forEach((p) => knownCloudIds.add(p.id));
+      }
+
+      const merged = baseRemote
+        ? mergePosStoreData(localPayload, baseRemote, {
+            previouslySyncedProductIds: knownCloudIds,
+            locallyDeleted: loadDeletedProductTombstones()
+          })
+        : localPayload;
+
+      const nowMs = Date.now();
+      const nowIso = new Date(nowMs).toISOString();
+      const compact = compactStoreForFirestore({
+        ...merged,
+        lastUpdated: Math.max(nowMs, merged.lastUpdated || 0),
+        updatedBy: `${deviceId} · ${cashierName}`.slice(0, 160)
+      });
+
+      const existingDevices = sanitizeDevicesMap(baseRemote?.devices);
+      // Keep max 45 other devices sorted by most recent activity
+      const deviceEntries = Object.entries(existingDevices)
+        .filter(([k]) => k !== deviceId)
+        .sort((a, b) => (b[1].lastUpdatedMs || 0) - (a[1].lastUpdatedMs || 0))
+        .slice(0, 45);
+
+      const nextDevices: Record<string, ConnectedDeviceInfo> = Object.fromEntries(deviceEntries);
+      nextDevices[deviceId] = {
+        deviceId,
+        deviceName: deviceName.slice(0, 64),
+        userAgent: getShortDevicePlatform().slice(0, 64),
+        cashierName: cashierName.slice(0, 64),
+        lastActivity: activityLabel.slice(0, 120),
+        lastSyncAt: nowIso,
+        lastUpdatedMs: nowMs,
+        online
+      };
+
+      const docToWrite: FirestoreStoreDocument = {
+        products: compact.products,
+        sales: compact.sales,
+        cash: compact.cash,
+        ...(compact.customers ? { customers: compact.customers } : {}),
+        ...(compact.creditTransactions ? { creditTransactions: compact.creditTransactions } : {}),
+        ...(compact.categories ? { categories: compact.categories } : {}),
+        lastUpdated: compact.lastUpdated,
+        updatedBy: compact.updatedBy,
+        devices: nextDevices,
+        ownerUid: baseRemote?.ownerUid || user.uid,
+        ownerEmail: baseRemote?.ownerEmail || user.email || '',
+        allowedEmails: (baseRemote?.allowedEmails || []).slice(0, 20),
+        serverSyncedAt: serverTimestamp()
+      };
+
+      transaction.set(storeRef, docToWrite, { merge: false });
+      return docToWrite;
+    });
+
+    saveKnownCloudProductIds(written.products.map((p) => p.id));
     clearPendingCloudSyncFlag();
-    return docToWrite;
+    return written;
   } catch (err) {
     handleFirestoreError(err, OperationType.WRITE, STORE_DOC_PATH);
   }
@@ -711,31 +908,72 @@ export async function pushMergedStoreToFirestore(params: {
 
 export async function updateDeviceRegistryOnly(params: {
   user: User;
-  cachedRemoteDoc: FirestoreStoreDocument;
-  nextDevices: Record<string, ConnectedDeviceInfo>;
+  cachedRemoteDoc?: FirestoreStoreDocument | null;
+  nextDevices?: Record<string, ConnectedDeviceInfo>;
+  transformDevices?: (
+    latestDevices: Record<string, ConnectedDeviceInfo>
+  ) => Record<string, ConnectedDeviceInfo>;
   nextAllowedEmails?: string[];
   deviceId: string;
   cashierName: string;
   activityLabel: string;
-}): Promise<void> {
-  const { cachedRemoteDoc } = params;
+}): Promise<FirestoreStoreDocument> {
   const storeRef = doc(db, FIRESTORE_COLLECTION, FIRESTORE_STORE_DOC_ID);
-  const nowMs = Date.now();
-  const payload = {
-    products: cachedRemoteDoc.products,
-    sales: cachedRemoteDoc.sales,
-    cash: cachedRemoteDoc.cash,
-    lastUpdated: Math.max(nowMs, cachedRemoteDoc.lastUpdated || 0),
-    updatedBy: `${params.deviceId} · ${params.cashierName}`.slice(0, 160),
-    devices: params.nextDevices,
-    ownerUid: cachedRemoteDoc.ownerUid || params.user.uid,
-    ownerEmail: cachedRemoteDoc.ownerEmail || params.user.email || '',
-    allowedEmails: (params.nextAllowedEmails ?? cachedRemoteDoc.allowedEmails ?? []).slice(0, 20),
-    serverSyncedAt: serverTimestamp()
-  };
   try {
-    await setDoc(storeRef, payload, { merge: false });
+    return await runTransaction(db, async (transaction) => {
+      const snap = await transaction.get(storeRef);
+      const base = snap.exists()
+        ? parseRemoteDocData(
+            snap.data() as Partial<FirestoreStoreDocument>,
+            params.user.uid,
+            params.user.email || ''
+          )
+        : params.cachedRemoteDoc;
+
+      if (!base) {
+        throw new Error('لا توجد بيانات متجر سحابية بعد لتحديث الأجهزة.');
+      }
+
+      const latestDevices = sanitizeDevicesMap(base.devices);
+      const computedDevices = params.transformDevices
+        ? params.transformDevices(latestDevices)
+        : params.nextDevices ?? latestDevices;
+
+      const nowMs = Date.now();
+      const payload: FirestoreStoreDocument = {
+        products: base.products,
+        sales: base.sales,
+        cash: base.cash,
+        ...(base.customers ? { customers: base.customers } : {}),
+        ...(base.creditTransactions ? { creditTransactions: base.creditTransactions } : {}),
+        ...(base.categories ? { categories: base.categories } : {}),
+        lastUpdated: Math.max(nowMs, base.lastUpdated || 0),
+        updatedBy: `${params.deviceId} · ${params.cashierName}`.slice(0, 160),
+        devices: sanitizeDevicesMap(computedDevices),
+        ownerUid: base.ownerUid || params.user.uid,
+        ownerEmail: base.ownerEmail || params.user.email || '',
+        allowedEmails: (params.nextAllowedEmails ?? base.allowedEmails ?? [])
+          .map((e) => e.trim().toLowerCase())
+          .filter(Boolean)
+          .slice(0, 20),
+        serverSyncedAt: serverTimestamp()
+      };
+
+      transaction.set(storeRef, payload, { merge: false });
+      return payload;
+    });
   } catch (err) {
     handleFirestoreError(err, OperationType.UPDATE, STORE_DOC_PATH);
+  }
+}
+
+export async function fetchRemoteStoreOnce(): Promise<FirestoreStoreDocument | null> {
+  const storeRef = doc(db, FIRESTORE_COLLECTION, FIRESTORE_STORE_DOC_ID);
+  try {
+    const snap = await getDoc(storeRef);
+    if (!snap.exists()) return null;
+    return parseRemoteDocData(snap.data() as Partial<FirestoreStoreDocument>);
+  } catch (err) {
+    handleFirestoreError(err, OperationType.GET, STORE_DOC_PATH);
   }
 }

@@ -17,10 +17,17 @@ import {
   Wifi,
   WifiOff,
   Activity,
-  Database
+  Database,
+  AlertTriangle,
+  Link2
 } from 'lucide-react';
 import { usePos } from '../../context/PosContext';
-import { FIRESTORE_COLLECTION, FIRESTORE_STORE_DOC_ID } from '../../utils/firestoreSync';
+import {
+  DEVICE_ACTIVE_WINDOW_MS,
+  FIRESTORE_COLLECTION,
+  FIRESTORE_STORE_DOC_ID,
+  formatFriendlySyncError
+} from '../../utils/firestoreSync';
 
 function formatRelativeTime(ms: number, nowMs: number, isAr: boolean): string {
   if (!ms || ms <= 0) return isAr ? 'غير متوفر' : 'N/A';
@@ -61,6 +68,7 @@ export const ConnectedDevicesSection: React.FC = () => {
     forceCloudSyncNow,
     renameCurrentDevice,
     removeConnectedDevice,
+    removeInactiveDevices,
     addAllowedSyncEmail,
     removeAllowedSyncEmail,
     isOnline,
@@ -72,8 +80,10 @@ export const ConnectedDevicesSection: React.FC = () => {
   const [isEditingName, setIsEditingName] = useState(false);
   const [draftDeviceName, setDraftDeviceName] = useState(cloudSyncState.deviceName);
   const [copiedId, setCopiedId] = useState(false);
+  const [copiedStoreUrl, setCopiedStoreUrl] = useState(false);
   const [isAuthBusy, setIsAuthBusy] = useState(false);
   const [isSyncBusy, setIsSyncBusy] = useState(false);
+  const [isCleaningDevices, setIsCleaningDevices] = useState(false);
   const [newStaffEmail, setNewStaffEmail] = useState('');
   const [actionMsg, setActionMsg] = useState<{ type: 'ok' | 'err'; text: string } | null>(null);
   const [confirmRemoveId, setConfirmRemoveId] = useState<string | null>(null);
@@ -92,10 +102,22 @@ export const ConnectedDevicesSection: React.FC = () => {
     cloudSyncState.isSignedIn &&
     (cloudSyncState.status === 'synced' || cloudSyncState.status === 'syncing');
 
+  const hasSyncError = isOnline && cloudSyncState.isSignedIn && cloudSyncState.status === 'error';
+
   const count = cloudSyncState.activeDevicesCount;
   const statusHeadline = isConnectedAndSynced
     ? `متصل ومزامن مع ${count} أجهزة ✅`
-    : 'غير متصل ⚠️';
+    : !isOnline
+    ? isAr
+      ? 'لا يوجد إنترنت (وضع محلي) ⚠️'
+      : 'Offline (Local Mode) ⚠️'
+    : hasSyncError
+    ? isAr
+      ? 'خطأ في صلاحيات أو مزامنة السحابة ⚠️'
+      : 'Cloud Sync Error ⚠️'
+    : isAr
+    ? 'غير متصل بحساب Google ⚠️'
+    : 'Google Sign-In Required ⚠️';
 
   const handleSignIn = async () => {
     setIsAuthBusy(true);
@@ -103,7 +125,7 @@ export const ConnectedDevicesSection: React.FC = () => {
     const res = await signInCloudSync();
     setIsAuthBusy(false);
     if (!res.success && res.error) {
-      setActionMsg({ type: 'err', text: res.error });
+      setActionMsg({ type: 'err', text: formatFriendlySyncError(res.error, isAr) });
     } else if (res.success) {
       setActionMsg({
         type: 'ok',
@@ -118,13 +140,54 @@ export const ConnectedDevicesSection: React.FC = () => {
     setIsSyncBusy(true);
     setActionMsg(null);
     try {
-      await forceCloudSyncNow(isAr ? 'مزامنة يدوية من إدارة الأجهزة' : 'Manual sync');
-      setActionMsg({
-        type: 'ok',
-        text: isAr ? 'تمت المزامنة الفورية ودمج البيانات مع السحابة' : 'Synced & merged successfully'
-      });
+      const res = await forceCloudSyncNow(
+        isAr ? 'مزامنة يدوية من إدارة الأجهزة' : 'Manual sync'
+      );
+      if (res.success) {
+        setActionMsg({
+          type: 'ok',
+          text: isAr ? 'تمت المزامنة الفورية ودمج البيانات مع السحابة' : 'Synced & merged successfully'
+        });
+      } else if (res.error) {
+        setActionMsg({ type: 'err', text: formatFriendlySyncError(res.error, isAr) });
+      }
     } finally {
       setIsSyncBusy(false);
+    }
+  };
+
+  const handleCleanInactiveDevices = async () => {
+    setIsCleaningDevices(true);
+    setActionMsg(null);
+    try {
+      const res = await removeInactiveDevices();
+      if (res.error) {
+        setActionMsg({ type: 'err', text: formatFriendlySyncError(res.error, isAr) });
+      } else {
+        setActionMsg({
+          type: 'ok',
+          text:
+            res.removedCount > 0
+              ? isAr
+                ? `تمت إزالة ${res.removedCount} أجهزة خاملة/قديمة من القائمة بنجاح`
+                : `Removed ${res.removedCount} inactive devices`
+              : isAr
+              ? 'جميع الأجهزة المسجلة حالياً نشطة ولا توجد أجهزة خاملة'
+              : 'All registered devices are currently active'
+        });
+      }
+    } finally {
+      setIsCleaningDevices(false);
+    }
+  };
+
+  const handleCopyStoreLink = async () => {
+    try {
+      await navigator.clipboard.writeText(window.location.origin);
+      setCopiedStoreUrl(true);
+      setTimeout(() => setCopiedStoreUrl(false), 1800);
+    } catch {
+      // ignore
     }
   };
 
@@ -256,6 +319,66 @@ export const ConnectedDevicesSection: React.FC = () => {
         </div>
       </div>
 
+      {/* Connection Diagnostics Strip */}
+      <div className="grid grid-cols-1 sm:grid-cols-3 gap-2 text-[11px]">
+        <div
+          className={`px-3 py-2 rounded-xl border flex items-center justify-between font-bold ${
+            isOnline
+              ? 'bg-emerald-50/70 dark:bg-emerald-950/30 border-emerald-200 dark:border-emerald-900/60 text-emerald-700 dark:text-emerald-300'
+              : 'bg-amber-50 dark:bg-amber-950/30 border-amber-200 dark:border-amber-900/60 text-amber-800 dark:text-amber-300'
+          }`}
+        >
+          <span>{isAr ? '1. اتصال الإنترنت' : '1. Internet'}</span>
+          <span>{isOnline ? (isAr ? 'متصل ✅' : 'Online ✅') : isAr ? 'منقطع ⚠️' : 'Offline ⚠️'}</span>
+        </div>
+
+        <div
+          className={`px-3 py-2 rounded-xl border flex items-center justify-between font-bold ${
+            cloudSyncState.isSignedIn
+              ? 'bg-emerald-50/70 dark:bg-emerald-950/30 border-emerald-200 dark:border-emerald-900/60 text-emerald-700 dark:text-emerald-300'
+              : 'bg-amber-50 dark:bg-amber-950/30 border-amber-200 dark:border-amber-900/60 text-amber-800 dark:text-amber-300'
+          }`}
+        >
+          <span>{isAr ? '2. حساب Google' : '2. Google Auth'}</span>
+          <span className="truncate max-w-[140px]" title={cloudSyncState.userEmail || ''}>
+            {cloudSyncState.isSignedIn
+              ? cloudSyncState.userEmail || (isAr ? 'مفعّل ✅' : 'Signed in ✅')
+              : isAr
+              ? 'غير مسجل ⚠️'
+              : 'Required ⚠️'}
+          </span>
+        </div>
+
+        <div
+          className={`px-3 py-2 rounded-xl border flex items-center justify-between font-bold ${
+            isConnectedAndSynced
+              ? 'bg-emerald-50/70 dark:bg-emerald-950/30 border-emerald-200 dark:border-emerald-900/60 text-emerald-700 dark:text-emerald-300'
+              : hasSyncError
+              ? 'bg-rose-50 dark:bg-rose-950/30 border-rose-200 dark:border-rose-900/60 text-rose-700 dark:text-rose-300'
+              : 'bg-slate-50 dark:bg-slate-800/50 border-slate-200 dark:border-slate-700 text-slate-600 dark:text-slate-300'
+          }`}
+        >
+          <span>{isAr ? '3. حالة المزامنة' : '3. Cloud Sync'}</span>
+          <span>
+            {cloudSyncState.status === 'syncing'
+              ? isAr
+                ? 'جاري الرفع...'
+                : 'Syncing...'
+              : isConnectedAndSynced
+              ? isAr
+                ? 'متزامن لحظياً ✅'
+                : 'Live ✅'
+              : hasSyncError
+              ? isAr
+                ? 'متوقف (خطأ) ⚠️'
+                : 'Error ⚠️'
+              : isAr
+              ? 'في الانتظار'
+              : 'Standby'}
+          </span>
+        </div>
+      </div>
+
       {/* Offline or Pending Sync Banner */}
       {(!isOnline || cloudSyncState.hasPendingLocalChanges) && (
         <div className="p-3.5 rounded-2xl bg-amber-50 dark:bg-amber-950/40 border border-amber-200 dark:border-amber-800 text-xs text-amber-900 dark:text-amber-200 flex flex-wrap items-center justify-between gap-2">
@@ -286,17 +409,42 @@ export const ConnectedDevicesSection: React.FC = () => {
       {/* Auth / Error Feedback Banner */}
       {(cloudSyncState.lastError || actionMsg) && (
         <div
-          className={`p-3 rounded-2xl border text-xs font-bold ${
+          className={`p-3.5 rounded-2xl border text-xs font-bold flex flex-wrap items-center justify-between gap-3 ${
             cloudSyncState.lastError || actionMsg?.type === 'err'
               ? 'bg-rose-50 dark:bg-rose-950/40 border-rose-200 dark:border-rose-800 text-rose-700 dark:text-rose-300'
               : 'bg-emerald-50 dark:bg-emerald-950/40 border-emerald-200 dark:border-emerald-800 text-emerald-700 dark:text-emerald-300'
           }`}
         >
-          {cloudSyncState.lastError
-            ? isAr
-              ? `تنبيه المزامنة: ${cloudSyncState.lastError}`
-              : cloudSyncState.lastError
-            : actionMsg?.text}
+          <div className="flex items-start gap-2 flex-1 min-w-[200px]">
+            {(cloudSyncState.lastError || actionMsg?.type === 'err') && (
+              <AlertTriangle className="w-4 h-4 shrink-0 mt-0.5" />
+            )}
+            <span>
+              {cloudSyncState.lastError
+                ? formatFriendlySyncError(cloudSyncState.lastError, isAr)
+                : actionMsg?.text}
+            </span>
+          </div>
+          {cloudSyncState.lastError && isOnline && (
+            <div className="flex items-center gap-2 shrink-0">
+              <button
+                type="button"
+                disabled={isSyncBusy}
+                onClick={() => void handleManualSync()}
+                className="px-3 py-1.5 rounded-xl bg-rose-600 hover:bg-rose-700 text-white text-[11px] font-black"
+              >
+                {isAr ? 'إعادة المحاولة' : 'Retry Sync'}
+              </button>
+              <button
+                type="button"
+                disabled={isAuthBusy}
+                onClick={() => void handleSignIn()}
+                className="px-3 py-1.5 rounded-xl bg-white dark:bg-slate-800 border border-rose-300 dark:border-rose-700 text-rose-700 dark:text-rose-300 text-[11px] font-black"
+              >
+                {isAr ? 'تبديل حساب Google' : 'Switch Google'}
+              </button>
+            </div>
+          )}
         </div>
       )}
 
@@ -406,6 +554,22 @@ export const ConnectedDevicesSection: React.FC = () => {
               {copiedId ? <Check className="w-3 h-3" /> : <Copy className="w-3 h-3" />}
               <span>{copiedId ? (isAr ? 'تم النسخ' : 'Copied') : (isAr ? 'نسخ المعرف' : 'Copy ID')}</span>
             </button>
+            <button
+              type="button"
+              onClick={() => void handleCopyStoreLink()}
+              className="inline-flex items-center gap-1 px-2 py-0.5 rounded-md bg-white dark:bg-slate-900 border border-emerald-200 dark:border-emerald-800 text-[11px] font-bold text-emerald-700 dark:text-emerald-300 hover:bg-emerald-50"
+            >
+              {copiedStoreUrl ? <Check className="w-3 h-3" /> : <Link2 className="w-3 h-3" />}
+              <span>
+                {copiedStoreUrl
+                  ? isAr
+                    ? 'تم نسخ رابط الربط'
+                    : 'Link Copied'
+                  : isAr
+                  ? 'نسخ رابط فتح المتجر على جهاز آخر'
+                  : 'Copy Join Link'}
+              </span>
+            </button>
             {cloudSyncState.userEmail && (
               <span className="font-bold text-slate-700 dark:text-slate-300">
                 · {cloudSyncState.userEmail}
@@ -417,7 +581,7 @@ export const ConnectedDevicesSection: React.FC = () => {
 
       {/* Real-time Connected Devices Table / List */}
       <div className="space-y-2.5">
-        <div className="flex items-center justify-between">
+        <div className="flex flex-wrap items-center justify-between gap-2">
           <h4 className="text-xs font-extrabold text-slate-800 dark:text-slate-200 flex items-center gap-1.5">
             <Activity className="w-4 h-4 text-emerald-600" />
             <span>
@@ -426,9 +590,32 @@ export const ConnectedDevicesSection: React.FC = () => {
                 : `Firestore Synced Devices (${cloudSyncState.devices.length})`}
             </span>
           </h4>
-          <span className="text-[11px] text-slate-500">
-            {isAr ? 'يتم تحديث القائمة تلقائياً في نفس الثانية' : 'Auto-updated live via onSnapshot'}
-          </span>
+          <div className="flex items-center gap-2">
+            {cloudSyncState.isOwner &&
+              cloudSyncState.devices.some(
+                (d) =>
+                  d.deviceId !== cloudSyncState.deviceId &&
+                  (d.online === false || nowMs - (d.lastUpdatedMs || 0) >= DEVICE_ACTIVE_WINDOW_MS)
+              ) && (
+                <button
+                  type="button"
+                  disabled={isCleaningDevices}
+                  onClick={() => void handleCleanInactiveDevices()}
+                  className="px-2.5 py-1 rounded-lg bg-slate-100 hover:bg-rose-50 dark:bg-slate-800 dark:hover:bg-rose-950/40 text-slate-600 hover:text-rose-600 dark:text-slate-300 text-[11px] font-bold transition-colors"
+                >
+                  {isCleaningDevices
+                    ? isAr
+                      ? 'جاري التنظيف...'
+                      : 'Cleaning...'
+                    : isAr
+                    ? 'تنظيف الأجهزة الخاملة'
+                    : 'Remove Inactive'}
+                </button>
+              )}
+            <span className="text-[11px] text-slate-500">
+              {isAr ? 'يتم تحديث القائمة تلقائياً في نفس الثانية' : 'Auto-updated live via onSnapshot'}
+            </span>
+          </div>
         </div>
 
         {!cloudSyncState.isSignedIn ? (
@@ -449,7 +636,9 @@ export const ConnectedDevicesSection: React.FC = () => {
           <div className="space-y-2">
             {cloudSyncState.devices.map((dev) => {
               const isMe = dev.deviceId === cloudSyncState.deviceId;
-              const isFresh = dev.online && nowMs - (dev.lastUpdatedMs || 0) < 180_000;
+              const ageMs = nowMs - (dev.lastUpdatedMs || 0);
+              const isWithinWindow = dev.online && (isMe || ageMs < DEVICE_ACTIVE_WINDOW_MS);
+              const isFresh = dev.online && (isMe || ageMs < 120_000);
               const MobileOrDesktopIcon = isMobileAgent(dev.userAgent) ? Smartphone : Laptop;
 
               return (
@@ -464,7 +653,7 @@ export const ConnectedDevicesSection: React.FC = () => {
                   <div className="flex items-start gap-3 min-w-0 flex-1">
                     <div
                       className={`w-10 h-10 rounded-xl flex items-center justify-center shrink-0 ${
-                        dev.online
+                        isWithinWindow
                           ? isFresh
                             ? 'bg-emerald-100 dark:bg-emerald-950 text-emerald-600 dark:text-emerald-400'
                             : 'bg-sky-100 dark:bg-sky-950 text-sky-600 dark:text-sky-400'
@@ -486,7 +675,7 @@ export const ConnectedDevicesSection: React.FC = () => {
                         )}
                         <span
                           className={`px-2 py-0.5 rounded-full text-[10px] font-extrabold inline-flex items-center gap-1 ${
-                            dev.online
+                            isWithinWindow
                               ? isFresh
                                 ? 'bg-emerald-100 dark:bg-emerald-950/80 text-emerald-700 dark:text-emerald-300'
                                 : 'bg-sky-100 dark:bg-sky-950/80 text-sky-700 dark:text-sky-300'
@@ -495,14 +684,14 @@ export const ConnectedDevicesSection: React.FC = () => {
                         >
                           <span
                             className={`w-1.5 h-1.5 rounded-full ${
-                              dev.online
+                              isWithinWindow
                                 ? isFresh
                                   ? 'bg-emerald-500 animate-pulse'
                                   : 'bg-sky-500'
                                 : 'bg-slate-400'
                             }`}
                           />
-                          {dev.online
+                          {isWithinWindow
                             ? isFresh
                               ? isAr
                                 ? 'متصل الآن'
@@ -511,8 +700,8 @@ export const ConnectedDevicesSection: React.FC = () => {
                               ? 'متزامن'
                               : 'Synced'
                             : isAr
-                            ? 'غير متصل'
-                            : 'Offline'}
+                            ? 'خامل / غير متصل'
+                            : 'Offline / Idle'}
                         </span>
                       </div>
 

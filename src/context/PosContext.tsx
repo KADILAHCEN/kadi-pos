@@ -96,6 +96,7 @@ import { BUILT_IN_PALETTES, applyPaletteToDocument } from '../utils/palettes';
 import { onAuthStateChanged, User } from 'firebase/auth';
 import { auth, signInWithGoogleForFirestore, signOutFromFirestore } from '../firebase';
 import {
+  DEVICE_ACTIVE_WINDOW_MS,
   FirestoreStoreDocument,
   LocalStoreSyncPayload,
   clearDeletedProductTombstone,
@@ -451,9 +452,10 @@ interface PosContextType {
   cloudSyncState: FirestoreSyncState;
   signInCloudSync: () => Promise<{ success: boolean; error?: string }>;
   signOutCloudSync: () => Promise<void>;
-  forceCloudSyncNow: (activityLabel?: string) => Promise<void>;
+  forceCloudSyncNow: (activityLabel?: string) => Promise<{ success: boolean; error?: string }>;
   renameCurrentDevice: (newName: string) => Promise<void>;
   removeConnectedDevice: (targetDeviceId: string) => Promise<void>;
+  removeInactiveDevices: () => Promise<{ removedCount: number; error?: string }>;
   addAllowedSyncEmail: (email: string) => Promise<{ success: boolean; error?: string }>;
   removeAllowedSyncEmail: (email: string) => Promise<void>;
 
@@ -730,19 +732,36 @@ export const PosProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
     try {
       const saved = localStorage.getItem('kadi_pos_settings_v3');
       const parsedRaw: unknown = saved ? JSON.parse(saved) : null;
-      const parsed = normalizeStoreSettings(parsedRaw);
+      let nextSettings = normalizeStoreSettings(parsedRaw);
+      let mutated = false;
+
       const trueDarkMigrated = localStorage.getItem('kadi_pos_true_dark_v1');
       if (!trueDarkMigrated) {
-        const nextSettings: StoreSettings = {
-          ...parsed,
+        nextSettings = {
+          ...nextSettings,
           theme: 'dark',
           themeMode: 'dark'
         };
         safeLocalStorageSet('kadi_pos_true_dark_v1', '1');
-        safeLocalStorageSet('kadi_pos_settings_v3', JSON.stringify(nextSettings));
-        return nextSettings;
+        mutated = true;
       }
-      return parsed;
+
+      const unprotectMigrated = localStorage.getItem('kadi_pos_unprotect_settings_v1');
+      if (!unprotectMigrated) {
+        nextSettings = {
+          ...nextSettings,
+          protectSettingsWithPin: false,
+          protectInventoryWithPin: false,
+          requirePinForRestoreDefaults: false
+        };
+        safeLocalStorageSet('kadi_pos_unprotect_settings_v1', '1');
+        mutated = true;
+      }
+
+      if (mutated) {
+        safeLocalStorageSet('kadi_pos_settings_v3', JSON.stringify(nextSettings));
+      }
+      return nextSettings;
     } catch {
       return initialSettings;
     }
@@ -1039,13 +1058,12 @@ export const PosProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
   };
 
   const isTabProtected = (tab: string): boolean => {
+    if (tab === 'settings') return false;
     if (currentUser.role === 'manager') return false;
     if (currentUser.role === 'courier') {
       return tab !== 'remote_sales' && tab !== 'orders';
     }
-    if (tab === 'inventory' && settings.protectInventoryWithPin) return true;
-    if (tab === 'settings' && settings.protectSettingsWithPin) return true;
-    if (currentUser.role === 'cashier' && (tab === 'inventory' || tab === 'settings')) return true;
+    if (tab === 'inventory' && settings.protectInventoryWithPin === true) return true;
     return false;
   };
 
@@ -5479,6 +5497,7 @@ export const PosProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
   const skipNextLocalPushRef = useRef<boolean>(false);
   const syncDebounceTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const cloudPushInFlightRef = useRef<boolean>(false);
+  const pendingPushAfterFlightRef = useRef<{ label?: string; onlineFlag: boolean } | null>(null);
   const lastLocalActivityRef = useRef<string>(
     getPendingCloudSyncFlag() || 'تحديث بيانات المتجر'
   );
@@ -5490,6 +5509,9 @@ export const PosProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
   const latestCurrentShiftRef = useRef(currentShift);
   const latestShiftsHistoryRef = useRef(shiftsHistory);
   const latestEmergencySessionsRef = useRef(emergencySessions);
+  const latestCustomersRef = useRef(customers);
+  const latestCreditTxRef = useRef(creditTransactions);
+  const latestCategoriesRef = useRef(categories);
   const latestDeviceNameRef = useRef(deviceName);
   const latestCashierNameRef = useRef(currentUser.name);
 
@@ -5498,6 +5520,9 @@ export const PosProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
   latestCurrentShiftRef.current = currentShift;
   latestShiftsHistoryRef.current = shiftsHistory;
   latestEmergencySessionsRef.current = emergencySessions;
+  latestCustomersRef.current = customers;
+  latestCreditTxRef.current = creditTransactions;
+  latestCategoriesRef.current = categories;
   latestDeviceNameRef.current = deviceName;
   latestCashierNameRef.current = currentUser.name;
 
@@ -5507,18 +5532,26 @@ export const PosProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
     orders: Map<string, string>;
     shifts: Map<string, string>;
     emg: Map<string, string>;
+    customers: Map<string, string>;
+    creditTx: Map<string, string>;
+    categories: Map<string, string>;
     productUpdatedAt: Map<string, number>;
     orderUpdatedAt: Map<string, number>;
     shiftUpdatedAt: Map<string, number>;
+    customerUpdatedAt: Map<string, number>;
     initialized: boolean;
   }>({
     products: new Map(),
     orders: new Map(),
     shifts: new Map(),
     emg: new Map(),
+    customers: new Map(),
+    creditTx: new Map(),
+    categories: new Map(),
     productUpdatedAt: new Map(),
     orderUpdatedAt: new Map(),
     shiftUpdatedAt: new Map(),
+    customerUpdatedAt: new Map(),
     initialized: false
   });
 
@@ -5526,6 +5559,7 @@ export const PosProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
     const pTs = prevItemSigsRef.current.productUpdatedAt;
     const oTs = prevItemSigsRef.current.orderUpdatedAt;
     const sTs = prevItemSigsRef.current.shiftUpdatedAt;
+    const cTs = prevItemSigsRef.current.customerUpdatedAt;
 
     const stampedProducts = latestProductsRef.current.map((p) => {
       const ts = p.updatedAt || pTs.get(p.id);
@@ -5548,6 +5582,11 @@ export const PosProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
       return ts ? { ...s, updatedAt: ts } : s;
     });
 
+    const stampedCustomers = latestCustomersRef.current.map((c) => {
+      const ts = c.updatedAt || cTs.get(c.id);
+      return ts ? { ...c, updatedAt: ts } : c;
+    });
+
     return {
       products: stampedProducts,
       sales: stampedOrders,
@@ -5556,6 +5595,9 @@ export const PosProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
         shiftsHistory: stampedHistory,
         emergencySessions: latestEmergencySessionsRef.current
       },
+      customers: stampedCustomers,
+      creditTransactions: latestCreditTxRef.current,
+      categories: latestCategoriesRef.current,
       lastUpdated: lastLocalUpdatedAtRef.current,
       updatedBy: `${deviceIdRef.current} · ${latestCashierNameRef.current}`
     };
@@ -5576,20 +5618,35 @@ export const PosProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
   }, []);
 
   const pushCurrentStoreToCloud = useCallback(
-    async (activityLabel?: string, onlineFlag: boolean = true) => {
+    async (
+      activityLabel?: string,
+      onlineFlag: boolean = true
+    ): Promise<{ success: boolean; error?: string }> => {
       const user = auth.currentUser;
       const nowOnline = typeof navigator !== 'undefined' ? navigator.onLine : isOnline;
       if (!user || !user.emailVerified || !nowOnline) {
         const label = activityLabel || lastLocalActivityRef.current;
         setPendingCloudSyncFlag(label);
         setHasPendingLocalChanges(true);
-        return;
+        return {
+          success: false,
+          error: !nowOnline
+            ? 'لا يوجد اتصال بالإنترنت حالياً. تم حفظ التعديلات محلياً وستُرفع تلقائياً عند العودة.'
+            : 'يرجى تسجيل الدخول بحساب Google المفعّل لتفعيل المزامنة السحابية.'
+        };
       }
-      if (cloudPushInFlightRef.current) return;
+      if (cloudPushInFlightRef.current) {
+        pendingPushAfterFlightRef.current = {
+          label: activityLabel || pendingPushAfterFlightRef.current?.label,
+          onlineFlag
+        };
+        return { success: true };
+      }
 
       cloudPushInFlightRef.current = true;
       setCloudSyncingNow(true);
 
+      let result: { success: boolean; error?: string } = { success: true };
       try {
         const localPayload = buildCurrentLocalPayload();
         saveLocalCloudBackup(localPayload);
@@ -5622,10 +5679,18 @@ export const PosProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
       } catch (err) {
         const msg = err instanceof Error ? err.message : String(err);
         setCloudSyncError(msg);
+        result = { success: false, error: msg };
       } finally {
         cloudPushInFlightRef.current = false;
-        setCloudSyncingNow(false);
+        const queued = pendingPushAfterFlightRef.current;
+        pendingPushAfterFlightRef.current = null;
+        if (queued && navigator.onLine && auth.currentUser?.emailVerified) {
+          void pushCurrentStoreToCloud(queued.label, queued.onlineFlag);
+        } else {
+          setCloudSyncingNow(false);
+        }
       }
+      return result;
     },
     [buildCurrentLocalPayload, isOnline]
   );
@@ -5643,9 +5708,11 @@ export const PosProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
       (remoteDoc, meta) => {
         if (!remoteDoc) {
           setStoreExistsInCloud(false);
-          setCloudSyncingNow(false);
-          // Initialize Firestore document from local store on first setup
-          void pushCurrentStoreToCloud('تهيئة المتجر والمزامنة السحابية الأولى', true);
+          if (!meta.fromCache) {
+            setCloudSyncingNow(false);
+            // Initialize Firestore document from local store on first setup
+            void pushCurrentStoreToCloud('تهيئة المتجر والمزامنة السحابية الأولى', true);
+          }
           return;
         }
 
@@ -5683,8 +5750,18 @@ export const PosProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
         // Compare if merged data introduces updates not yet reflected in local React state
         const prodChanged =
           merged.products.length !== latestProductsRef.current.length ||
-          JSON.stringify(merged.products.map((p) => `${p.id}:${p.stock}:${p.price}:${p.costPrice}:${p.name}:${p.updatedAt || 0}`)) !==
-            JSON.stringify(latestProductsRef.current.map((p) => `${p.id}:${p.stock}:${p.price}:${p.costPrice}:${p.name}:${p.updatedAt || 0}`));
+          JSON.stringify(
+            merged.products.map(
+              (p) =>
+                `${p.id}:${p.stock}:${p.price}:${p.costPrice}:${p.name}:${p.barcode || ''}:${p.categoryId || ''}:${p.lowStockThreshold}:${p.expiryDate || ''}:${p.unitType || ''}:${p.updatedAt || 0}`
+            )
+          ) !==
+            JSON.stringify(
+              latestProductsRef.current.map(
+                (p) =>
+                  `${p.id}:${p.stock}:${p.price}:${p.costPrice}:${p.name}:${p.barcode || ''}:${p.categoryId || ''}:${p.lowStockThreshold}:${p.expiryDate || ''}:${p.unitType || ''}:${p.updatedAt || 0}`
+              )
+            );
 
         const salesChanged =
           merged.sales.length !== latestOrdersRef.current.length ||
@@ -5699,14 +5776,43 @@ export const PosProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
           merged.cash.shiftsHistory.length !== latestShiftsHistoryRef.current.length ||
           merged.cash.emergencySessions.length !== latestEmergencySessionsRef.current.length;
 
-        if (prodChanged || salesChanged || cashChanged) {
+        const custChanged =
+          Array.isArray(merged.customers) &&
+          (merged.customers.length !== latestCustomersRef.current.length ||
+            JSON.stringify(
+              merged.customers.map(
+                (c) => `${c.id}:${c.name}:${c.phone}:${c.balance}:${c.points || 0}:${c.updatedAt || 0}`
+              )
+            ) !==
+              JSON.stringify(
+                latestCustomersRef.current.map(
+                  (c) => `${c.id}:${c.name}:${c.phone}:${c.balance}:${c.points || 0}:${c.updatedAt || 0}`
+                )
+              ));
+
+        const creditChanged =
+          Array.isArray(merged.creditTransactions) &&
+          (merged.creditTransactions.length !== latestCreditTxRef.current.length ||
+            JSON.stringify(merged.creditTransactions.slice(0, 80).map((tx) => `${tx.id}:${tx.amount}:${tx.type}`)) !==
+              JSON.stringify(latestCreditTxRef.current.slice(0, 80).map((tx) => `${tx.id}:${tx.amount}:${tx.type}`)));
+
+        const catChanged =
+          Array.isArray(merged.categories) &&
+          (merged.categories.length !== latestCategoriesRef.current.length ||
+            JSON.stringify(merged.categories.map((cat) => `${cat.id}:${cat.name}`)) !==
+              JSON.stringify(latestCategoriesRef.current.map((cat) => `${cat.id}:${cat.name}`)));
+
+        if (prodChanged || salesChanged || cashChanged || custChanged || creditChanged || catChanged) {
           isApplyingRemoteRef.current = true;
           skipNextLocalPushRef.current = true;
 
           // Update signature cache before React renders so local mutation detector stays clean
           const nextProdSigs = new Map<string, string>();
           merged.products.forEach((p) => {
-            nextProdSigs.set(p.id, `${p.name}|${p.price}|${p.costPrice}|${p.stock}|${p.lowStockThreshold}`);
+            nextProdSigs.set(
+              p.id,
+              `${p.name}|${p.price}|${p.costPrice}|${p.stock}|${p.lowStockThreshold}|${p.barcode || ''}|${p.categoryId || ''}|${p.expiryDate || ''}|${p.unitType || ''}`
+            );
             if (p.updatedAt) prevItemSigsRef.current.productUpdatedAt.set(p.id, p.updatedAt);
           });
           prevItemSigsRef.current.products = nextProdSigs;
@@ -5725,6 +5831,31 @@ export const PosProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
           });
           prevItemSigsRef.current.shifts = nextShiftSigs;
 
+          if (merged.customers) {
+            const nextCustSigs = new Map<string, string>();
+            merged.customers.forEach((c) => {
+              nextCustSigs.set(c.id, `${c.name}|${c.phone}|${c.balance}|${c.points || 0}`);
+              if (c.updatedAt) prevItemSigsRef.current.customerUpdatedAt.set(c.id, c.updatedAt);
+            });
+            prevItemSigsRef.current.customers = nextCustSigs;
+          }
+
+          if (merged.creditTransactions) {
+            const nextCreditSigs = new Map<string, string>();
+            merged.creditTransactions.forEach((tx) => {
+              nextCreditSigs.set(tx.id, `${tx.amount}|${tx.type}|${tx.customerId}`);
+            });
+            prevItemSigsRef.current.creditTx = nextCreditSigs;
+          }
+
+          if (merged.categories) {
+            const nextCatSigs = new Map<string, string>();
+            merged.categories.forEach((cat) => {
+              nextCatSigs.set(cat.id, `${cat.name}|${cat.iconName || ''}`);
+            });
+            prevItemSigsRef.current.categories = nextCatSigs;
+          }
+
           if (prodChanged) setProducts(merged.products);
           if (salesChanged) setOrders(merged.sales);
           if (cashChanged) {
@@ -5732,6 +5863,11 @@ export const PosProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
             setShiftsHistory(merged.cash.shiftsHistory);
             setEmergencySessions(merged.cash.emergencySessions);
           }
+          if (custChanged && merged.customers) setCustomers(merged.customers);
+          if (creditChanged && merged.creditTransactions) {
+            setCreditTransactions(merged.creditTransactions);
+          }
+          if (catChanged && merged.categories) setCategories(merged.categories);
 
           window.setTimeout(() => {
             isApplyingRemoteRef.current = false;
@@ -5747,16 +5883,20 @@ export const PosProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
 
         const mergedProdIds = new Set(merged.products.map((p) => p.id));
         const localDeletionNeedsPush = remoteDoc.products.some((rp) => !mergedProdIds.has(rp.id));
+        const myHeartbeatStale = !myDevice || Date.now() - (myDevice.lastUpdatedMs || 0) > 45_000;
 
-        // If this device isn't registered yet, marked offline, has offline mutations, or suppressed a deleted item -> push back merged doc
+        // If this device isn't registered yet, marked offline, heartbeat is stale, has offline mutations, or has new merged records -> push back merged doc
         if (
           !meta.fromCache &&
           (!myDevice ||
             myDevice.online === false ||
+            myHeartbeatStale ||
             pendingOfflineActivity ||
             localDeletionNeedsPush ||
             merged.products.length > remoteDoc.products.length ||
-            merged.sales.length > remoteDoc.sales.length)
+            merged.sales.length > remoteDoc.sales.length ||
+            (merged.customers?.length || 0) > (remoteDoc.customers?.length || 0) ||
+            (merged.creditTransactions?.length || 0) > (remoteDoc.creditTransactions?.length || 0))
         ) {
           void pushCurrentStoreToCloud(
             pendingOfflineActivity || (localDeletionNeedsPush ? 'مزامنة حذف سلعة' : 'انضمام ومزامنة تلقائية للجهاز'),
@@ -5782,7 +5922,7 @@ export const PosProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
     pushCurrentStoreToCloud
   ]);
 
-  // Watch local store mutations (products, sales, cash) -> backup to localStorage + debounced Firestore push
+  // Watch local store mutations (products, sales, cash, customers, credit, categories) -> backup to localStorage + debounced Firestore push
   useEffect(() => {
     const isCoreHydrated = productsHydrated && ordersHydrated;
     if (!isCoreHydrated) return;
@@ -5795,7 +5935,7 @@ export const PosProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
     let productsModifiedCount = 0;
     let firstChangedProductName = '';
     products.forEach((p) => {
-      const sig = `${p.name}|${p.price}|${p.costPrice}|${p.stock}|${p.lowStockThreshold}`;
+      const sig = `${p.name}|${p.price}|${p.costPrice}|${p.stock}|${p.lowStockThreshold}|${p.barcode || ''}|${p.categoryId || ''}|${p.expiryDate || ''}|${p.unitType || ''}`;
       nextProdSigs.set(p.id, sig);
       if (sigs.initialized && sigs.products.get(p.id) !== sig) {
         productsModifiedCount++;
@@ -5840,6 +5980,47 @@ export const PosProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
     });
     sigs.shifts = nextShiftSigs;
 
+    const nextCustSigs = new Map<string, string>();
+    let customersModifiedCount = 0;
+    let firstChangedCustomerName = '';
+    customers.forEach((c) => {
+      const sig = `${c.name}|${c.phone}|${c.balance}|${c.points || 0}`;
+      nextCustSigs.set(c.id, sig);
+      if (sigs.initialized && sigs.customers.get(c.id) !== sig) {
+        customersModifiedCount++;
+        if (!firstChangedCustomerName) firstChangedCustomerName = c.name;
+        if (!isApplyingRemoteRef.current) {
+          sigs.customerUpdatedAt.set(c.id, nowMs);
+        }
+      }
+    });
+    sigs.customers = nextCustSigs;
+
+    const nextCreditSigs = new Map<string, string>();
+    let creditModifiedCount = 0;
+    creditTransactions.forEach((tx) => {
+      const sig = `${tx.amount}|${tx.type}|${tx.customerId}`;
+      nextCreditSigs.set(tx.id, sig);
+      if (sigs.initialized && sigs.creditTx.get(tx.id) !== sig) {
+        creditModifiedCount++;
+      }
+    });
+    sigs.creditTx = nextCreditSigs;
+
+    const nextCatSigs = new Map<string, string>();
+    let categoriesModified = false;
+    categories.forEach((cat) => {
+      const sig = `${cat.name}|${cat.iconName || ''}`;
+      nextCatSigs.set(cat.id, sig);
+      if (sigs.initialized && sigs.categories.get(cat.id) !== sig) {
+        categoriesModified = true;
+      }
+    });
+    if (sigs.initialized && categories.length !== sigs.categories.size) {
+      categoriesModified = true;
+    }
+    sigs.categories = nextCatSigs;
+
     if (!sigs.initialized) {
       sigs.initialized = true;
       saveLocalCloudBackup(buildCurrentLocalPayload());
@@ -5858,6 +6039,10 @@ export const PosProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
       activity = firstChangedOrderNum
         ? `مبيعة/فاتورة ${firstChangedOrderNum}`
         : `تحديث المبيعات (${ordersModifiedCount})`;
+    } else if (creditModifiedCount > 0 || customersModifiedCount > 0) {
+      activity = firstChangedCustomerName
+        ? `تحديث حساب الزبون/الكريدي: ${firstChangedCustomerName}`
+        : `تحديث الزبناء والكريدي (${customersModifiedCount || creditModifiedCount})`;
     } else if (cashModified) {
       activity =
         currentShift.status === 'closed'
@@ -5868,6 +6053,8 @@ export const PosProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
         productsModifiedCount === 1 && firstChangedProductName
           ? `تحديث سلعة: ${firstChangedProductName}`
           : `تحديث المخزون والسلع (${productsModifiedCount})`;
+    } else if (categoriesModified) {
+      activity = 'تحديث تصنيفات المنتجات';
     }
 
     lastLocalActivityRef.current = activity;
@@ -5901,6 +6088,9 @@ export const PosProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
     currentShift,
     shiftsHistory,
     emergencySessions,
+    customers,
+    creditTransactions,
+    categories,
     productsHydrated,
     ordersHydrated,
     isOnline,
@@ -5909,7 +6099,7 @@ export const PosProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
     pushCurrentStoreToCloud
   ]);
 
-  // Periodic heartbeat (every 60s) & tab-focus sync so multi-device active status stays fresh
+  // Periodic heartbeat (every 35s) & tab-focus sync so multi-device active status stays accurate
   useEffect(() => {
     if (!isOnline || !firebaseUser || !firebaseUser.emailVerified) return;
 
@@ -5917,18 +6107,51 @@ export const PosProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
       if (document.visibilityState === 'visible') {
         void pushCurrentStoreToCloud('متصل ونشط (نبض المزامنة)', true);
       }
-    }, 60_000);
+    }, 35_000);
 
     const handleVisibility = () => {
       if (document.visibilityState === 'visible' && navigator.onLine) {
         void pushCurrentStoreToCloud('نشط ومتزامن', true);
       }
     };
+
+    const handlePageHide = () => {
+      const user = auth.currentUser;
+      const cached = cachedRemoteDocRef.current;
+      if (!user || !cached || !navigator.onLine) return;
+      void updateDeviceRegistryOnly({
+        user,
+        cachedRemoteDoc: cached,
+        transformDevices: (latestDevices) => ({
+          ...latestDevices,
+          [deviceIdRef.current]: {
+            ...(latestDevices[deviceIdRef.current] || {
+              deviceId: deviceIdRef.current,
+              deviceName: latestDeviceNameRef.current,
+              userAgent: getShortDevicePlatform(),
+              cashierName: latestCashierNameRef.current,
+              lastActivity: lastLocalActivityRef.current,
+              lastSyncAt: new Date().toISOString(),
+              lastUpdatedMs: Date.now()
+            }),
+            lastSyncAt: new Date().toISOString(),
+            lastUpdatedMs: Date.now(),
+            online: false
+          }
+        }),
+        deviceId: deviceIdRef.current,
+        cashierName: latestCashierNameRef.current,
+        activityLabel: 'إغلاق/مغادرة الجهاز'
+      }).catch(() => {});
+    };
+
     document.addEventListener('visibilitychange', handleVisibility);
+    window.addEventListener('pagehide', handlePageHide);
 
     return () => {
       clearInterval(interval);
       document.removeEventListener('visibilitychange', handleVisibility);
+      window.removeEventListener('pagehide', handlePageHide);
     };
   }, [isOnline, firebaseUser, pushCurrentStoreToCloud]);
 
@@ -5960,39 +6183,46 @@ export const PosProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
   const signInCloudSync = useCallback(async (): Promise<{ success: boolean; error?: string }> => {
     try {
       setCloudSyncError(null);
+      cachedRemoteDocRef.current = null;
       const user = await signInWithGoogleForFirestore();
       setFirebaseUser(user);
+      if (user?.emailVerified && navigator.onLine) {
+        window.setTimeout(() => {
+          void pushCurrentStoreToCloud('ربط حساب Google وبدء المزامنة', true);
+        }, 120);
+      }
       return { success: true };
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err);
       setCloudSyncError(msg);
       return { success: false, error: msg };
     }
-  }, []);
+  }, [pushCurrentStoreToCloud]);
 
   const signOutCloudSync = useCallback(async (): Promise<void> => {
     const user = auth.currentUser;
     const cached = cachedRemoteDocRef.current;
     if (user && cached && isOnline) {
       try {
-        const myExisting = cached.devices[deviceIdRef.current];
-        const nextDevices = {
-          ...cached.devices,
-          [deviceIdRef.current]: {
-            deviceId: deviceIdRef.current,
-            deviceName: latestDeviceNameRef.current,
-            userAgent: getShortDevicePlatform(),
-            cashierName: latestCashierNameRef.current,
-            lastActivity: myExisting?.lastActivity || 'تسجيل الخروج من المزامنة',
-            lastSyncAt: new Date().toISOString(),
-            lastUpdatedMs: Date.now(),
-            online: false
-          }
-        };
         await updateDeviceRegistryOnly({
           user,
           cachedRemoteDoc: cached,
-          nextDevices,
+          transformDevices: (latestDevices) => {
+            const myExisting = latestDevices[deviceIdRef.current];
+            return {
+              ...latestDevices,
+              [deviceIdRef.current]: {
+                deviceId: deviceIdRef.current,
+                deviceName: latestDeviceNameRef.current,
+                userAgent: getShortDevicePlatform(),
+                cashierName: latestCashierNameRef.current,
+                lastActivity: myExisting?.lastActivity || 'تسجيل الخروج من المزامنة',
+                lastSyncAt: new Date().toISOString(),
+                lastUpdatedMs: Date.now(),
+                online: false
+              }
+            };
+          },
           deviceId: deviceIdRef.current,
           cashierName: latestCashierNameRef.current,
           activityLabel: 'تسجيل الخروج من الجهاز'
@@ -6006,8 +6236,9 @@ export const PosProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
   }, [isOnline]);
 
   const forceCloudSyncNow = useCallback(
-    async (activityLabel?: string): Promise<void> => {
-      await pushCurrentStoreToCloud(activityLabel || 'مزامنة يدوية فورية', true);
+    async (activityLabel?: string): Promise<{ success: boolean; error?: string }> => {
+      setCloudSyncError(null);
+      return await pushCurrentStoreToCloud(activityLabel || 'مزامنة يدوية فورية', true);
     },
     [pushCurrentStoreToCloud]
   );
@@ -6029,19 +6260,74 @@ export const PosProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
       const user = auth.currentUser;
       const cached = cachedRemoteDocRef.current;
       if (!user || !cached || !isOnline) return;
-      const nextDevices = { ...cached.devices };
-      delete nextDevices[targetDeviceId];
-      await updateDeviceRegistryOnly({
+      const written = await updateDeviceRegistryOnly({
         user,
         cachedRemoteDoc: cached,
-        nextDevices,
+        transformDevices: (latestDevices) => {
+          const next = { ...latestDevices };
+          delete next[targetDeviceId];
+          return next;
+        },
         deviceId: deviceIdRef.current,
         cashierName: latestCashierNameRef.current,
         activityLabel: `إزالة جهاز من القائمة (${targetDeviceId})`
       });
+      cachedRemoteDocRef.current = written;
+      setCloudDevices(
+        Object.values(written.devices).sort(
+          (a, b) => (b.lastUpdatedMs || 0) - (a.lastUpdatedMs || 0)
+        )
+      );
     },
     [isOnline]
   );
+
+  const removeInactiveDevices = useCallback(async (): Promise<{
+    removedCount: number;
+    error?: string;
+  }> => {
+    const user = auth.currentUser;
+    const cached = cachedRemoteDocRef.current;
+    if (!user || !cached || !isOnline) {
+      return { removedCount: 0, error: 'يجب الاتصال بالإنترنت والسحابة أولاً' };
+    }
+    const cutoff = Date.now() - DEVICE_ACTIVE_WINDOW_MS;
+    let removedCount = 0;
+    try {
+      const written = await updateDeviceRegistryOnly({
+        user,
+        cachedRemoteDoc: cached,
+        transformDevices: (latestDevices) => {
+          const kept: Record<string, ConnectedDeviceInfo> = {};
+          Object.entries(latestDevices).forEach(([id, dev]) => {
+            const isCurrent = id === deviceIdRef.current;
+            const isActive = dev.online !== false && (dev.lastUpdatedMs || 0) >= cutoff;
+            if (isCurrent || isActive) {
+              kept[id] = dev;
+            } else {
+              removedCount++;
+            }
+          });
+          return kept;
+        },
+        deviceId: deviceIdRef.current,
+        cashierName: latestCashierNameRef.current,
+        activityLabel: 'تنظيف الأجهزة الخاملة وغير المتصلة'
+      });
+      cachedRemoteDocRef.current = written;
+      setCloudDevices(
+        Object.values(written.devices).sort(
+          (a, b) => (b.lastUpdatedMs || 0) - (a.lastUpdatedMs || 0)
+        )
+      );
+      return { removedCount };
+    } catch (err) {
+      return {
+        removedCount: 0,
+        error: err instanceof Error ? err.message : String(err)
+      };
+    }
+  }, [isOnline]);
 
   const addAllowedSyncEmail = useCallback(
     async (email: string): Promise<{ success: boolean; error?: string }> => {
@@ -6056,15 +6342,16 @@ export const PosProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
       }
       const nextEmails = Array.from(new Set([...(cached.allowedEmails || []), clean])).slice(0, 20);
       try {
-        await updateDeviceRegistryOnly({
+        const written = await updateDeviceRegistryOnly({
           user,
           cachedRemoteDoc: cached,
-          nextDevices: cached.devices,
           nextAllowedEmails: nextEmails,
           deviceId: deviceIdRef.current,
           cashierName: latestCashierNameRef.current,
           activityLabel: `إضافة بريد مصرح بالمزامنة: ${clean}`
         });
+        cachedRemoteDocRef.current = written;
+        setCloudAllowedEmails(written.allowedEmails || []);
         return { success: true };
       } catch (err) {
         return { success: false, error: err instanceof Error ? err.message : String(err) };
@@ -6080,15 +6367,16 @@ export const PosProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
     const nextEmails = (cached.allowedEmails || []).filter(
       (e) => e.toLowerCase() !== email.trim().toLowerCase()
     );
-    await updateDeviceRegistryOnly({
+    const written = await updateDeviceRegistryOnly({
       user,
       cachedRemoteDoc: cached,
-      nextDevices: cached.devices,
       nextAllowedEmails: nextEmails,
       deviceId: deviceIdRef.current,
       cashierName: latestCashierNameRef.current,
       activityLabel: `سحب صلاحية بريد من المزامنة: ${email}`
     });
+    cachedRemoteDocRef.current = written;
+    setCloudAllowedEmails(written.allowedEmails || []);
   }, []);
 
   const cloudSyncState = useMemo<FirestoreSyncState>(() => {
@@ -6106,7 +6394,12 @@ export const PosProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
       status = 'synced';
     }
 
-    const activeDevices = cloudDevices.filter((d) => d.online !== false);
+    const cutoffMs = Date.now() - DEVICE_ACTIVE_WINDOW_MS;
+    const activeDevices = cloudDevices.filter(
+      (d) =>
+        d.online !== false &&
+        (d.deviceId === deviceIdRef.current || (d.lastUpdatedMs || 0) >= cutoffMs)
+    );
     const activeDevicesCount = isSignedIn && isOnline ? Math.max(1, activeDevices.length) : 0;
 
     return {
@@ -6320,6 +6613,7 @@ export const PosProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
         forceCloudSyncNow,
         renameCurrentDevice,
         removeConnectedDevice,
+        removeInactiveDevices,
         addAllowedSyncEmail,
         removeAllowedSyncEmail,
         buildFullBackupObject,

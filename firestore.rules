@@ -44,6 +44,9 @@ service cloud.firestore {
           'products',
           'sales',
           'cash',
+          'customers',
+          'creditTransactions',
+          'categories',
           'lastUpdated',
           'updatedBy',
           'devices',
@@ -57,6 +60,9 @@ service cloud.firestore {
         && data.sales is list
         && data.sales.size() <= 600
         && data.cash is map
+        && (!('customers' in data) || (data.customers is list && data.customers.size() <= 1000 && (data.customers.size() == 0 || data.customers[0] is map)))
+        && (!('creditTransactions' in data) || (data.creditTransactions is list && data.creditTransactions.size() <= 1000 && (data.creditTransactions.size() == 0 || data.creditTransactions[0] is map)))
+        && (!('categories' in data) || (data.categories is list && data.categories.size() <= 200 && (data.categories.size() == 0 || data.categories[0] is map)))
         && data.lastUpdated is number
         && data.lastUpdated >= 0
         && data.updatedBy is string
@@ -89,7 +95,10 @@ service cloud.firestore {
           || (
             request.auth.token.email is string
             && request.auth.token.email.size() <= 160
-            && request.auth.token.email in docData.allowedEmails
+            && (
+              request.auth.token.email in docData.allowedEmails
+              || request.auth.token.email.lower() in docData.allowedEmails
+            )
           )
         );
     }
@@ -127,12 +136,15 @@ service cloud.firestore {
         && incoming().ownerEmail == existing().ownerEmail
         && incoming().serverSyncedAt == request.time
         && (
-          // Action 1: POS store data & device heartbeat sync (products, sales, cash, devices)
+          // Action 1: POS store data & device heartbeat sync
           (
             incoming().diff(existing()).affectedKeys().hasOnly([
               'products',
               'sales',
               'cash',
+              'customers',
+              'creditTransactions',
+              'categories',
               'lastUpdated',
               'updatedBy',
               'devices',
