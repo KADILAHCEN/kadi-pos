@@ -450,7 +450,16 @@ export const AddProductModal: React.FC<AddProductModalProps> = ({
       costPrice: Math.max(0, Number(costPrice) || 0),
       stock: trackStock ? totalStock : 9999,
       lowStockThreshold: Math.max(1, Number(lowStockThreshold) || 5),
-      unitType: soldBy === 'weight' ? (unitType === 'liter' ? 'liter' : 'kg') : (unitType === 'box' ? 'box' : 'piece'),
+      unitType:
+        soldBy === 'weight'
+          ? unitType === 'gram'
+            ? 'gram'
+            : unitType === 'liter'
+            ? 'liter'
+            : 'kg'
+          : unitType === 'box'
+          ? 'box'
+          : 'piece',
       image: finalImage,
       color: finalColor,
       hasVariants,
@@ -953,23 +962,34 @@ export const AddProductModal: React.FC<AddProductModalProps> = ({
               </div>
             )}
 
-            {/* If sold by weight, allow picking Kg vs Liter */}
+            {/* If sold by weight, allow picking Kg vs Gram vs Liter */}
             {soldBy === 'weight' && (
-              <div className="flex items-center gap-2 pt-1 animate-in fade-in">
+              <div className="flex flex-wrap items-center gap-2 pt-1 animate-in fade-in">
                 <span className="text-slate-600 dark:text-slate-400 font-medium">
                   {isAr ? 'حدد الوحدة الدقيقة:' : 'Unit of measure:'}
                 </span>
-                <div className="flex gap-2">
+                <div className="flex flex-wrap gap-2">
                   <button
                     type="button"
                     onClick={() => setUnitType('kg')}
                     className={`px-3 py-1 rounded-lg border text-xs font-bold ${
                       unitType === 'kg'
                         ? 'bg-emerald-600 text-white border-emerald-600'
-                        : 'bg-white dark:bg-slate-800 text-slate-700 dark:text-slate-300 border-slate-300'
+                        : 'bg-white dark:bg-slate-800 text-slate-700 dark:text-slate-300 border-slate-300 dark:border-slate-700'
                     }`}
                   >
                     {t.unit_kg} (kg)
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => setUnitType('gram')}
+                    className={`px-3 py-1 rounded-lg border text-xs font-bold ${
+                      unitType === 'gram'
+                        ? 'bg-emerald-600 text-white border-emerald-600'
+                        : 'bg-white dark:bg-slate-800 text-slate-700 dark:text-slate-300 border-slate-300 dark:border-slate-700'
+                    }`}
+                  >
+                    {t.unit_gram} (g)
                   </button>
                   <button
                     type="button"
@@ -977,7 +997,7 @@ export const AddProductModal: React.FC<AddProductModalProps> = ({
                     className={`px-3 py-1 rounded-lg border text-xs font-bold ${
                       unitType === 'liter'
                         ? 'bg-emerald-600 text-white border-emerald-600'
-                        : 'bg-white dark:bg-slate-800 text-slate-700 dark:text-slate-300 border-slate-300'
+                        : 'bg-white dark:bg-slate-800 text-slate-700 dark:text-slate-300 border-slate-300 dark:border-slate-700'
                     }`}
                   >
                     {t.unit_liter} (L)
@@ -1002,12 +1022,27 @@ export const AddProductModal: React.FC<AddProductModalProps> = ({
             <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
               <div>
                 <label className="block text-xs font-semibold text-slate-700 dark:text-slate-300 mb-1">
-                  {t.price} ({currencySymbol}) *
+                  {t.price} ({currencySymbol}) *{' '}
+                  <span className="text-[11px] font-bold text-emerald-700 dark:text-emerald-400">
+                    {unitType === 'gram'
+                      ? isAr
+                        ? '(ثمن الغرام الواحد)'
+                        : '(per gram)'
+                      : unitType === 'kg'
+                      ? isAr
+                        ? '(ثمن الكيلو الواحد)'
+                        : '(per kg)'
+                      : unitType === 'liter'
+                      ? isAr
+                        ? '(ثمن اللتر الواحد)'
+                        : '(per liter)'
+                      : ''}
+                  </span>
                 </label>
                 <div className="relative">
                   <input
                     type="number"
-                    step="0.25"
+                    step="0.01"
                     min="0"
                     required
                     value={price === 0 ? '' : price}

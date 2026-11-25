@@ -373,6 +373,14 @@ export const ImportProductsModal: React.FC<ImportProductsModalProps> = ({
           let unitType: UnitType = 'piece';
           if (rawUnit.includes('kg') || rawUnit.includes('كيلو') || rawUnit.includes('كغ')) {
             unitType = 'kg';
+          } else if (
+            rawUnit === 'g' ||
+            rawUnit === 'غ' ||
+            rawUnit.includes('gram') ||
+            rawUnit.includes('غرام') ||
+            rawUnit === 'gr'
+          ) {
+            unitType = 'gram';
           } else if (rawUnit.includes('liter') || rawUnit.includes('لتر') || rawUnit.includes('litre')) {
             unitType = 'liter';
           } else if (rawUnit.includes('box') || rawUnit.includes('كرتون') || rawUnit.includes('علبة')) {

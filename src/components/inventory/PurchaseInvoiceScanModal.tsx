@@ -107,6 +107,7 @@ const readFileAsBase64 = (file: Blob): Promise<string> =>
 const normalizeUnitType = (nameOrUnit?: string): UnitType => {
   const s = (nameOrUnit || '').toLowerCase();
   if (/\b(kg|كيلو)\b/i.test(s)) return 'kg';
+  if (/\b(g|gr|gram|gramme|grams|غرام)\b/i.test(s)) return 'gram';
   if (/\b(l|ml|cl|liter|litre|لتر)\b/i.test(s)) return 'liter';
   if (/\b(box|ctn|carton|pack|crt|صندوق|كرتون)\b/i.test(s)) return 'box';
   return 'piece';

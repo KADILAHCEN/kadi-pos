@@ -2865,7 +2865,14 @@ export const PosProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
     setCart((prev) => {
       const existing = prev.find((item) => item.id === cartItemId);
       if (existing) {
-        const step = customQuantity !== undefined ? customQuantity : (product.unitType === 'kg' || product.unitType === 'liter' ? 0.5 : 1);
+        const step =
+          customQuantity !== undefined
+            ? customQuantity
+            : product.unitType === 'gram'
+            ? 50
+            : product.unitType === 'kg' || product.unitType === 'liter'
+            ? 0.5
+            : 1;
         const newQty = Number((existing.quantity + step).toFixed(3));
         const tierRes = resolveTierPricing(
           product,

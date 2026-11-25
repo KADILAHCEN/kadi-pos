@@ -1,6 +1,6 @@
 export type CurrencyCode = 'SAR' | 'MAD' | 'USD' | 'EUR' | 'AED' | 'KWD';
 
-export type UnitType = 'piece' | 'kg' | 'liter' | 'box';
+export type UnitType = 'piece' | 'kg' | 'gram' | 'liter' | 'box';
 
 export interface StockMovement {
   id: string;

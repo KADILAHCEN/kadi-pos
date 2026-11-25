@@ -152,6 +152,8 @@ function getUnitShort(unitType: Product['unitType'], isAr: boolean): string {
   switch (unitType) {
     case 'kg':
       return isAr ? 'كغ' : 'kg';
+    case 'gram':
+      return isAr ? 'غ' : 'g';
     case 'liter':
       return isAr ? 'لتر' : 'L';
     case 'box':

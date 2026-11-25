@@ -618,6 +618,8 @@ export const InventoryView: React.FC = () => {
     switch (u) {
       case 'kg':
         return t.unit_kg;
+      case 'gram':
+        return t.unit_gram;
       case 'liter':
         return t.unit_liter;
       case 'box':
@@ -1072,6 +1074,7 @@ export const InventoryView: React.FC = () => {
                 <option value="all">{isAr ? 'جميع الوحدات' : 'All Units'}</option>
                 <option value="piece">{t.unit_piece}</option>
                 <option value="kg">{t.unit_kg}</option>
+                <option value="gram">{t.unit_gram}</option>
                 <option value="liter">{t.unit_liter}</option>
                 <option value="box">{t.unit_box}</option>
               </select>

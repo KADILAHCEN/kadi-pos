@@ -315,10 +315,18 @@ export const PriceOverrideModal: React.FC<PriceOverrideModalProps> = ({
                       ? isAr
                         ? 'كغ'
                         : 'kg'
+                      : item.unitType === 'gram'
+                      ? isAr
+                        ? 'غ'
+                        : 'g'
                       : item.unitType === 'liter'
                       ? isAr
                         ? 'لتر'
                         : 'L'
+                      : item.unitType === 'box'
+                      ? isAr
+                        ? 'كرتون'
+                        : 'box'
                       : isAr
                       ? 'حبة'
                       : 'pc'}

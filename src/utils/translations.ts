@@ -30,6 +30,7 @@ export const translations = {
     // Units
     unit_piece: 'حبة',
     unit_kg: 'كيلو (كغ)',
+    unit_gram: 'غرام (غ)',
     unit_liter: 'لتر (ل)',
     unit_box: 'كرتون',
 
@@ -183,6 +184,7 @@ export const translations = {
     // Units
     unit_piece: 'Pièce',
     unit_kg: 'Kilogramme (Kg)',
+    unit_gram: 'Gramme (g)',
     unit_liter: 'Litre (L)',
     unit_box: 'Boîte/Carton',
 
@@ -336,6 +338,7 @@ export const translations = {
     // Units
     unit_piece: 'Piece',
     unit_kg: 'Kilogram (Kg)',
+    unit_gram: 'Gram (g)',
     unit_liter: 'Liter (L)',
     unit_box: 'Box',
 

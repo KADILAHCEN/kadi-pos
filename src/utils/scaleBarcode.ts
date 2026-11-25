@@ -129,19 +129,34 @@ export function parseScaleBarcode(
 
   let weightKg = 0;
   let embeddedPrice = 0;
+  let quantity = 0;
 
-  if (candidate.mode === 'weight') {
+  if (product?.unitType === 'gram') {
+    if (candidate.mode === 'weight') {
+      const grams = Math.max(1, candidate.valueDigits);
+      weightKg = Number((grams / 1000).toFixed(3));
+      quantity = grams;
+      embeddedPrice = Number((grams * product.price).toFixed(2));
+    } else {
+      embeddedPrice = Number((candidate.valueDigits / 100).toFixed(2));
+      quantity =
+        product.price > 0
+          ? Math.max(1, Math.round(embeddedPrice / product.price))
+          : 1;
+      weightKg = Number((quantity / 1000).toFixed(3));
+    }
+  } else if (candidate.mode === 'weight') {
     weightKg = Number((candidate.valueDigits / 1000).toFixed(3));
     embeddedPrice = product ? Number((weightKg * product.price).toFixed(2)) : 0;
+    quantity = Math.max(0.001, weightKg);
   } else {
     embeddedPrice = Number((candidate.valueDigits / 100).toFixed(2));
     weightKg =
       product && product.price > 0
         ? Number((embeddedPrice / product.price).toFixed(3))
         : 1;
+    quantity = Math.max(0.001, weightKg);
   }
-
-  const quantity = Math.max(0.001, Number(weightKg.toFixed(3)));
 
   return {
     rawCode: clean,
@@ -150,7 +165,7 @@ export function parseScaleBarcode(
     pluNormalized: candidate.pluNormalized,
     mode: candidate.mode,
     valueDigits: candidate.valueDigits,
-    weightKg: quantity,
+    weightKg,
     embeddedPrice,
     quantity,
     product

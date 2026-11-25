@@ -463,8 +463,14 @@ export const ProductGrid: React.FC<ProductGridProps> = ({ onOpenBarcodeScanner }
       addToCart(targetProd, undefined, undefined, scaleParsed.quantity);
       setBarcodeToast(
         isAr
-          ? `⚖️ الميزان: ${targetProd.name} (${scaleParsed.quantity.toFixed(3)} ${targetProd.unitType === 'liter' ? 'لتر' : 'كغ'})`
-          : `⚖️ Scale: ${targetProd.name} (${scaleParsed.quantity.toFixed(3)})`
+          ? `⚖️ الميزان: ${targetProd.name} (${targetProd.unitType === 'gram' ? scaleParsed.quantity : scaleParsed.quantity.toFixed(3)} ${
+              targetProd.unitType === 'liter'
+                ? 'لتر'
+                : targetProd.unitType === 'gram'
+                ? 'غ'
+                : 'كغ'
+            })`
+          : `⚖️ Scale: ${targetProd.name} (${scaleParsed.quantity})`
       );
       setTimeout(() => setBarcodeToast(null), 2600);
       return;
@@ -524,8 +530,8 @@ export const ProductGrid: React.FC<ProductGridProps> = ({ onOpenBarcodeScanner }
       setTappedProductId((curr) => (curr === product.id ? null : curr));
     }, 260);
 
-    // If weighted / volumetric product (kg or liter), open digital scale modal
-    if (product.unitType === 'kg' || product.unitType === 'liter') {
+    // If weighted / volumetric product (kg, gram, or liter), open digital scale modal
+    if (product.unitType === 'kg' || product.unitType === 'gram' || product.unitType === 'liter') {
       setScaleProduct(product);
       return;
     }
@@ -544,6 +550,8 @@ export const ProductGrid: React.FC<ProductGridProps> = ({ onOpenBarcodeScanner }
     switch (unit) {
       case 'kg':
         return t.unit_kg;
+      case 'gram':
+        return t.unit_gram;
       case 'liter':
         return t.unit_liter;
       case 'box':
@@ -888,7 +896,10 @@ export const ProductGrid: React.FC<ProductGridProps> = ({ onOpenBarcodeScanner }
               const remainingStock = getRemainingStock(prod);
               const isLowStock = remainingStock > 0 && remainingStock <= prod.lowStockThreshold;
               const isOutOfStock = remainingStock <= 0;
-              const isWeighted = prod.unitType === 'kg' || prod.unitType === 'liter';
+              const isWeighted =
+                prod.unitType === 'kg' ||
+                prod.unitType === 'gram' ||
+                prod.unitType === 'liter';
 
               // Expiry calculation
               let expiryStatus: { label: string; isExpired: boolean; isWarning: boolean } | null = null;
@@ -1197,10 +1208,11 @@ export const ProductGrid: React.FC<ProductGridProps> = ({ onOpenBarcodeScanner }
         </button>
       </div>
 
-      {/* Digital Scale Modal for kg / liter */}
+      {/* Digital Scale Modal for kg / gram / liter */}
       {scaleProduct && (
         <ScaleModal
           product={scaleProduct}
+          remainingStock={getRemainingStock(scaleProduct)}
           onClose={() => setScaleProduct(null)}
           onConfirm={(qty) => {
             const remaining = getRemainingStock(scaleProduct);
@@ -1272,7 +1284,13 @@ export const ProductGrid: React.FC<ProductGridProps> = ({ onOpenBarcodeScanner }
               <input
                 ref={buyInputRef}
                 type="number"
-                step={buyModalProduct.unitType === 'kg' || buyModalProduct.unitType === 'liter' ? '0.1' : '1'}
+                step={
+                  buyModalProduct.unitType === 'kg' || buyModalProduct.unitType === 'liter'
+                    ? '0.1'
+                    : buyModalProduct.unitType === 'gram'
+                    ? '1'
+                    : '1'
+                }
                 min="0.01"
                 value={buyQtyInput}
                 onChange={(e) => {

@@ -227,8 +227,8 @@ const PosMainContent: React.FC = () => {
           setScanFeedbackToast({
             text: scaleParsed?.product
               ? isAr
-                ? `⚖️ الميزان: ${matched.name} (${scannedQty.toFixed(3)} ${matched.unitType === 'liter' ? 'لتر' : 'كغ'})`
-                : `⚖️ Scale: ${matched.name} (${scannedQty.toFixed(3)})`
+                ? `⚖️ الميزان: ${matched.name} (${matched.unitType === 'gram' ? scannedQty : scannedQty.toFixed(3)} ${matched.unitType === 'liter' ? 'لتر' : matched.unitType === 'gram' ? 'غ' : 'كغ'})`
+                : `⚖️ Scale: ${matched.name} (${matched.unitType === 'gram' ? scannedQty + 'g' : scannedQty.toFixed(3)})`
               : isAr
               ? `🔊 بيب! تزادت للسلة: ${matched.name}`
               : `🔊 Scanned & added: ${matched.name}`
@@ -430,8 +430,8 @@ const PosMainContent: React.FC = () => {
       setScanFeedbackToast({
         text: scaleParsed?.product
           ? isAr
-            ? `⚖️ الميزان: ${matched.name} (${scannedQty.toFixed(3)} ${matched.unitType === 'liter' ? 'لتر' : 'كغ'})`
-            : `⚖️ Scale: ${matched.name} (${scannedQty.toFixed(3)})`
+            ? `⚖️ الميزان: ${matched.name} (${matched.unitType === 'gram' ? scannedQty : scannedQty.toFixed(3)} ${matched.unitType === 'liter' ? 'لتر' : matched.unitType === 'gram' ? 'غ' : 'كغ'})`
+            : `⚖️ Scale: ${matched.name} (${matched.unitType === 'gram' ? scannedQty + 'g' : scannedQty.toFixed(3)})`
           : isAr
           ? `🔊 بيب! تزادت للسلة: ${matched.name}`
           : `📷 Scanned & added: ${matched.name}`

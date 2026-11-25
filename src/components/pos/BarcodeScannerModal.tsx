@@ -304,7 +304,7 @@ export const BarcodeScannerModal: React.FC<BarcodeScannerModalProps> = ({
 
       const productName = effectiveMatched
         ? scaleParsed?.product
-          ? `${isAr ? effectiveMatched.name : effectiveMatched.nameEn} (${scaleParsed.quantity.toFixed(3)} ${effectiveMatched.unitType === 'liter' ? 'L' : 'kg'})`
+          ? `${isAr ? effectiveMatched.name : effectiveMatched.nameEn} (${effectiveMatched.unitType === 'gram' ? scaleParsed.quantity : scaleParsed.quantity.toFixed(3)} ${effectiveMatched.unitType === 'liter' ? 'L' : effectiveMatched.unitType === 'gram' ? (isAr ? 'غ' : 'g') : 'kg'})`
           : isAr
           ? effectiveMatched.name
           : effectiveMatched.nameEn

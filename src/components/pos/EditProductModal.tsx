@@ -655,6 +655,7 @@ export const EditProductModal: React.FC<EditProductModalProps> = ({
                   {[
                     { id: 'piece' as UnitType, label: isAr ? 'حبة / قطعة' : 'Piece' },
                     { id: 'kg' as UnitType, label: isAr ? 'كيلوغرام (وزن)' : 'Kg' },
+                    { id: 'gram' as UnitType, label: isAr ? 'غرام (غ)' : 'Gram (g)' },
                     { id: 'liter' as UnitType, label: isAr ? 'لتر (سائل)' : 'Liter' },
                     { id: 'box' as UnitType, label: isAr ? 'كرتون / صندوق' : 'Box' }
                   ].map((u) => (

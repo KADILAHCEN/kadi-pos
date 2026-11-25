@@ -36,6 +36,7 @@ export const QuickNewBarcodeProductModal: React.FC<QuickNewBarcodeProductModalPr
   const [price, setPrice] = useState('');
   const [costPrice, setCostPrice] = useState('');
   const [stock, setStock] = useState('10');
+  const [unitType, setUnitType] = useState<'piece' | 'kg' | 'gram' | 'liter' | 'box'>('piece');
   const [categoryId, setCategoryId] = useState(defaultCatId);
   const [errorMsg, setErrorMsg] = useState<string | null>(null);
   const [foundImageUrl, setFoundImageUrl] = useState('');
@@ -193,7 +194,7 @@ export const QuickNewBarcodeProductModal: React.FC<QuickNewBarcodeProductModalPr
       price: Number(cleanPrice.toFixed(2)),
       costPrice: finalCost,
       categoryId,
-      unitType: 'piece',
+      unitType,
       stock: parsedStock,
       lowStockThreshold: 5,
       color: '#10B981',
@@ -451,6 +452,36 @@ export const QuickNewBarcodeProductModal: React.FC<QuickNewBarcodeProductModalPr
                     </option>
                   ))}
               </select>
+            </div>
+          </div>
+
+          <div>
+            <label className="block font-bold text-slate-600 dark:text-slate-400 mb-1.5">
+              {isAr ? 'وحدة القياس والبيع' : 'Selling Unit'}
+            </label>
+            <div className="grid grid-cols-5 gap-1.5">
+              {(
+                [
+                  { id: 'piece', label: isAr ? 'حبة' : 'Pc' },
+                  { id: 'gram', label: isAr ? 'غرام' : 'g' },
+                  { id: 'kg', label: isAr ? 'كيلو' : 'Kg' },
+                  { id: 'liter', label: isAr ? 'لتر' : 'L' },
+                  { id: 'box', label: isAr ? 'كرتون' : 'Box' }
+                ] as const
+              ).map((u) => (
+                <button
+                  key={u.id}
+                  type="button"
+                  onClick={() => setUnitType(u.id)}
+                  className={`py-1.5 rounded-xl border text-[11px] font-bold transition-colors ${
+                    unitType === u.id
+                      ? 'bg-emerald-600 border-emerald-600 text-white'
+                      : 'bg-slate-50 dark:bg-slate-800 border-slate-200 dark:border-slate-700 text-slate-700 dark:text-slate-300'
+                  }`}
+                >
+                  {u.label}
+                </button>
+              ))}
             </div>
           </div>
 

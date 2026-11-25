@@ -505,8 +505,12 @@ export const CartRegister: React.FC<CartRegisterProps> = ({
             </div>
 
             {cart.map((item) => {
-              const isWeighted = item.unitType === 'kg' || item.unitType === 'liter';
-              const step = isWeighted ? 0.25 : 1;
+              const isWeighted =
+                item.unitType === 'kg' ||
+                item.unitType === 'gram' ||
+                item.unitType === 'liter';
+              const step =
+                item.unitType === 'gram' ? 10 : isWeighted ? 0.25 : 1;
               const lineBase = item.price * item.quantity;
               let lineDiscount = 0;
               if (item.itemDiscount) {
@@ -600,7 +604,27 @@ export const CartRegister: React.FC<CartRegisterProps> = ({
                         )}
 
                       <div className="text-[11px] text-slate-400 mt-0.5 tabular-nums">
-                        {item.price.toFixed(2)} {currencySymbol} {isWeighted ? `/ ${item.unitType === 'kg' ? (isAr ? 'كغ' : 'kg') : (isAr ? 'لتر' : 'L')}` : ''}
+                        {item.price.toFixed(2)} {currencySymbol}{' '}
+                        {isWeighted
+                          ? `/ ${
+                              item.unitType === 'gram'
+                                ? isAr
+                                  ? 'غ'
+                                  : 'g'
+                                : item.unitType === 'kg'
+                                ? isAr
+                                  ? 'كغ'
+                                  : 'kg'
+                                : isAr
+                                ? 'لتر'
+                                : 'L'
+                            }`
+                          : ''}
+                        {item.unitType === 'kg' && item.quantity > 0 && item.quantity < 1 && (
+                          <span className="mx-1 text-amber-600 dark:text-amber-400 font-bold">
+                            ({Math.round(item.quantity * 1000)} {isAr ? 'غ' : 'g'})
+                          </span>
+                        )}
                         <span className="mx-1 text-slate-300">·</span>
                         <span className="text-emerald-600 dark:text-emerald-400 font-semibold" title={`${t.profit}: ${lineProfit.toFixed(2)}`}>
                           +{profitMargin}% {t.profit}
@@ -705,10 +729,19 @@ export const CartRegister: React.FC<CartRegisterProps> = ({
                             setEditingQtyId(item.id);
                             setEditingQtyDraft(String(item.quantity));
                           }}
-                          className="w-10 h-6 rounded-md text-center font-bold text-xs tabular-nums text-slate-900 dark:text-white hover:bg-white dark:hover:bg-slate-700 transition-colors cursor-text"
+                          className="min-w-10 px-1.5 h-6 rounded-md text-center font-bold text-xs tabular-nums text-slate-900 dark:text-white hover:bg-white dark:hover:bg-slate-700 transition-colors cursor-text whitespace-nowrap"
                           title={isAr ? 'اضغط لتعديل الكمية مباشرة' : 'Click to edit quantity'}
                         >
                           {item.quantity}
+                          {item.unitType === 'gram'
+                            ? isAr
+                              ? ' غ'
+                              : ' g'
+                            : item.unitType === 'kg'
+                            ? isAr
+                              ? ' كغ'
+                              : ' kg'
+                            : ''}
                         </button>
                       )}
                       <button

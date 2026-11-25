@@ -208,8 +208,12 @@ export const ReturnExchangeModal: React.FC<ReturnExchangeModalProps> = ({
                   const alreadyReturned = item.returnedQty || 0;
                   const maxReturnable = Math.max(0, Number((item.quantity - alreadyReturned).toFixed(3)));
                   const selectedQty = returnQtyMap[item.productId] || 0;
-                  const isWeight = item.unitType === 'kg' || item.unitType === 'liter';
-                  const step = isWeight ? 0.25 : 1;
+                  const isWeight =
+                    item.unitType === 'kg' ||
+                    item.unitType === 'gram' ||
+                    item.unitType === 'liter';
+                  const step =
+                    item.unitType === 'gram' ? 10 : isWeight ? 0.25 : 1;
 
                   return (
                     <div key={item.productId} className="p-3 flex items-center justify-between gap-2 text-xs">
