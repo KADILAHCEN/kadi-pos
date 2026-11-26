@@ -14,6 +14,11 @@ import { playSound } from '../../utils/audio';
 import { parseScaleBarcode } from '../../utils/scaleBarcode';
 import { PriceAlertAdvisor } from '../alerts/PriceAlertAdvisor';
 import {
+  TberkikaButton,
+  TberkikaEntry,
+  readTberkikaList
+} from './TberkikaButton';
+import {
   auditOldStockPrices,
   markPriceAlertFixed,
   OldStockPriceIssue,
@@ -143,8 +148,26 @@ export const ProductGrid: React.FC<ProductGridProps> = ({ onOpenBarcodeScanner }
   const [tappedProductId, setTappedProductId] = useState<string | null>(null);
   const tapTimerRef = useRef<number | null>(null);
 
+  // Market intel rumors ("الودن / تبركيكة") per product
+  const [tberkikaList, setTberkikaList] = useState<TberkikaEntry[]>(() => readTberkikaList());
+  const tberkikaByProductId = useMemo(() => {
+    const map = new Map<string, TberkikaEntry>();
+    for (const entry of tberkikaList) {
+      const existing = map.get(entry.id);
+      if (!existing || entry.date > existing.date) {
+        map.set(entry.id, entry);
+      }
+    }
+    return map;
+  }, [tberkikaList]);
+
   useEffect(() => {
+    const syncTberkika = () => setTberkikaList(readTberkikaList());
+    window.addEventListener('kadi:tberkika-updated', syncTberkika);
+    window.addEventListener('storage', syncTberkika);
     return () => {
+      window.removeEventListener('kadi:tberkika-updated', syncTberkika);
+      window.removeEventListener('storage', syncTberkika);
       if (tapTimerRef.current) window.clearTimeout(tapTimerRef.current);
       if (outOfStockTimerRef.current) window.clearTimeout(outOfStockTimerRef.current);
     };
@@ -1026,6 +1049,11 @@ export const ProductGrid: React.FC<ProductGridProps> = ({ onOpenBarcodeScanner }
                       >
                         <Trash2 className="w-3 h-3 stroke-[2]" />
                       </button>
+
+                      <TberkikaButton
+                        productId={prod.id}
+                        productName={isAr ? prod.name : prod.nameEn}
+                      />
                     </div>
 
                     {/* Expiry date tag / badge */}
@@ -1052,9 +1080,30 @@ export const ProductGrid: React.FC<ProductGridProps> = ({ onOpenBarcodeScanner }
                       <h4 className="font-bold text-xs sm:text-sm text-slate-900 dark:text-white line-clamp-2 leading-tight mb-1">
                         {isAr ? prod.name : prod.nameEn}
                       </h4>
-                      <div className="text-[10px] text-slate-400 font-mono tracking-tight mb-1.5">
+                      <div className="text-[10px] text-slate-400 font-mono tracking-tight mb-1">
                         {prod.barcode || prod.sku}
                       </div>
+                      {(() => {
+                        const tberkika = tberkikaByProductId.get(prod.id);
+                        if (!tberkika) return null;
+                        const tone =
+                          tberkika.type === 'غادي يزيد'
+                            ? 'text-amber-600 dark:text-amber-400'
+                            : tberkika.type === 'زاد'
+                            ? 'text-rose-600 dark:text-rose-400'
+                            : 'text-emerald-600 dark:text-emerald-400';
+                        return (
+                          <div
+                            className={`text-[10px] font-bold flex items-center gap-1 mb-1 truncate ${tone}`}
+                            title={tberkika.note || `${tberkika.type} · ${tberkika.source}`}
+                          >
+                            <Ear className="w-2.5 h-2.5 shrink-0" />
+                            <span className="truncate">
+                              {tberkika.type} · {tberkika.source}
+                            </span>
+                          </div>
+                        );
+                      })()}
 
                       {/* Stock count (non-faded, bold red/green) + out-of-stock label */}
                       <div className="mb-1.5 flex items-center justify-between gap-1.5 flex-wrap">
