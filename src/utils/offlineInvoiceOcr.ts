@@ -1,3 +1,5 @@
+import { createWorker, Worker } from 'tesseract.js';
+
 export interface ImageSharpnessResult {
   isBlurry: boolean;
   sharpnessScore: number;
@@ -849,3 +851,173 @@ export function runOfflineInvoiceNumberOcr(img: HTMLImageElement): OfflineOcrRes
     looksHandwritten
   };
 }
+
+// ---------------------------------------------------------------------------
+// Tesseract.js Multi-Language Client-Side Invoice OCR (ara + fra + eng)
+// ---------------------------------------------------------------------------
+
+export interface TesseractParsedLine {
+  name: string;
+  quantity: number;
+  unitCost: number;
+  lineTotal: number;
+}
+
+export interface TesseractInvoiceOcrResult {
+  rawText: string;
+  items: TesseractParsedLine[];
+  detectedTotal: number;
+  supplierHint?: string;
+}
+
+let tesseractWorkerPromise: Promise<Worker> | null = null;
+
+async function getTesseractWorker(): Promise<Worker> {
+  if (!tesseractWorkerPromise) {
+    tesseractWorkerPromise = createWorker(['ara', 'fra', 'eng']).catch((err) => {
+      tesseractWorkerPromise = null;
+      throw err;
+    });
+  }
+  return tesseractWorkerPromise;
+}
+
+const IGNORED_INVOICE_LINE_REGEX =
+  /(المجموع|الاجمالي|الإجمالي|الصافي|الباقي|الضريبة|تاريخ|فاتورة|توصيل|هاتف|شكراً|شكرا|total|sous[\s-]*total|net\s*[aà]\s*payer|tva|ttc|\bht\b|remise|esp[eè]ces|monnaie|rendu|merci|client|facture|ticket|caisse|adresse|ice\b|cnss|patente|rc\b)/i;
+
+/**
+ * Parses raw OCR text (Arabic / French / English) into structured invoice items.
+ * Automatically merges duplicate item names by summing their quantities.
+ */
+export function parseTesseractInvoiceText(text: string): {
+  items: TesseractParsedLine[];
+  detectedTotal: number;
+  supplierHint?: string;
+} {
+  const lines = text
+    .split(/\r?\n/)
+    .map((l) => l.trim())
+    .filter(Boolean);
+
+  const mergedByName = new Map<string, TesseractParsedLine>();
+  let detectedTotal = 0;
+  let supplierHint: string | undefined;
+
+  for (let i = 0; i < lines.length; i++) {
+    const line = lines[i];
+    const normalizedLine = line.replace(/(\d),(\d)/g, '$1.$2');
+    const rawNums = normalizedLine.match(/\d+(?:\.\d+)?/g);
+
+    // Early text-only header lines often contain the supplier/store name
+    if (!rawNums && i <= 3 && !supplierHint) {
+      const cleanHeader = line.replace(/[|:;_~`#*]+/g, ' ').trim();
+      if (cleanHeader.length >= 3 && !IGNORED_INVOICE_LINE_REGEX.test(cleanHeader)) {
+        supplierHint = cleanHeader.slice(0, 60);
+      }
+      continue;
+    }
+
+    if (!rawNums || rawNums.length === 0) continue;
+
+    const nums = rawNums
+      .map((n) => parseFloat(n))
+      .filter((n) => Number.isFinite(n) && n > 0 && n < 100000);
+
+    if (nums.length === 0) continue;
+
+    // Extract candidate total if line mentions Total/المجموع
+    if (/(المجموع|الاجمالي|الإجمالي|total|ttc|net\s*[aà]\s*payer)/i.test(line)) {
+      const candidate = nums[nums.length - 1];
+      if (candidate > detectedTotal) detectedTotal = candidate;
+      continue;
+    }
+
+    if (IGNORED_INVOICE_LINE_REGEX.test(line)) continue;
+
+    // Strip numeric tokens & punctuation noise to recover item name
+    const name = normalizedLine
+      .replace(/\d+(?:\.\d+)?/g, ' ')
+      .replace(/\b(dh|dhs|mad|x|pcs|pc|u)\b/gi, ' ')
+      .replace(/[|\-:_/*.,+=[\]()]+/g, ' ')
+      .replace(/\s+/g, ' ')
+      .trim();
+
+    if (name.length < 2) continue;
+
+    let quantity = 1;
+    let unitCost = 0;
+    let lineTotal = 0;
+
+    if (nums.length >= 3) {
+      const tail = nums.slice(-3);
+      if (Math.abs(tail[0] * tail[1] - tail[2]) <= Math.max(1, tail[2] * 0.15)) {
+        quantity = tail[0];
+        unitCost = tail[1];
+        lineTotal = tail[2];
+      } else {
+        quantity = tail[0] < 100 ? Math.max(1, tail[0]) : 1;
+        unitCost = tail[1];
+        lineTotal = tail[2];
+      }
+    } else if (nums.length === 2) {
+      const [first, second] = nums;
+      if (first < 100 && Number.isInteger(first)) {
+        quantity = Math.max(1, first);
+        unitCost = second;
+        lineTotal = Number((quantity * unitCost).toFixed(2));
+      } else if (second < 100 && Number.isInteger(second) && first > second) {
+        quantity = Math.max(1, second);
+        unitCost = first;
+        lineTotal = Number((quantity * unitCost).toFixed(2));
+      } else {
+        quantity = 1;
+        unitCost = second;
+        lineTotal = second;
+      }
+    } else {
+      quantity = 1;
+      unitCost = nums[0];
+      lineTotal = nums[0];
+    }
+
+    const key = name.toLowerCase();
+    const existing = mergedByName.get(key);
+    if (existing) {
+      existing.quantity = Number((existing.quantity + quantity).toFixed(3));
+      if (unitCost > 0) existing.unitCost = unitCost;
+      existing.lineTotal = Number((existing.quantity * existing.unitCost).toFixed(2));
+    } else {
+      mergedByName.set(key, {
+        name,
+        quantity: Number(quantity.toFixed(3)),
+        unitCost: Number(unitCost.toFixed(2)),
+        lineTotal: Number(lineTotal.toFixed(2))
+      });
+    }
+  }
+
+  return {
+    items: Array.from(mergedByName.values()),
+    detectedTotal: Number(detectedTotal.toFixed(2)),
+    supplierHint
+  };
+}
+
+/**
+ * Runs Tesseract.js ('ara' + 'fra' + 'eng') on an invoice photo or data URL.
+ */
+export async function runTesseractInvoiceOcr(
+  imageInput: Blob | string
+): Promise<TesseractInvoiceOcrResult> {
+  const worker = await getTesseractWorker();
+  const ret = await worker.recognize(imageInput);
+  const rawText = ret?.data?.text || '';
+  const parsed = parseTesseractInvoiceText(rawText);
+  return {
+    rawText,
+    items: parsed.items,
+    detectedTotal: parsed.detectedTotal,
+    supplierHint: parsed.supplierHint
+  };
+}
+

@@ -138,6 +138,7 @@ export type AppTabId =
   | 'branch_stock'
   | 'bourse'
   | 'inventory'
+  | 'invoice_ocr'
   | 'orders'
   | 'shifts'
   | 'customers'

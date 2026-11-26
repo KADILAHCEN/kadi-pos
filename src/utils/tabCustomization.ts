@@ -309,6 +309,7 @@ export interface PosTabDefinition {
     | 'branch_stock'
     | 'bourse'
     | 'inventory'
+    | 'invoice_ocr'
     | 'orders'
     | 'shifts'
     | 'customers'
@@ -393,6 +394,18 @@ export const POS_TAB_CATALOG: PosTabDefinition[] = [
     shortLabelEn: 'Stock',
     defaultIcon: 'layers',
     defaultColor: 'blue',
+    showInTopNav: true
+  },
+  {
+    id: 'invoice_ocr',
+    labelAr: 'تصوير الفاتورة للمخزون (OCR)',
+    labelFr: 'Scan Facture OCR',
+    labelEn: 'Invoice OCR',
+    shortLabelAr: 'فاتورة OCR',
+    shortLabelFr: 'Facture OCR',
+    shortLabelEn: 'Invoice OCR',
+    defaultIcon: 'file_text',
+    defaultColor: 'emerald',
     showInTopNav: true
   },
   {

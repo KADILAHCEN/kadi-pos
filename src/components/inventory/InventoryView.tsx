@@ -33,7 +33,8 @@ import {
   Send,
   PackageX,
   Barcode,
-  PackageOpen
+  PackageOpen,
+  Smartphone
 } from 'lucide-react';
 import { AddCategoryModal } from './AddCategoryModal';
 import { BulkUpdateModal } from './BulkUpdateModal';
@@ -845,6 +846,21 @@ export const InventoryView: React.FC = () => {
 
           {/* Action buttons */}
           <div className="flex flex-wrap items-center gap-2">
+            {/* Open Dedicated Phone Invoice OCR View */}
+            <button
+              type="button"
+              onClick={() => setCurrentTab('invoice_ocr')}
+              className="px-4 py-2 text-xs font-black rounded-xl bg-teal-600 hover:bg-teal-700 text-white transition-colors flex items-center gap-1.5 shadow-xs shrink-0 whitespace-nowrap"
+              title={
+                isAr
+                  ? 'إدخال صورة الفاتورة من الهاتف أو الألبوم وقراءتها مباشرة'
+                  : 'Upload or snap invoice photo from phone (OCR)'
+              }
+            >
+              <Smartphone className="w-3.5 h-3.5" />
+              <span>{isAr ? 'فاتورة من الهاتف (OCR)' : 'Phone Invoice OCR'}</span>
+            </button>
+
             {/* Scan Purchase Invoice via Phone Camera (تصوير فاتورة الشراء) */}
             <button
               type="button"

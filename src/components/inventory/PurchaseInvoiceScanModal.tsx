@@ -10,9 +10,10 @@ import { parsePurchaseInvoiceXml } from '../../utils/xmlInvoiceParser';
 import {
   assessImageSharpness,
   loadBlobToImage,
-  runOfflineInvoiceNumberOcr
+  runOfflineInvoiceNumberOcr,
+  runTesseractInvoiceOcr
 } from '../../utils/offlineInvoiceOcr';
-import { safeLocalStorageSet } from '../../utils/storage';
+import { safeLocalStorageSet, safeLocalStorageGet } from '../../utils/storage';
 import {
   Camera,
   Upload,
@@ -41,7 +42,8 @@ import {
   Barcode,
   Smartphone,
   FileText,
-  FileCode2
+  FileCode2,
+  Languages
 } from 'lucide-react';
 
 export type PurchaseInvoiceMode = 'official_ice' | 'informal_noir';
@@ -71,6 +73,7 @@ interface ScannedLineItem {
 }
 
 const INVOICE_SCAN_DRAFT_KEY = 'kadi_pos_invoice_scan_draft_v1';
+const INVOICE_DEFAULT_SELL_KEY = 'kadi_pos_invoice_default_sell_v1';
 
 interface ScannedInvoiceResponse {
   items?: VisionInvoiceItem[];
@@ -362,6 +365,10 @@ export const PurchaseInvoiceScanModal: React.FC = () => {
   const [dueDate, setDueDate] = useState('');
   const [manualTotalAmount, setManualTotalAmount] = useState('');
   const [paidAmount, setPaidAmount] = useState('');
+  const [defaultSellPrice, setDefaultSellPrice] = useState<string>(() =>
+    safeLocalStorageGet(INVOICE_DEFAULT_SELL_KEY, '')
+  );
+  const [scanEngineMode, setScanEngineMode] = useState<'auto' | 'tesseract'>('auto');
   const [invoiceNotes, setInvoiceNotes] = useState('');
   const [items, setItems] = useState<ScannedLineItem[]>([]);
 
@@ -935,8 +942,95 @@ export const PurchaseInvoiceScanModal: React.FC = () => {
         }
       }
 
+      const resolveDefaultOrSuggestedSell = (
+        matched: Product | undefined,
+        rawName: string,
+        unitCost: number
+      ): { sellPrice: number; suggestedMarginPct?: number } => {
+        if (matched) {
+          return { sellPrice: matched.price, suggestedMarginPct: undefined };
+        }
+        const parsedDefSell = Number(defaultSellPrice);
+        if (Number.isFinite(parsedDefSell) && parsedDefSell > 0) {
+          return { sellPrice: Number(parsedDefSell.toFixed(2)), suggestedMarginPct: undefined };
+        }
+        const marginPct = suggestMoroccanMarginPercent(rawName);
+        const suggested =
+          unitCost > 0 ? Number((unitCost * (1 + marginPct / 100)).toFixed(2)) : 0;
+        return { sellPrice: suggested, suggestedMarginPct: marginPct };
+      };
+
+      const runTesseractLocalScan = async (
+        ocrSource: Blob | string,
+        reasonPrefixAr: string,
+        reasonPrefixEn: string
+      ): Promise<boolean> => {
+        if (isPdfFile) return false;
+        try {
+          const tesseractRes = await runTesseractInvoiceOcr(ocrSource);
+          if (tesseractRes.supplierHint && !supplierName.trim()) {
+            setSupplierName(tesseractRes.supplierHint);
+          }
+          if (tesseractRes.detectedTotal > 0 && !manualTotalAmount) {
+            setManualTotalAmount(tesseractRes.detectedTotal.toFixed(2));
+          }
+          if (tesseractRes.items.length > 0) {
+            const rows: ScannedLineItem[] = tesseractRes.items.map((raw, idx) => {
+              const matched = findBestCatalogProduct(raw.name, products);
+              const unitCost =
+                raw.unitCost > 0
+                  ? raw.unitCost
+                  : matched
+                  ? matched.costPrice
+                  : 0;
+              const lineTotal =
+                raw.lineTotal > 0
+                  ? raw.lineTotal
+                  : Number((raw.quantity * unitCost).toFixed(2));
+              const { sellPrice, suggestedMarginPct } = resolveDefaultOrSuggestedSell(
+                matched,
+                raw.name,
+                unitCost
+              );
+              return {
+                id: `tess-${Date.now()}-${idx}`,
+                include: true,
+                barcode: matched?.barcode || '',
+                rawName: matched ? matched.name : raw.name,
+                matchedProductId: matched?.id || '',
+                quantity: Math.max(0.01, Number(raw.quantity) || 1),
+                unitCost: Number(Math.max(0, unitCost).toFixed(2)),
+                lineTotal: Number(Math.max(0, lineTotal).toFixed(2)),
+                sellPrice,
+                suggestedMarginPct,
+                unitType: matched ? matched.unitType : normalizeUnitType(raw.name),
+                source: 'vision'
+              };
+            });
+            setItems(rows);
+            setScanNotice(
+              isAr
+                ? `${reasonPrefixAr} — تقراو ${rows.length} سلع محلياً (عربي / فرنسي / إنجليزي) مع تذكّر ثمن البيع.`
+                : `${reasonPrefixEn} — Extracted ${rows.length} items locally with Tesseract (ara+fra+eng).`
+            );
+            if (settings.enableSoundEffects) playSound('success');
+            setIsScanning(false);
+            return true;
+          }
+        } catch {
+          // Fall through cleanly to bitmap numeric OCR
+        }
+        return false;
+      };
+
       const tryOfflineOcrFallback = async (reasonPrefixAr: string, reasonPrefixEn: string): Promise<boolean> => {
         if (isPdfFile) return false;
+        const tessOk = await runTesseractLocalScan(
+          previewDataUrl || blob,
+          '📖 قراءة Tesseract محلية (عربي/فرنسي)',
+          '📖 Local Tesseract OCR'
+        );
+        if (tessOk) return true;
         try {
           const img = await loadBlobToImage(blob);
           const offlineResult = await runOfflineInvoiceNumberOcr(img);
@@ -944,10 +1038,16 @@ export const PurchaseInvoiceScanModal: React.FC = () => {
             setManualTotalAmount(offlineResult.detectedTotal.toFixed(2));
           }
           if (offlineResult.rows.length > 0) {
+            const parsedDefSell = Number(defaultSellPrice);
             const offlineRows: ScannedLineItem[] = offlineResult.rows.map((row, idx) => {
               const cost = row.unitCost > 0 ? row.unitCost : row.lineTotal / Math.max(1, row.quantity);
               const total = row.lineTotal > 0 ? row.lineTotal : Number((row.quantity * cost).toFixed(2));
-              const suggestedSell = cost > 0 ? Number((cost * 1.2).toFixed(2)) : 0;
+              const suggestedSell =
+                Number.isFinite(parsedDefSell) && parsedDefSell > 0
+                  ? Number(parsedDefSell.toFixed(2))
+                  : cost > 0
+                  ? Number((cost * 1.2).toFixed(2))
+                  : 0;
               return {
                 id: `offline-ocr-${Date.now()}-${idx}`,
                 include: true,
@@ -958,7 +1058,7 @@ export const PurchaseInvoiceScanModal: React.FC = () => {
                 unitCost: Number(Math.max(0, cost).toFixed(2)),
                 lineTotal: Number(Math.max(0, total).toFixed(2)),
                 sellPrice: suggestedSell,
-                suggestedMarginPct: 20,
+                suggestedMarginPct: Number.isFinite(parsedDefSell) && parsedDefSell > 0 ? undefined : 20,
                 unitType: 'piece',
                 source: 'vision',
                 linePreviewDataUrl: row.linePreviewDataUrl
@@ -980,16 +1080,18 @@ export const PurchaseInvoiceScanModal: React.FC = () => {
         return false;
       };
 
-      if (typeof navigator !== 'undefined' && !navigator.onLine) {
+      if (scanEngineMode === 'tesseract' || (typeof navigator !== 'undefined' && !navigator.onLine)) {
         const ok = await tryOfflineOcrFallback(
-          '📴 وضع أوفلاين (بدون أنترنت)',
-          '📴 Offline Mode'
+          scanEngineMode === 'tesseract'
+            ? '📖 قراءة Tesseract محلية'
+            : '📴 وضع أوفلاين (بدون أنترنت)',
+          scanEngineMode === 'tesseract' ? '📖 Local Tesseract OCR' : '📴 Offline Mode'
         );
         if (ok) return;
         setScanError(
           isAr
-            ? 'ما كاينش أنترنت دابا وما تقدرناش نقراو سطور واضحين أوفلاين. شغّل الأنترنت واضغط "حاول مرة أخرى" أو دخّل يدوياً.'
-            : 'Offline and no clear rows detected locally. Reconnect and retry, or enter manually.'
+            ? 'ما تقدرناش نقراو سطور واضحين محلياً من هاد التصويرة. جرب تقرّب الكاميرا، شغّل Gemini Vision (بالأنترنت)، ولا دخّل يدوياً.'
+            : 'No clear rows detected locally. Retake closer, try Gemini Vision online, or enter manually.'
         );
         setIsScanning(false);
         return;
@@ -1161,6 +1263,78 @@ export const PurchaseInvoiceScanModal: React.FC = () => {
   const handleRetryScan = () => {
     if (!lastCapturedBlobRef.current) return;
     void analyzeImageBlob(lastCapturedBlobRef.current, rotationDeg);
+  };
+
+  const handleRunTesseractOnLastPhoto = async () => {
+    if (!lastCapturedBlobRef.current || isScanning) return;
+    setScanError(null);
+    setScanNotice(null);
+    setIsScanning(true);
+    try {
+      const sourceInput = previewDataUrl || lastCapturedBlobRef.current;
+      const res = await runTesseractInvoiceOcr(sourceInput);
+      if (res.supplierHint && !supplierName.trim()) {
+        setSupplierName(res.supplierHint);
+      }
+      if (res.detectedTotal > 0 && !manualTotalAmount) {
+        setManualTotalAmount(res.detectedTotal.toFixed(2));
+      }
+      if (res.items.length === 0) {
+        setScanError(
+          isAr
+            ? 'ما لقاوش سطور واضحين بقراءة Tesseract — عاود صور بوضوح أو استعمل Gemini Vision.'
+            : 'No clear line items detected by Tesseract — try clearer lighting or Gemini Vision.'
+        );
+      } else {
+        const parsedDefSell = Number(defaultSellPrice);
+        const rows: ScannedLineItem[] = res.items.map((raw, idx) => {
+          const matched = findBestCatalogProduct(raw.name, products);
+          const unitCost = raw.unitCost > 0 ? raw.unitCost : matched ? matched.costPrice : 0;
+          const lineTotal =
+            raw.lineTotal > 0 ? raw.lineTotal : Number((raw.quantity * unitCost).toFixed(2));
+          const marginPct = suggestMoroccanMarginPercent(raw.name);
+          const sellPrice = matched
+            ? matched.price
+            : Number.isFinite(parsedDefSell) && parsedDefSell > 0
+            ? Number(parsedDefSell.toFixed(2))
+            : unitCost > 0
+            ? Number((unitCost * (1 + marginPct / 100)).toFixed(2))
+            : 0;
+          return {
+            id: `tess-manual-${Date.now()}-${idx}`,
+            include: true,
+            barcode: matched?.barcode || '',
+            rawName: matched ? matched.name : raw.name,
+            matchedProductId: matched?.id || '',
+            quantity: Math.max(0.01, Number(raw.quantity) || 1),
+            unitCost: Number(Math.max(0, unitCost).toFixed(2)),
+            lineTotal: Number(Math.max(0, lineTotal).toFixed(2)),
+            sellPrice,
+            suggestedMarginPct:
+              matched || (Number.isFinite(parsedDefSell) && parsedDefSell > 0)
+                ? undefined
+                : marginPct,
+            unitType: matched ? matched.unitType : normalizeUnitType(raw.name),
+            source: 'vision'
+          };
+        });
+        setItems(rows);
+        setScanNotice(
+          isAr
+            ? `✅ قراءة Tesseract (عربي + فرنسي + إنجليزي) جبدات ${rows.length} سلع محلياً!`
+            : `✅ Local Tesseract OCR (ara+fra+eng) extracted ${rows.length} items!`
+        );
+        if (settings.enableSoundEffects) playSound('success');
+      }
+    } catch {
+      setScanError(
+        isAr
+          ? 'وقع مشكل فتشغيل قراءة Tesseract — تأكد من وضوح التصويرة أو جرب مرة أخرى.'
+          : 'Tesseract OCR error — please try again or enter manually.'
+      );
+    } finally {
+      setIsScanning(false);
+    }
   };
 
   const handleRotateAndRescan = () => {
@@ -1417,8 +1591,15 @@ export const PurchaseInvoiceScanModal: React.FC = () => {
       }
     }
 
-    if (invoiceMode !== 'informal_noir' && activeRows.length > 0) {
-      const missingSell = activeRows.find((r) => !r.matchedProductId && !(Number(r.sellPrice) > 0));
+    const parsedDefSellCheck = Number(defaultSellPrice);
+    const hasValidDefaultSell = Number.isFinite(parsedDefSellCheck) && parsedDefSellCheck > 0;
+    if (invoiceMode !== 'informal_noir' && activeRows.length > 0 && !hasValidDefaultSell) {
+      const missingSell = activeRows.find(
+        (r) =>
+          !r.matchedProductId &&
+          !findBestCatalogProduct(r.rawName, products, r.barcode) &&
+          !(Number(r.sellPrice) > 0)
+      );
       if (missingSell) {
         setScanError(
           isAr
@@ -1449,10 +1630,46 @@ export const PurchaseInvoiceScanModal: React.FC = () => {
         ? 'توريد للمخزون (بوار / نوار - بدون أرقام)'
         : 'Stock intake (no archive)';
 
-    activeRows.forEach((row, index) => {
+    // Merge duplicate rows pointing to the same catalog item or identical new product name
+    const mergedRowsMap = new Map<string, ScannedLineItem>();
+    activeRows.forEach((row, idx) => {
+      const cleanName = row.rawName.trim();
+      const autoMatched =
+        row.matchedProductId
+          ? products.find((p) => p.id === row.matchedProductId)
+          : cleanName
+          ? findBestCatalogProduct(cleanName, products, row.barcode)
+          : undefined;
+      const key = autoMatched
+        ? `prod:${autoMatched.id}`
+        : `new:${cleanName.toLowerCase() || idx}`;
+      const existingMerged = mergedRowsMap.get(key);
+      if (existingMerged) {
+        existingMerged.quantity = Number(
+          (existingMerged.quantity + (Number(row.quantity) || 1)).toFixed(3)
+        );
+        if (Number(row.unitCost) > 0) existingMerged.unitCost = Number(row.unitCost);
+        if (Number(row.sellPrice) > 0) existingMerged.sellPrice = Number(row.sellPrice);
+      } else {
+        mergedRowsMap.set(key, {
+          ...row,
+          matchedProductId: autoMatched?.id || row.matchedProductId
+        });
+      }
+    });
+
+    const parsedDefSell = Number(defaultSellPrice);
+
+    Array.from(mergedRowsMap.values()).forEach((row, index) => {
       const qty = Math.max(0.01, Number(row.quantity) || 1);
       const unitCost = Math.max(0, Number(row.unitCost) || 0);
-      const sellPrice = Math.max(unitCost, Number(row.sellPrice) || unitCost || 1);
+      const resolvedRowSell =
+        Number(row.sellPrice) > 0
+          ? Number(row.sellPrice)
+          : Number.isFinite(parsedDefSell) && parsedDefSell > 0
+          ? parsedDefSell
+          : unitCost || 1;
+      const sellPrice = Math.max(unitCost, resolvedRowSell);
       const existing = row.matchedProductId
         ? products.find((p) => p.id === row.matchedProductId)
         : undefined;
@@ -2211,6 +2428,19 @@ export const PurchaseInvoiceScanModal: React.FC = () => {
                     </button>
                     <button
                       type="button"
+                      onClick={() => void handleRunTesseractOnLastPhoto()}
+                      className="px-2.5 py-1.5 rounded-xl bg-slate-900 dark:bg-slate-700 hover:bg-slate-800 text-white text-[11px] font-bold flex items-center gap-1"
+                      title={
+                        isAr
+                          ? 'قراءة محلية مجانية بالعربية والفرنسية والإنجليزية (Tesseract)'
+                          : 'Run local Tesseract OCR (ara+fra+eng)'
+                      }
+                    >
+                      <Languages className="w-3 h-3 text-amber-400" />
+                      <span>{isAr ? 'قراءة محلية (Tesseract)' : 'Local OCR'}</span>
+                    </button>
+                    <button
+                      type="button"
                       onClick={handleRotateAndRescan}
                       className="px-2.5 py-1.5 rounded-xl bg-white dark:bg-slate-900 border border-slate-300 dark:border-slate-700 hover:bg-slate-100 text-[11px] font-bold text-slate-700 dark:text-slate-200 flex items-center gap-1"
                     >
@@ -2566,6 +2796,61 @@ export const PurchaseInvoiceScanModal: React.FC = () => {
               </span>
             </div>
           )}
+
+          {/* OCR ENGINE MODE & REMEMBERED DEFAULT SELL PRICE */}
+          <div className="p-3.5 rounded-2xl bg-slate-50 dark:bg-slate-800/40 border border-slate-200 dark:border-slate-800 grid grid-cols-1 md:grid-cols-2 gap-3 items-center text-xs">
+            <div className="flex flex-wrap items-center gap-2">
+              <label className="font-black text-slate-700 dark:text-slate-200 whitespace-nowrap">
+                {isAr
+                  ? 'ثمن البيع الافتراضي (للسلع الجديدة):'
+                  : 'Default Sell Price (New items):'}
+              </label>
+              <input
+                type="number"
+                step="0.01"
+                min="0"
+                value={defaultSellPrice}
+                onChange={(e) => {
+                  const val = e.target.value;
+                  setDefaultSellPrice(val);
+                  safeLocalStorageSet(INVOICE_DEFAULT_SELL_KEY, val);
+                }}
+                placeholder={isAr ? 'مثال: 10 (غادي يعقل عليه)' : 'e.g. 10 (remembered)'}
+                className="w-36 px-3 py-1.5 rounded-xl bg-white dark:bg-slate-900 border border-slate-300 dark:border-slate-700 font-mono font-bold text-slate-900 dark:text-white"
+              />
+            </div>
+
+            <div className="flex flex-wrap items-center justify-start md:justify-end gap-1.5">
+              <span className="text-[11px] font-bold text-slate-500 dark:text-slate-400">
+                {isAr ? 'محرك القراءة:' : 'OCR Engine:'}
+              </span>
+              <div className="inline-flex p-0.5 rounded-xl bg-slate-200/70 dark:bg-slate-900 border border-slate-200 dark:border-slate-700">
+                <button
+                  type="button"
+                  onClick={() => setScanEngineMode('auto')}
+                  className={`px-2.5 py-1 rounded-lg text-[11px] font-black transition-colors ${
+                    scanEngineMode === 'auto'
+                      ? 'bg-white dark:bg-slate-700 text-slate-900 dark:text-white shadow-2xs'
+                      : 'text-slate-600 dark:text-slate-400'
+                  }`}
+                >
+                  {isAr ? 'ذكي (Gemini + محلي)' : 'Smart Auto'}
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setScanEngineMode('tesseract')}
+                  className={`px-2.5 py-1 rounded-lg text-[11px] font-black transition-colors flex items-center gap-1 ${
+                    scanEngineMode === 'tesseract'
+                      ? 'bg-amber-400 text-slate-950 shadow-2xs'
+                      : 'text-slate-600 dark:text-slate-400'
+                  }`}
+                >
+                  <Languages className="w-3 h-3" />
+                  <span>{isAr ? 'Tesseract محلي' : 'Tesseract Local'}</span>
+                </button>
+              </div>
+            </div>
+          </div>
 
           {/* QUICK CATALOG TAP BAR — Super useful in بوار/نوار mode & offline fallback */}
           <div className="p-3.5 rounded-2xl bg-slate-50 dark:bg-slate-800/40 border border-slate-200 dark:border-slate-800 space-y-2.5">

@@ -13,6 +13,7 @@ import { ReceiptModal } from './components/pos/ReceiptModal';
 import { HeldTicketsModal } from './components/pos/HeldTicketsModal';
 import { BarcodeScannerModal } from './components/pos/BarcodeScannerModal';
 import { InventoryView } from './components/inventory/InventoryView';
+import { InvoiceOcrView } from './components/inventory/InvoiceOcrView';
 import { OrdersView } from './components/orders/OrdersView';
 import { ShiftsView } from './components/shifts/ShiftsView';
 import { CustomersView } from './components/customers/CustomersView';
@@ -724,6 +725,7 @@ const PosMainContent: React.FC = () => {
         {currentTab === 'branch_stock' && <BranchInventoryView />}
         {currentTab === 'bourse' && <BourseHanoutView />}
         {currentTab === 'inventory' && <InventoryView />}
+        {currentTab === 'invoice_ocr' && <InvoiceOcrView />}
         {currentTab === 'orders' && <OrdersView />}
         {currentTab === 'shifts' && <ShiftsView />}
         {currentTab === 'customers' && <CustomersView />}
