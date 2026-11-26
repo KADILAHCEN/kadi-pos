@@ -38,6 +38,17 @@ interface OcrDraftItem {
 
 const DEFAULT_SELL_STORAGE_KEY = 'kadi_invoice_ocr_default_sell_v1';
 const DEFAULT_SUPPLIER_STORAGE_KEY = 'kadi_invoice_ocr_supplier_v1';
+const PRODUCT_SUPPLIER_MAP_KEY = 'kadi_invoice_ocr_product_suppliers_v1';
+
+const loadSavedSupplierMap = (): Record<string, string> => {
+  try {
+    const raw = safeLocalStorageGet(PRODUCT_SUPPLIER_MAP_KEY, '{}');
+    const parsed = JSON.parse(raw);
+    return parsed && typeof parsed === 'object' ? parsed : {};
+  } catch {
+    return {};
+  }
+};
 
 /**
  * Normalizes any phone camera / gallery photo:
@@ -164,6 +175,7 @@ export const InvoiceOcrView: React.FC = () => {
     updateProduct,
     updateProductPurchaseCostAndRecalculateProfit,
     addSupplierInvoice,
+    supplierInvoices,
     settings,
     currencySymbol,
     language
@@ -211,6 +223,40 @@ export const InvoiceOcrView: React.FC = () => {
 
   const [stockSearchQuery, setStockSearchQuery] = useState<string>('');
   const [stockShowLimit, setStockShowLimit] = useState<number>(40);
+  const [productSuppliers, setProductSuppliers] = useState<Record<string, string>>(() =>
+    loadSavedSupplierMap()
+  );
+
+  const ledgerSupplierByName = useMemo(() => {
+    const map: Record<string, string> = {};
+    for (const inv of supplierInvoices) {
+      const sup = inv.supplierName?.trim();
+      if (!sup || !Array.isArray(inv.itemsSummary)) continue;
+      for (const item of inv.itemsSummary) {
+        const key = item.productName?.trim().toLowerCase();
+        if (key && !map[key]) {
+          map[key] = sup;
+        }
+      }
+    }
+    return map;
+  }, [supplierInvoices]);
+
+  const getProductSupplier = useCallback(
+    (p: Product): string => {
+      const nameKey = p.name.trim().toLowerCase();
+      const enKey = p.nameEn.trim().toLowerCase();
+      return (
+        productSuppliers[p.id] ||
+        productSuppliers[nameKey] ||
+        (enKey ? productSuppliers[enKey] : '') ||
+        ledgerSupplierByName[nameKey] ||
+        (enKey ? ledgerSupplierByName[enKey] : '') ||
+        '—'
+      );
+    },
+    [ledgerSupplierByName, productSuppliers]
+  );
 
   const stopLiveCamera = useCallback(() => {
     if (streamRef.current) {
@@ -269,10 +315,10 @@ export const InvoiceOcrView: React.FC = () => {
       } else {
         setStatusMessage(
           isAr
-            ? `ساليت القراية (${mapped.length} سلع) — زيد ثمن البيع ودخل للمخزون`
+            ? `ساليت (${mapped.length} سلع) — دابا عدل واش بغيتي ودخل للمخزون`
             : isFr
-            ? `Lecture terminée (${mapped.length} articles) — vérifiez les prix et validez`
-            : `Finished reading (${mapped.length} items) — verify sell prices and import`
+            ? `Lecture terminée (${mapped.length} articles) — modifiez avant d’importer`
+            : `Done (${mapped.length} items) — edit anything before importing`
         );
         if (settings.enableSoundEffects) playSound('success');
       }
@@ -581,6 +627,8 @@ export const InvoiceOcrView: React.FC = () => {
       unitType: 'piece';
     }[] = [];
 
+    const updatedSupplierMap: Record<string, string> = { ...productSuppliers };
+
     Array.from(mergedMap.values()).forEach((row, idx) => {
       const qty = Math.max(0.01, Number(row.quantity) || 1);
       const buy = Math.max(0, Number(row.buyPrice) || 0);
@@ -612,6 +660,8 @@ export const InvoiceOcrView: React.FC = () => {
         ) {
           updateProduct(existingProd.id, { price: Number(explicitSell.toFixed(2)) });
         }
+        updatedSupplierMap[existingProd.id] = cleanSupplier;
+        updatedSupplierMap[existingProd.name.trim().toLowerCase()] = cleanSupplier;
         updatedCount++;
         snapshotItems.push({
           productName: existingProd.name,
@@ -633,6 +683,7 @@ export const InvoiceOcrView: React.FC = () => {
           lowStockThreshold: Math.max(2, Math.round(qty * 0.2)),
           unitType: 'piece'
         });
+        updatedSupplierMap[cleanName.trim().toLowerCase()] = cleanSupplier;
         createdCount++;
         snapshotItems.push({
           productName: cleanName,
@@ -642,6 +693,9 @@ export const InvoiceOcrView: React.FC = () => {
         });
       }
     });
+
+    setProductSuppliers(updatedSupplierMap);
+    safeLocalStorageSet(PRODUCT_SUPPLIER_MAP_KEY, JSON.stringify(updatedSupplierMap));
 
     if (archiveToSupplierLedger && totalBuyValue > 0) {
       addSupplierInvoice({
@@ -686,10 +740,11 @@ export const InvoiceOcrView: React.FC = () => {
             p.name.toLowerCase().includes(q) ||
             p.nameEn.toLowerCase().includes(q) ||
             p.sku.toLowerCase().includes(q) ||
-            p.barcode.toLowerCase().includes(q)
+            p.barcode.toLowerCase().includes(q) ||
+            getProductSupplier(p).toLowerCase().includes(q)
         )
       : products;
-  }, [products, stockSearchQuery]);
+  }, [getProductSupplier, products, stockSearchQuery]);
 
   const displayedInventory = useMemo(
     () => filteredInventory.slice(0, stockShowLimit),
@@ -1090,40 +1145,41 @@ export const InvoiceOcrView: React.FC = () => {
             </div>
           )}
 
-          {/* Card 3: Parsed Invoice Items */}
+          {/* Card 3: Edit Parsed Items Before Importing */}
           <div className="bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-2xl p-4 sm:p-5 space-y-3.5">
             <div className="flex flex-wrap items-center justify-between gap-2">
               <h2 className="text-sm font-black text-slate-900 dark:text-white flex items-center gap-2">
                 <FileText className="w-4 h-4 text-amber-500 shrink-0" />
                 <span>
                   {isAr
-                    ? '3. الفاتورة اللي تقرات'
+                    ? '3. هنا تعدل قبل ما تدخل للمخزون'
                     : isFr
-                    ? '3. Articles lus sur la facture'
-                    : '3. Parsed Invoice Items'}
+                    ? '3. Modifier avant d’importer dans le stock'
+                    : '3. Edit Items Before Stock Import'}
                 </span>
               </h2>
-              <button
-                type="button"
-                onClick={addEmptyRow}
-                className="px-3 py-1.5 rounded-xl bg-slate-100 dark:bg-slate-800 hover:bg-slate-200 dark:hover:bg-slate-700 border border-slate-200 dark:border-slate-700 text-xs font-bold text-slate-800 dark:text-slate-200 flex items-center gap-1.5 whitespace-nowrap"
-              >
-                <Plus className="w-3.5 h-3.5" />
-                <span>{isAr ? 'سطر جديد' : isFr ? 'Ajouter ligne' : 'Add Row'}</span>
-              </button>
+              <span className="text-[11px] font-bold text-slate-500 dark:text-slate-400 tabular-nums">
+                {parsedItems.length > 0
+                  ? isAr
+                    ? `${parsedItems.length} سطر جاهز للتعديل`
+                    : `${parsedItems.length} rows ready`
+                  : isAr
+                  ? 'قرا الفاتورة ولا زيد سطر بيدك'
+                  : 'Read invoice or add manually'}
+              </span>
             </div>
 
             <div className="border border-slate-200 dark:border-slate-800 rounded-xl overflow-x-auto">
               <table className="w-full text-xs">
                 <thead className="bg-slate-900 dark:bg-slate-800 text-white">
                   <tr>
-                    <th className="py-2.5 px-3 text-start">{isAr ? 'السمية' : isFr ? 'Article' : 'Item'}</th>
+                    <th className="py-2.5 px-3 text-start">
+                      {isAr ? 'السمية - تعدلها' : isFr ? 'Article (modifiable)' : 'Item Name'}
+                    </th>
                     <th className="py-2.5 px-2 text-center">{isAr ? 'العدد' : isFr ? 'Qté' : 'Qty'}</th>
                     <th className="py-2.5 px-2 text-end">{isAr ? 'شراء' : isFr ? 'Achat' : 'Buy'}</th>
-                    <th className="py-2.5 px-2 text-end">
-                      {isAr ? 'بيع - نتا تزيدو' : isFr ? 'Vente' : 'Sell Price'}
-                    </th>
-                    <th className="py-2.5 px-2 text-center">{isAr ? 'مسح' : 'Del'}</th>
+                    <th className="py-2.5 px-2 text-end">{isAr ? 'بيع' : isFr ? 'Vente' : 'Sell'}</th>
+                    <th className="py-2.5 px-2 text-center">{isAr ? 'حيد' : isFr ? 'Suppr' : 'Remove'}</th>
                   </tr>
                 </thead>
                 <tbody className="divide-y divide-slate-100 dark:divide-slate-800">
@@ -1134,10 +1190,10 @@ export const InvoiceOcrView: React.FC = () => {
                         className="py-8 px-4 text-center text-xs text-slate-500 dark:text-slate-400"
                       >
                         {isAr
-                          ? 'ما كاين والو دابا — صور الفاتورة من الهاتف ولا اختارها من الألبوم'
+                          ? 'ما لقيت والو دابا — صور الفاتورة من الهاتف أو زيد سطر بيدك لتحت'
                           : isFr
                           ? 'Aucun article en attente — scannez une facture ou ajoutez une ligne'
-                          : 'No pending items — snap or pick an invoice photo or add a row manually'}
+                          : 'No pending items — snap or pick an invoice photo or add a row below'}
                       </td>
                     </tr>
                   ) : (
@@ -1231,7 +1287,7 @@ export const InvoiceOcrView: React.FC = () => {
                               setParsedItems((prev) => prev.filter((row) => row.id !== it.id))
                             }
                             className="p-1.5 rounded-lg text-slate-400 hover:text-rose-600 hover:bg-rose-50 dark:hover:bg-rose-950/40"
-                            title={isAr ? 'حذف' : 'Delete'}
+                            title={isAr ? 'حيد' : 'Remove'}
                           >
                             <Trash2 className="w-3.5 h-3.5" />
                           </button>
@@ -1243,28 +1299,58 @@ export const InvoiceOcrView: React.FC = () => {
               </table>
             </div>
 
-            <button
-              type="button"
-              onClick={handleBatchSaveToInventory}
-              disabled={parsedItems.length === 0}
-              className="w-full min-h-[46px] px-4 py-3 rounded-xl bg-emerald-600 hover:bg-emerald-700 disabled:opacity-45 disabled:cursor-not-allowed text-white text-sm font-black flex items-center justify-center gap-2 transition-colors"
-            >
-              <PackagePlus className="w-4 h-4" />
-              <span>
-                {isAr
-                  ? 'دخل للمخزون ✅'
-                  : isFr
-                  ? 'Importer dans le stock ✅'
-                  : 'Batch Import to Inventory ✅'}
-              </span>
-            </button>
+            {/* Live Batch Total Readout */}
+            <div className="px-4 py-2.5 rounded-xl bg-slate-50 dark:bg-slate-800/70 border border-slate-200 dark:border-slate-700 text-center font-black text-sm text-slate-900 dark:text-white tabular-nums">
+              {parsedItems.length > 0 ? (
+                <span>
+                  {isAr ? 'المجموع: ' : isFr ? 'Total : ' : 'Total: '}
+                  <span className="font-mono text-emerald-700 dark:text-emerald-400">
+                    {parsedBatchBuyTotal.toFixed(2)} {currencySymbol}
+                  </span>
+                </span>
+              ) : (
+                <span className="text-xs font-bold text-slate-500 dark:text-slate-400">
+                  {isAr
+                    ? 'المجموع غادي يتحسب تلقائياً ملي تقرا الفاتورة أو تزيد سطر'
+                    : 'Total updates live as you edit quantities and buy prices'}
+                </span>
+              )}
+            </div>
+
+            {/* Primary Save + Manual Row Buttons */}
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-2.5">
+              <button
+                type="button"
+                onClick={handleBatchSaveToInventory}
+                disabled={parsedItems.length === 0}
+                className="w-full min-h-[46px] px-4 py-3 rounded-xl bg-emerald-600 hover:bg-emerald-700 disabled:opacity-45 disabled:cursor-not-allowed text-white text-sm font-black flex items-center justify-center gap-2 transition-colors"
+              >
+                <PackagePlus className="w-4 h-4" />
+                <span>
+                  {isAr
+                    ? 'دخل للمخزون ✅'
+                    : isFr
+                    ? 'Importer dans le stock ✅'
+                    : 'Import to Stock ✅'}
+                </span>
+              </button>
+
+              <button
+                type="button"
+                onClick={addEmptyRow}
+                className="w-full min-h-[46px] px-4 py-3 rounded-xl bg-slate-700 hover:bg-slate-800 dark:bg-slate-800 dark:hover:bg-slate-700 text-white text-sm font-black flex items-center justify-center gap-2 transition-colors"
+              >
+                <Plus className="w-4 h-4" />
+                <span>{isAr ? 'زيد سطر بيدك' : isFr ? 'Ajouter une ligne' : 'Add Row Manually'}</span>
+              </button>
+            </div>
           </div>
 
           {/* Card 4: Live Current Stock Table */}
           <div className="bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-2xl p-4 sm:p-5 space-y-3.5">
             <div className="flex flex-wrap items-center justify-between gap-2">
               <h2 className="text-sm font-black text-slate-900 dark:text-white">
-                {isAr ? '4. المخزون دابا' : isFr ? '4. Stock actuel' : '4. Current Inventory'}
+                {isAr ? '4. المخزون' : isFr ? '4. Stock actuel' : '4. Current Inventory'}
               </h2>
               <div className="relative w-full sm:w-60">
                 <Search className="w-3.5 h-3.5 text-slate-400 absolute top-1/2 -translate-y-1/2 start-3 pointer-events-none" />
@@ -1275,7 +1361,7 @@ export const InvoiceOcrView: React.FC = () => {
                     setStockSearchQuery(e.target.value);
                     setStockShowLimit(40);
                   }}
-                  placeholder={isAr ? 'قلّب فالمخزون...' : 'Search stock...'}
+                  placeholder={isAr ? 'قلّب بالسمية ولا المورد...' : 'Search stock or supplier...'}
                   className="w-full ps-8 pe-3 py-1.5 rounded-xl border border-slate-200 dark:border-slate-700 bg-slate-50 dark:bg-slate-800 text-xs font-semibold text-slate-900 dark:text-white"
                 />
               </div>
@@ -1286,10 +1372,10 @@ export const InvoiceOcrView: React.FC = () => {
                 <thead className="bg-slate-100 dark:bg-slate-800 text-slate-700 dark:text-slate-200 sticky top-0">
                   <tr>
                     <th className="py-2 px-3 text-start">{isAr ? 'السمية' : 'Product'}</th>
-                    <th className="py-2 px-2 text-center">{isAr ? 'العدد' : 'Stock'}</th>
+                    <th className="py-2 px-2 text-center">{isAr ? 'العدد' : 'Qty'}</th>
                     <th className="py-2 px-2 text-end">{isAr ? 'شراء' : 'Buy'}</th>
                     <th className="py-2 px-2 text-end">{isAr ? 'بيع' : 'Sell'}</th>
-                    <th className="py-2 px-3 text-end">{isAr ? 'القيمة' : 'Value'}</th>
+                    <th className="py-2 px-3 text-start">{isAr ? 'مورد' : isFr ? 'Fournisseur' : 'Supplier'}</th>
                   </tr>
                 </thead>
                 <tbody className="divide-y divide-slate-100 dark:divide-slate-800">
@@ -1317,8 +1403,8 @@ export const InvoiceOcrView: React.FC = () => {
                         <td className="py-2 px-2 text-end font-mono font-bold tabular-nums text-emerald-700 dark:text-emerald-400">
                           {p.price.toFixed(2)}
                         </td>
-                        <td className="py-2 px-3 text-end font-mono tabular-nums text-slate-700 dark:text-slate-200">
-                          {(Math.max(0, p.stock) * Math.max(0, p.costPrice)).toFixed(2)}
+                        <td className="py-2 px-3 text-start font-semibold text-slate-600 dark:text-slate-300">
+                          {getProductSupplier(p)}
                         </td>
                       </tr>
                     ))
