@@ -32,6 +32,16 @@ export interface ProductModifier {
   price: number;
 }
 
+export interface ProductBatch {
+  id: string;
+  lotNumber?: string;
+  quantity: number;
+  expiryDate: string; // YYYY-MM-DD
+  costPrice?: number;
+  receivedAt: string; // ISO string
+  supplierName?: string;
+}
+
 export interface Product {
   id: string;
   name: string;
@@ -52,6 +62,7 @@ export interface Product {
   availableModifiers?: ProductModifier[];
   branchStocks?: Record<string, number>; // Specific stock allocated per branch ID
   expiryDate?: string; // YYYY-MM-DD تاريخ انتهاء الصلاحية
+  batches?: ProductBatch[]; // دفعات الصلاحية بنظام FEFO (الأقرب انتهاءً يُباع أولاً)
   scalePlu?: string; // PLU للميزان الإلكتروني (مثال: 00105)
   boxChildProductId?: string; // ربط الكرتون بسلعة التفصيل (الحبة) لفك الكرتون تلقائياً
   unitsPerBox?: number; // عدد الحبات داخل الكرتون الواحد
@@ -447,6 +458,7 @@ export interface StoreSettings {
   scheduledReportAutoDrive?: boolean;
   lastScheduledReportSentAt?: string;
   driveBackupFolderId?: string;
+  driveInvoicesFolderId?: string;
   // Low-Stock Push & Visual Alerts Settings
   enableLowStockPushNotifications?: boolean;
   enableLowStockVisualAlerts?: boolean;
@@ -461,6 +473,8 @@ export interface StoreSettings {
   };
   // Custom Icons & Colors per POS Navigation Tab
   tabCustomizations?: Record<string, { icon?: string; color?: string }>;
+  // Focused Cashier Mode (إخفاء الأقسام الإدارية المتقدمة أثناء البيع السريع)
+  simpleCashierMode?: boolean;
 }
 
 export type TheftAlertCategory =
@@ -557,6 +571,7 @@ export interface Expense {
   recordedBy?: string;
   branchId?: string;
   createdAt: string;
+  updatedAt?: number;
 }
 
 // =========================
@@ -631,8 +646,12 @@ export interface SupplierInvoice {
   itemsCount?: number;
   itemsSummary?: SupplierInvoiceItemSnapshot[];
   scannedViaCamera?: boolean;
+  driveFileId?: string;
+  driveFileName?: string;
+  driveWebViewLink?: string;
   recordedBy?: string;
   createdAt: string;
+  updatedAt?: number;
 }
 
 export interface SupplierProfile {

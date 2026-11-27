@@ -1,6 +1,7 @@
 import React, { createContext, useContext, useState, useEffect, useMemo, useRef, useCallback, ReactNode } from 'react';
 import {
   Product,
+  ProductBatch,
   Category,
   CartItem,
   Customer,
@@ -86,6 +87,7 @@ import {
   safeLocalStorageSet
 } from '../utils/storage';
 import { getExpenseCategoryLabel, getLocalTodayYMD } from '../utils/expenses';
+import { addBatchFefo, deductStockFefo } from '../utils/fefoBatches';
 import { matchEntityByName } from '../utils/darijaVoiceParser';
 import { generate2000MoroccanProducts } from '../utils/catalogGenerator';
 import { calculateTradeZakatSummary, ZakatSummary } from '../utils/zakat';
@@ -131,6 +133,7 @@ import {
   subscribeStoreSyncDoc,
   updateDeviceRegistryOnly
 } from '../utils/firestoreSync';
+import { loadRemiseBoxData, RemiseBoxData, saveRemiseBoxData } from '../utils/remiseVault';
 
 export type AppTabId =
   | 'home_summary'
@@ -143,6 +146,7 @@ export type AppTabId =
   | 'shifts'
   | 'customers'
   | 'expenses'
+  | 'remise_box'
   | 'remote_sales'
   | 'cpu_tax'
   | 'analytics'
@@ -197,6 +201,11 @@ interface PosContextType {
   ) => void;
   deleteProduct: (id: string) => void;
   adjustStock: (productId: string, quantityChange: number, reason: string, type?: 'restock' | 'waste' | 'audit_adjustment') => void;
+  addProductBatch: (
+    productId: string,
+    batch: Omit<ProductBatch, 'id' | 'receivedAt'>,
+    options?: { skipStockIncrement?: boolean }
+  ) => void;
   unpackBoxProduct: (
     boxProductId: string,
     boxesCount: number,
@@ -1969,7 +1978,22 @@ export const PosProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
             });
           }
 
-          return { ...p, stock: newStock };
+          const fefo =
+            quantityChange < 0 && p.batches && p.batches.length > 0
+              ? deductStockFefo(p.batches, Math.abs(quantityChange))
+              : null;
+
+          return {
+            ...p,
+            stock: newStock,
+            updatedAt: Date.now(),
+            ...(fefo
+              ? {
+                  batches: fefo.nextBatches,
+                  expiryDate: fefo.nextExpiryDate ?? (newStock > 0 ? p.expiryDate : undefined)
+                }
+              : {})
+          };
         }
         return p;
       })
@@ -1998,6 +2022,38 @@ export const PosProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
         playSiren: unitsLost >= theftCfg.stockShrinkageUnitsThreshold * 2
       });
     }
+  };
+
+  const addProductBatch = (
+    productId: string,
+    batch: Omit<ProductBatch, 'id' | 'receivedAt'>,
+    options?: { skipStockIncrement?: boolean }
+  ) => {
+    const cleanQty = Math.max(0, Number(batch.quantity) || 0);
+    const cleanExp = (batch.expiryDate || '').trim();
+    if (cleanQty <= 0 || !cleanExp) return;
+    const nowTs = Date.now();
+
+    setProducts((prev) =>
+      prev.map((p) => {
+        if (p.id !== productId) return p;
+        const { nextBatches, nextExpiryDate } = addBatchFefo(p.batches, {
+          ...batch,
+          quantity: cleanQty,
+          expiryDate: cleanExp
+        });
+        const nextStock = options?.skipStockIncrement
+          ? p.stock
+          : Number((p.stock + cleanQty).toFixed(2));
+        return {
+          ...p,
+          stock: nextStock,
+          batches: nextBatches,
+          expiryDate: nextExpiryDate || p.expiryDate,
+          updatedAt: nowTs
+        };
+      })
+    );
   };
 
   const unpackBoxProduct = (
@@ -3982,6 +4038,11 @@ export const PosProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
       if (cancelled) return;
       if (dbExpenses && dbExpenses.length > 0) {
         setExpenses(dbExpenses);
+      } else {
+        const cloudBackup = loadLocalCloudBackup();
+        if (cloudBackup?.expenses && cloudBackup.expenses.length > 0) {
+          setExpenses(cloudBackup.expenses);
+        }
       }
       expensesHydratedRef.current = true;
     });
@@ -4007,7 +4068,8 @@ export const PosProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
       recordedBy: data.recordedBy || currentUser.name,
       branchId: data.branchId || activeBranchId,
       id: `exp-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`,
-      createdAt: nowIso
+      createdAt: nowIso,
+      updatedAt: Date.now()
     };
 
     setExpenses((prev) => {
@@ -4035,13 +4097,15 @@ export const PosProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
   };
 
   const updateExpense = (id: string, updated: Partial<Expense>) => {
+    const nowTs = Date.now();
     setExpenses((prev) => {
       const next = prev.map((e) =>
         e.id === id
           ? {
               ...e,
               ...updated,
-              amount: updated.amount !== undefined ? Math.max(0, Number(updated.amount) || 0) : e.amount
+              amount: updated.amount !== undefined ? Math.max(0, Number(updated.amount) || 0) : e.amount,
+              updatedAt: nowTs
             }
           : e
       );
@@ -4075,6 +4139,11 @@ export const PosProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
       if (cancelled) return;
       if (idbInv && idbInv.length > 0) {
         setSupplierInvoices(idbInv);
+      } else {
+        const cloudBackup = loadLocalCloudBackup();
+        if (cloudBackup?.supplierInvoices && cloudBackup.supplierInvoices.length > 0) {
+          setSupplierInvoices(cloudBackup.supplierInvoices);
+        }
       }
       supplierHydratedRef.current = true;
     });
@@ -4105,7 +4174,8 @@ export const PosProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
       status,
       recordedBy: data.recordedBy || currentUser.name,
       id: `sup-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`,
-      createdAt: nowIso
+      createdAt: nowIso,
+      updatedAt: Date.now()
     };
     setSupplierInvoices((prev) => {
       const next = [inv, ...prev];
@@ -4128,13 +4198,14 @@ export const PosProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
   const paySupplierInvoice = (invoiceId: string, amount: number) => {
     const clean = Math.max(0, Number(amount) || 0);
     if (clean <= 0) return;
+    const nowTs = Date.now();
     setSupplierInvoices((prev) => {
       const next = prev.map((inv) => {
         if (inv.id !== invoiceId) return inv;
         const nextPaid = Math.min(inv.totalAmount, Number((inv.paidAmount + clean).toFixed(2)));
         const nextStatus: SupplierInvoice['status'] =
           nextPaid >= inv.totalAmount ? 'paid' : nextPaid > 0 ? 'partial' : 'unpaid';
-        return { ...inv, paidAmount: nextPaid, status: nextStatus };
+        return { ...inv, paidAmount: nextPaid, status: nextStatus, updatedAt: nowTs };
       });
       void saveSupplierInvoicesToIndexedDB(next);
       return next;
@@ -4254,10 +4325,11 @@ export const PosProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
     }
 
     if (updatesMap.size > 0) {
+      const nowTs = Date.now();
       setSupplierInvoices((prev) => {
         const next = prev.map((inv) => {
           const patch = updatesMap.get(inv.id);
-          return patch ? { ...inv, ...patch } : inv;
+          return patch ? { ...inv, ...patch, updatedAt: nowTs } : inv;
         });
         void saveSupplierInvoicesToIndexedDB(next);
         return next;
@@ -5571,11 +5643,23 @@ export const PosProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
           });
         }
 
+        const fefo =
+          prod.batches && prod.batches.length > 0
+            ? deductStockFefo(prod.batches, totalDeduction)
+            : null;
+
         return {
           ...prod,
           stock: newStock,
           variants: updatedVariants,
-          branchStocks: currentBranchStocks
+          branchStocks: currentBranchStocks,
+          updatedAt: Date.now(),
+          ...(fefo
+            ? {
+                batches: fefo.nextBatches,
+                expiryDate: fefo.nextExpiryDate ?? (newStock > 0 ? prod.expiryDate : undefined)
+              }
+            : {})
         };
       })
     );
@@ -6000,6 +6084,11 @@ export const PosProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
     setOrders([]);
     setExpenses([]);
     void saveExpensesToIndexedDB([]);
+    setSupplierInvoices([]);
+    void saveSupplierInvoicesToIndexedDB([]);
+    setSuppliers([]);
+    saveRemiseBoxData({ wallets: {}, history: [] });
+    window.dispatchEvent(new CustomEvent('kadi:remise-box-updated'));
     setDeliveryZones(DEFAULT_DELIVERY_ZONES);
     void saveDeliveryZonesToIndexedDB(DEFAULT_DELIVERY_ZONES);
     setRemoteOrders([]);
@@ -6043,6 +6132,8 @@ export const PosProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
     orders,
     expenses,
     supplierInvoices,
+    suppliers,
+    remiseBox: loadRemiseBoxData(),
     deliveryZones,
     remoteOrders,
     cpuRecords,
@@ -6106,6 +6197,17 @@ export const PosProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
       if (data.supplierInvoices && Array.isArray(data.supplierInvoices)) {
         setSupplierInvoices(data.supplierInvoices);
         void saveSupplierInvoicesToIndexedDB(data.supplierInvoices);
+      }
+      if (data.suppliers && Array.isArray(data.suppliers)) {
+        setSuppliers(data.suppliers);
+      }
+      if (data.remiseBox && isPlainRecord(data.remiseBox)) {
+        const rb = data.remiseBox as Partial<RemiseBoxData>;
+        saveRemiseBoxData({
+          wallets: isPlainRecord(rb.wallets) ? (rb.wallets as RemiseBoxData['wallets']) : {},
+          history: Array.isArray(rb.history) ? (rb.history as RemiseBoxData['history']) : []
+        });
+        window.dispatchEvent(new CustomEvent('kadi:remise-box-updated'));
       }
       if (data.deliveryZones && Array.isArray(data.deliveryZones)) {
         setDeliveryZones(data.deliveryZones);
@@ -6225,6 +6327,8 @@ export const PosProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
   );
   const lastLocalUpdatedAtRef = useRef<number>(Date.now());
 
+  const [remiseBoxSyncTick, setRemiseBoxSyncTick] = useState<number>(0);
+
   // Always keep latest state refs so callbacks never push stale closures
   const latestProductsRef = useRef(products);
   const latestOrdersRef = useRef(orders);
@@ -6234,8 +6338,23 @@ export const PosProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
   const latestCustomersRef = useRef(customers);
   const latestCreditTxRef = useRef(creditTransactions);
   const latestCategoriesRef = useRef(categories);
+  const latestExpensesRef = useRef(expenses);
+  const latestSupplierInvoicesRef = useRef(supplierInvoices);
+  const latestSuppliersRef = useRef(suppliers);
   const latestDeviceNameRef = useRef(deviceName);
   const latestCashierNameRef = useRef(currentUser.name);
+
+  useEffect(() => {
+    const handleRemiseLocalChange = () => {
+      if (!isApplyingRemoteRef.current) {
+        setRemiseBoxSyncTick((prev) => prev + 1);
+      }
+    };
+    window.addEventListener('kadi:remise-box-local-change', handleRemiseLocalChange);
+    return () => {
+      window.removeEventListener('kadi:remise-box-local-change', handleRemiseLocalChange);
+    };
+  }, []);
 
   latestProductsRef.current = products;
   latestOrdersRef.current = orders;
@@ -6245,6 +6364,9 @@ export const PosProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
   latestCustomersRef.current = customers;
   latestCreditTxRef.current = creditTransactions;
   latestCategoriesRef.current = categories;
+  latestExpensesRef.current = expenses;
+  latestSupplierInvoicesRef.current = supplierInvoices;
+  latestSuppliersRef.current = suppliers;
   latestDeviceNameRef.current = deviceName;
   latestCashierNameRef.current = currentUser.name;
 
@@ -6257,6 +6379,10 @@ export const PosProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
     customers: Map<string, string>;
     creditTx: Map<string, string>;
     categories: Map<string, string>;
+    expenses: Map<string, string>;
+    supplierInvoices: Map<string, string>;
+    suppliers: Map<string, string>;
+    remiseBoxSig: string;
     productUpdatedAt: Map<string, number>;
     orderUpdatedAt: Map<string, number>;
     shiftUpdatedAt: Map<string, number>;
@@ -6270,6 +6396,10 @@ export const PosProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
     customers: new Map(),
     creditTx: new Map(),
     categories: new Map(),
+    expenses: new Map(),
+    supplierInvoices: new Map(),
+    suppliers: new Map(),
+    remiseBoxSig: '',
     productUpdatedAt: new Map(),
     orderUpdatedAt: new Map(),
     shiftUpdatedAt: new Map(),
@@ -6320,6 +6450,10 @@ export const PosProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
       customers: stampedCustomers,
       creditTransactions: latestCreditTxRef.current,
       categories: latestCategoriesRef.current,
+      expenses: latestExpensesRef.current,
+      supplierInvoices: latestSupplierInvoicesRef.current,
+      suppliers: latestSuppliersRef.current,
+      remiseBox: loadRemiseBoxData(),
       lastUpdated: lastLocalUpdatedAtRef.current,
       updatedBy: `${deviceIdRef.current} · ${latestCashierNameRef.current}`
     };
@@ -6536,7 +6670,58 @@ export const PosProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
             JSON.stringify(merged.categories.map((cat) => `${cat.id}:${cat.name}`)) !==
               JSON.stringify(latestCategoriesRef.current.map((cat) => `${cat.id}:${cat.name}`)));
 
-        if (prodChanged || salesChanged || cashChanged || custChanged || creditChanged || catChanged) {
+        const expChanged =
+          Array.isArray(merged.expenses) &&
+          (merged.expenses.length !== latestExpensesRef.current.length ||
+            JSON.stringify(merged.expenses.slice(0, 80).map((e) => `${e.id}:${e.amount}:${e.updatedAt || 0}`)) !==
+              JSON.stringify(latestExpensesRef.current.slice(0, 80).map((e) => `${e.id}:${e.amount}:${e.updatedAt || 0}`)));
+
+        const supInvChanged =
+          Array.isArray(merged.supplierInvoices) &&
+          (merged.supplierInvoices.length !== latestSupplierInvoicesRef.current.length ||
+            JSON.stringify(
+              merged.supplierInvoices
+                .slice(0, 80)
+                .map((inv) => `${inv.id}:${inv.paidAmount}:${inv.status}:${inv.updatedAt || 0}`)
+            ) !==
+              JSON.stringify(
+                latestSupplierInvoicesRef.current
+                  .slice(0, 80)
+                  .map((inv) => `${inv.id}:${inv.paidAmount}:${inv.status}:${inv.updatedAt || 0}`)
+              ));
+
+        const suppliersChanged =
+          Array.isArray(merged.suppliers) &&
+          (merged.suppliers.length !== latestSuppliersRef.current.length ||
+            JSON.stringify(merged.suppliers.map((s) => `${s.id}:${s.name}:${s.updatedAt || ''}`)) !==
+              JSON.stringify(latestSuppliersRef.current.map((s) => `${s.id}:${s.name}:${s.updatedAt || ''}`)));
+
+        const currentLocalRemise = loadRemiseBoxData();
+        const getRemiseSig = (rb?: RemiseBoxData) =>
+          rb
+            ? `${Object.keys(rb.wallets || {}).length}:${rb.history?.length || 0}:${Object.values(
+                rb.wallets || {}
+              )
+                .map((w) => `${w.company}:${w.collected}:${w.used}:${w.offersProfit}:${w.updatedAt}`)
+                .sort()
+                .join('|')}`
+            : '';
+        const mergedRemiseSig = getRemiseSig(merged.remiseBox);
+        const remiseChanged =
+          !!merged.remiseBox && mergedRemiseSig !== getRemiseSig(currentLocalRemise);
+
+        if (
+          prodChanged ||
+          salesChanged ||
+          cashChanged ||
+          custChanged ||
+          creditChanged ||
+          catChanged ||
+          expChanged ||
+          supInvChanged ||
+          suppliersChanged ||
+          remiseChanged
+        ) {
           isApplyingRemoteRef.current = true;
           skipNextLocalPushRef.current = true;
 
@@ -6545,7 +6730,7 @@ export const PosProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
           merged.products.forEach((p) => {
             nextProdSigs.set(
               p.id,
-              `${p.name}|${p.price}|${p.costPrice}|${p.stock}|${p.lowStockThreshold}|${p.barcode || ''}|${p.categoryId || ''}|${p.expiryDate || ''}|${p.unitType || ''}`
+              `${p.name}|${p.price}|${p.costPrice}|${p.stock}|${p.lowStockThreshold}|${p.barcode || ''}|${p.categoryId || ''}|${p.expiryDate || ''}|${p.unitType || ''}|${p.batches?.length || 0}`
             );
             if (p.updatedAt) prevItemSigsRef.current.productUpdatedAt.set(p.id, p.updatedAt);
           });
@@ -6590,6 +6775,30 @@ export const PosProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
             prevItemSigsRef.current.categories = nextCatSigs;
           }
 
+          if (merged.expenses) {
+            const nextExpSigs = new Map<string, string>();
+            merged.expenses.forEach((e) => {
+              nextExpSigs.set(e.id, `${e.name}|${e.amount}|${e.date}`);
+            });
+            prevItemSigsRef.current.expenses = nextExpSigs;
+          }
+
+          if (merged.supplierInvoices) {
+            const nextSupInvSigs = new Map<string, string>();
+            merged.supplierInvoices.forEach((inv) => {
+              nextSupInvSigs.set(inv.id, `${inv.invoiceNumber}|${inv.totalAmount}|${inv.paidAmount}|${inv.status}`);
+            });
+            prevItemSigsRef.current.supplierInvoices = nextSupInvSigs;
+          }
+
+          if (merged.suppliers) {
+            const nextSuppliersSigs = new Map<string, string>();
+            merged.suppliers.forEach((sup) => {
+              nextSuppliersSigs.set(sup.id, `${sup.name}|${sup.phone || ''}|${sup.ice || ''}`);
+            });
+            prevItemSigsRef.current.suppliers = nextSuppliersSigs;
+          }
+
           if (prodChanged) setProducts(merged.products);
           if (salesChanged) setOrders(merged.sales);
           if (cashChanged) {
@@ -6602,6 +6811,22 @@ export const PosProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
             setCreditTransactions(merged.creditTransactions);
           }
           if (catChanged && merged.categories) setCategories(merged.categories);
+          if (expChanged && merged.expenses) {
+            setExpenses(merged.expenses);
+            void saveExpensesToIndexedDB(merged.expenses);
+          }
+          if (supInvChanged && merged.supplierInvoices) {
+            setSupplierInvoices(merged.supplierInvoices);
+            void saveSupplierInvoicesToIndexedDB(merged.supplierInvoices);
+          }
+          if (suppliersChanged && merged.suppliers) {
+            setSuppliers(merged.suppliers);
+          }
+          if (remiseChanged && merged.remiseBox) {
+            prevItemSigsRef.current.remiseBoxSig = mergedRemiseSig;
+            saveRemiseBoxData(merged.remiseBox);
+            window.dispatchEvent(new CustomEvent('kadi:remise-box-updated'));
+          }
 
           window.setTimeout(() => {
             isApplyingRemoteRef.current = false;
@@ -6630,7 +6855,13 @@ export const PosProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
             merged.products.length > remoteDoc.products.length ||
             merged.sales.length > remoteDoc.sales.length ||
             (merged.customers?.length || 0) > (remoteDoc.customers?.length || 0) ||
-            (merged.creditTransactions?.length || 0) > (remoteDoc.creditTransactions?.length || 0))
+            (merged.creditTransactions?.length || 0) > (remoteDoc.creditTransactions?.length || 0) ||
+            (merged.expenses?.length || 0) > (remoteDoc.expenses?.length || 0) ||
+            (merged.supplierInvoices?.length || 0) > (remoteDoc.supplierInvoices?.length || 0) ||
+            (merged.suppliers?.length || 0) > (remoteDoc.suppliers?.length || 0) ||
+            (merged.remiseBox?.history?.length || 0) > (remoteDoc.remiseBox?.history?.length || 0) ||
+            Object.keys(merged.remiseBox?.wallets || {}).length >
+              Object.keys(remoteDoc.remiseBox?.wallets || {}).length)
         ) {
           void pushCurrentStoreToCloud(
             pendingOfflineActivity || (localDeletionNeedsPush ? 'مزامنة حذف سلعة' : 'انضمام ومزامنة تلقائية للجهاز'),
@@ -6671,7 +6902,7 @@ export const PosProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
     let productsModifiedCount = 0;
     let firstChangedProductName = '';
     products.forEach((p) => {
-      const sig = `${p.name}|${p.price}|${p.costPrice}|${p.stock}|${p.lowStockThreshold}|${p.barcode || ''}|${p.categoryId || ''}|${p.expiryDate || ''}|${p.unitType || ''}`;
+      const sig = `${p.name}|${p.price}|${p.costPrice}|${p.stock}|${p.lowStockThreshold}|${p.barcode || ''}|${p.categoryId || ''}|${p.expiryDate || ''}|${p.unitType || ''}|${p.batches?.length || 0}`;
       nextProdSigs.set(p.id, sig);
       if (sigs.initialized && sigs.products.get(p.id) !== sig) {
         productsModifiedCount++;
@@ -6757,6 +6988,58 @@ export const PosProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
     }
     sigs.categories = nextCatSigs;
 
+    const nextExpSigs = new Map<string, string>();
+    let expensesModified = false;
+    expenses.forEach((exp) => {
+      const sig = `${exp.name}|${exp.amount}|${exp.date}`;
+      nextExpSigs.set(exp.id, sig);
+      if (sigs.initialized && sigs.expenses.get(exp.id) !== sig) {
+        expensesModified = true;
+      }
+    });
+    if (sigs.initialized && expenses.length !== sigs.expenses.size) {
+      expensesModified = true;
+    }
+    sigs.expenses = nextExpSigs;
+
+    const nextSupInvSigs = new Map<string, string>();
+    let supInvoicesModified = false;
+    supplierInvoices.forEach((inv) => {
+      const sig = `${inv.invoiceNumber}|${inv.totalAmount}|${inv.paidAmount}|${inv.status}`;
+      nextSupInvSigs.set(inv.id, sig);
+      if (sigs.initialized && sigs.supplierInvoices.get(inv.id) !== sig) {
+        supInvoicesModified = true;
+      }
+    });
+    if (sigs.initialized && supplierInvoices.length !== sigs.supplierInvoices.size) {
+      supInvoicesModified = true;
+    }
+    sigs.supplierInvoices = nextSupInvSigs;
+
+    const nextSuppliersSigs = new Map<string, string>();
+    let suppliersModified = false;
+    suppliers.forEach((sup) => {
+      const sig = `${sup.name}|${sup.phone || ''}|${sup.ice || ''}`;
+      nextSuppliersSigs.set(sup.id, sig);
+      if (sigs.initialized && sigs.suppliers.get(sup.id) !== sig) {
+        suppliersModified = true;
+      }
+    });
+    if (sigs.initialized && suppliers.length !== sigs.suppliers.size) {
+      suppliersModified = true;
+    }
+    sigs.suppliers = nextSuppliersSigs;
+
+    const currentRemiseSnapshot = loadRemiseBoxData();
+    const nextRemiseSig = `${Object.keys(currentRemiseSnapshot.wallets || {}).length}:${currentRemiseSnapshot.history?.length || 0}:${Object.values(
+      currentRemiseSnapshot.wallets || {}
+    )
+      .map((w) => `${w.company}:${w.collected}:${w.used}:${w.offersProfit}:${w.updatedAt}`)
+      .sort()
+      .join('|')}`;
+    const remiseModified = sigs.initialized && sigs.remiseBoxSig !== nextRemiseSig;
+    sigs.remiseBoxSig = nextRemiseSig;
+
     if (!sigs.initialized) {
       sigs.initialized = true;
       saveLocalCloudBackup(buildCurrentLocalPayload());
@@ -6789,6 +7072,12 @@ export const PosProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
         productsModifiedCount === 1 && firstChangedProductName
           ? `تحديث سلعة: ${firstChangedProductName}`
           : `تحديث المخزون والسلع (${productsModifiedCount})`;
+    } else if (supInvoicesModified || suppliersModified) {
+      activity = 'تحديث فواتير وحسابات الموردين';
+    } else if (remiseModified) {
+      activity = 'تحديث صندوق الريميز';
+    } else if (expensesModified) {
+      activity = 'تحديث سجل المصاريف';
     } else if (categoriesModified) {
       activity = 'تحديث تصنيفات المنتجات';
     }
@@ -6827,6 +7116,10 @@ export const PosProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
     customers,
     creditTransactions,
     categories,
+    expenses,
+    supplierInvoices,
+    suppliers,
+    remiseBoxSyncTick,
     productsHydrated,
     ordersHydrated,
     isOnline,
@@ -7284,6 +7577,7 @@ export const PosProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
         bulkUpdateProducts,
         deleteProduct,
         adjustStock,
+        addProductBatch,
         unpackBoxProduct,
         importProductsBulk,
         seedLargeCatalogDemo,

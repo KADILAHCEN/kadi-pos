@@ -1,5 +1,7 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react';
+import { User } from 'firebase/auth';
 import { usePos } from '../../context/PosContext';
+import { auth } from '../../firebase';
 import { Product, SupplierInvoiceItemSnapshot, UnitType } from '../../types';
 import { safeParseJsonResponse } from '../../utils/aiVoice';
 import { getLocalTodayYMD } from '../../utils/expenses';
@@ -14,6 +16,24 @@ import {
   runTesseractInvoiceOcr
 } from '../../utils/offlineInvoiceOcr';
 import { safeLocalStorageSet, safeLocalStorageGet } from '../../utils/storage';
+import {
+  downloadDriveFileBlob,
+  getWorkspaceAccessToken,
+  initGoogleWorkspaceAuth,
+  INVOICES_FOLDER_NAME,
+  signInWithGoogleWorkspace
+} from '../../utils/googleWorkspace';
+import {
+  deleteInvoiceDriveRecord,
+  DriveUploadSuccessPayload,
+  InvoiceDriveRecord,
+  listInvoiceDriveRecordsFromFirestore,
+  loadCachedInvoiceDriveRecords,
+  saveInvoiceScanToFirestore,
+  subscribeInvoiceDriveRecords,
+  updateInvoiceDriveMetadataInFirestore,
+  uploadInvoiceFileToGoogleDrive
+} from '../../utils/invoiceDriveArchive';
 import {
   Camera,
   Upload,
@@ -43,7 +63,17 @@ import {
   Smartphone,
   FileText,
   FileCode2,
-  Languages
+  Languages,
+  Cloud,
+  CloudUpload,
+  Database,
+  ExternalLink,
+  Eye,
+  FolderOpen,
+  RefreshCw,
+  TrendingUp,
+  TrendingDown,
+  Calendar
 } from 'lucide-react';
 
 export type PurchaseInvoiceMode = 'official_ice' | 'informal_noir';
@@ -68,6 +98,7 @@ interface ScannedLineItem {
   sellPrice: number;
   suggestedMarginPct?: number;
   unitType: UnitType;
+  batchExpiryDate?: string;
   source?: 'vision' | 'manual';
   linePreviewDataUrl?: string;
 }
@@ -306,10 +337,12 @@ export const PurchaseInvoiceScanModal: React.FC = () => {
     categories,
     adjustStock,
     addProduct,
+    addProductBatch,
     updateProduct,
     updateProductPurchaseCostAndRecalculateProfit,
     addSupplierInvoice,
     settings,
+    updateSettings,
     currencySymbol,
     language
   } = usePos();
@@ -318,7 +351,33 @@ export const PurchaseInvoiceScanModal: React.FC = () => {
   const todayStr = getLocalTodayYMD();
 
   const [isOpen, setIsOpen] = useState(false);
+  const [modalTab, setModalTab] = useState<'scan' | 'drive_archive'>('scan');
   const [invoiceMode, setInvoiceMode] = useState<PurchaseInvoiceMode>('official_ice');
+
+  // Google Drive + Firestore archive states
+  const [wsUser, setWsUser] = useState<User | null>(() => auth.currentUser);
+  const [needsDriveAuth, setNeedsDriveAuth] = useState<boolean>(() => !getWorkspaceAccessToken());
+  const [isLoggingInDrive, setIsLoggingInDrive] = useState(false);
+  const [isUploadingToDrive, setIsUploadingToDrive] = useState(false);
+  const [autoSaveToDriveOnConfirm, setAutoSaveToDriveOnConfirm] = useState(true);
+  const [uploadedDriveRecord, setUploadedDriveRecord] = useState<InvoiceDriveRecord | null>(null);
+  const [driveUploadStatus, setDriveUploadStatus] = useState<{
+    type: 'success' | 'error';
+    text: string;
+  } | null>(null);
+  const [driveArchiveRecords, setDriveArchiveRecords] = useState<InvoiceDriveRecord[]>(() =>
+    loadCachedInvoiceDriveRecords()
+  );
+  const [isLoadingArchive, setIsLoadingArchive] = useState(false);
+  const [archiveSearchQuery, setArchiveSearchQuery] = useState('');
+  const [previewingDriveImage, setPreviewingDriveImage] = useState<{
+    record: InvoiceDriveRecord;
+    objectUrl: string;
+  } | null>(null);
+  const [isLoadingPreviewId, setIsLoadingPreviewId] = useState<string | null>(null);
+  const [pendingDeleteDriveRecord, setPendingDeleteDriveRecord] =
+    useState<InvoiceDriveRecord | null>(null);
+  const [isDeletingDriveRecord, setIsDeletingDriveRecord] = useState(false);
 
   // Camera / upload states
   const [previewDataUrl, setPreviewDataUrl] = useState<string | null>(null);
@@ -378,6 +437,7 @@ export const PurchaseInvoiceScanModal: React.FC = () => {
   const phoneCameraInputRef = useRef<HTMLInputElement | null>(null);
   const pdfFileInputRef = useRef<HTMLInputElement | null>(null);
   const xmlFileInputRef = useRef<HTMLInputElement | null>(null);
+  const driveDirectUploadInputRef = useRef<HTMLInputElement | null>(null);
   const itemsTableRef = useRef<HTMLDivElement | null>(null);
   const firstRowInputRef = useRef<HTMLInputElement | null>(null);
   const focusTimerRef = useRef<number | null>(null);
@@ -412,6 +472,14 @@ export const PurchaseInvoiceScanModal: React.FC = () => {
   ) => {
     stopCameraStream();
     lastCapturedBlobRef.current = null;
+    setModalTab('scan');
+    setUploadedDriveRecord(null);
+    setDriveUploadStatus(null);
+    setPendingDeleteDriveRecord(null);
+    if (previewingDriveImage?.objectUrl) {
+      URL.revokeObjectURL(previewingDriveImage.objectUrl);
+    }
+    setPreviewingDriveImage(null);
     setInvoiceMode(mode);
     setEntryMethod(initialEntryMethod);
     setPreviewDataUrl(null);
@@ -503,13 +571,67 @@ export const PurchaseInvoiceScanModal: React.FC = () => {
     items
   ]);
 
+  // Sync Google Workspace OAuth & Firestore invoice archive subscription while modal is open
+  useEffect(() => {
+    const unsubWs = initGoogleWorkspaceAuth(
+      (user) => {
+        setWsUser(user);
+        setNeedsDriveAuth(false);
+      },
+      () => {
+        setWsUser(auth.currentUser);
+        setNeedsDriveAuth(!getWorkspaceAccessToken());
+      }
+    );
+    return () => unsubWs();
+  }, []);
+
+  useEffect(() => {
+    if (!isOpen) return;
+    const currentUser = auth.currentUser;
+    setWsUser(currentUser);
+    setNeedsDriveAuth(!getWorkspaceAccessToken());
+
+    if (!currentUser || !currentUser.emailVerified) {
+      return;
+    }
+
+    setIsLoadingArchive(true);
+    const unsub = subscribeInvoiceDriveRecords(
+      currentUser,
+      (records) => {
+        setDriveArchiveRecords(records);
+        setIsLoadingArchive(false);
+      },
+      (errMsg) => {
+        setIsLoadingArchive(false);
+        setDriveUploadStatus({ type: 'error', text: errMsg });
+      }
+    );
+    return () => unsub();
+  }, [isOpen, wsUser?.uid]);
+
   useEffect(() => {
     const handleOpen = (evt: Event) => {
       const detail = (
-        evt as CustomEvent<{ defaultMode?: PurchaseInvoiceMode; manualEntry?: boolean }>
+        evt as CustomEvent<{
+          defaultMode?: PurchaseInvoiceMode;
+          manualEntry?: boolean;
+          initialView?: 'scan' | 'drive_archive';
+          searchQuery?: string;
+        }>
       ).detail;
       const startManual = Boolean(detail?.manualEntry);
       resetFormState(detail?.defaultMode || 'official_ice', startManual ? 'manual' : 'camera');
+
+      if (detail?.initialView === 'drive_archive') {
+        setModalTab('drive_archive');
+        if (detail.searchQuery) {
+          setArchiveSearchQuery(detail.searchQuery);
+        }
+        setIsOpen(true);
+        return;
+      }
 
       // Restore any unfinished local invoice draft automatically
       try {
@@ -570,9 +692,266 @@ export const PurchaseInvoiceScanModal: React.FC = () => {
   const closeModal = () => {
     stopCameraStream();
     setShowBarcodeCamScanner(false);
+    if (previewingDriveImage?.objectUrl) {
+      URL.revokeObjectURL(previewingDriveImage.objectUrl);
+    }
+    setPreviewingDriveImage(null);
     bluetoothScanner.popScope('purchase_invoice');
     setIsOpen(false);
   };
+
+  const handleGoogleDriveSignIn = async () => {
+    setIsLoggingInDrive(true);
+    setDriveUploadStatus(null);
+    try {
+      const { user } = await signInWithGoogleWorkspace();
+      setWsUser(user);
+      setNeedsDriveAuth(false);
+      setDriveUploadStatus({
+        type: 'success',
+        text: isAr
+          ? `✅ تم ربط Google Drive و Firestore (${user.email || ''}) بنجاح.`
+          : `✅ Connected to Google Drive & Firestore (${user.email || ''}).`
+      });
+      if (user.emailVerified) {
+        const refreshed = await listInvoiceDriveRecordsFromFirestore(user);
+        setDriveArchiveRecords(refreshed);
+      }
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : 'Google sign-in failed';
+      setDriveUploadStatus({ type: 'error', text: msg });
+    } finally {
+      setIsLoggingInDrive(false);
+    }
+  };
+
+  const handleRefreshDriveArchive = async () => {
+    const currentUser = auth.currentUser;
+    if (!currentUser || !currentUser.emailVerified) {
+      setNeedsDriveAuth(true);
+      return;
+    }
+    setIsLoadingArchive(true);
+    setDriveUploadStatus(null);
+    try {
+      const rows = await listInvoiceDriveRecordsFromFirestore(currentUser);
+      setDriveArchiveRecords(rows);
+    } catch (err) {
+      setDriveUploadStatus({
+        type: 'error',
+        text: err instanceof Error ? err.message : 'Failed to load Firestore invoice records'
+      });
+    } finally {
+      setIsLoadingArchive(false);
+    }
+  };
+
+  const handleDriveUploadSuccess = async (
+    driveResult: DriveUploadSuccessPayload,
+    overrideInvoiceNumber?: string
+  ): Promise<InvoiceDriveRecord> => {
+    const resolvedTotal =
+      Number(manualTotalAmount) > 0
+        ? Number(manualTotalAmount)
+        : computedItemsTotal > 0
+        ? computedItemsTotal
+        : undefined;
+
+    if (driveResult.driveFolderId && driveResult.driveFolderId !== settings.driveInvoicesFolderId) {
+      updateSettings({ driveInvoicesFolderId: driveResult.driveFolderId });
+    }
+
+    const record = await saveInvoiceScanToFirestore({
+      driveUpload: driveResult,
+      invoiceNumber:
+        (overrideInvoiceNumber ?? invoiceNumber).trim() || `INV-${Date.now().toString().slice(-5)}`,
+      vendorName: supplierName.trim() || (isAr ? 'مورد غير محدد' : 'Unspecified Vendor'),
+      date: invoiceDate || todayStr,
+      vendorIce: supplierIce.trim(),
+      totalAmount: resolvedTotal,
+      notes: invoiceNotes.trim() || undefined
+    });
+
+    setUploadedDriveRecord(record);
+    setDriveArchiveRecords((prev) => [record, ...prev.filter((r) => r.id !== record.id)]);
+    setDriveUploadStatus({
+      type: 'success',
+      text: isAr
+        ? `✅ تم رفع صورة الفاتورة إلى Google Drive وحفظ المعرّف (${record.driveFileId.slice(0, 12)}...) وبيانات الفاتورة في Firestore (invoice_scans).`
+        : `✅ Uploaded to Google Drive and saved File ID (${record.driveFileId.slice(0, 12)}...) & invoice data to Firestore (invoice_scans).`
+    });
+    return record;
+  };
+
+  const uploadBlobToDriveAndFirestore = async (
+    blob: Blob,
+    originalFileName?: string,
+    overrideInvoiceNumber?: string
+  ): Promise<InvoiceDriveRecord | null> => {
+    if (!getWorkspaceAccessToken() || !auth.currentUser?.emailVerified) {
+      setNeedsDriveAuth(true);
+      setDriveUploadStatus({
+        type: 'error',
+        text: isAr
+          ? 'يرجى تسجيل الدخول بحساب Google أولاً لرفع الصورة إلى Google Drive وحفظها في Firestore.'
+          : 'Please sign in with Google first to upload to Google Drive & Firestore.'
+      });
+      return null;
+    }
+
+    setIsUploadingToDrive(true);
+    setDriveUploadStatus(null);
+    try {
+      const driveUploadResult = await uploadInvoiceFileToGoogleDrive({
+        fileBlob: blob,
+        originalFileName,
+        preferredFolderId: settings.driveInvoicesFolderId,
+        invoiceNumber:
+          (overrideInvoiceNumber ?? invoiceNumber).trim() || `INV-${Date.now().toString().slice(-5)}`,
+        vendorName: supplierName.trim() || (isAr ? 'مورد غير محدد' : 'Unspecified Vendor')
+      });
+
+      return await handleDriveUploadSuccess(driveUploadResult, overrideInvoiceNumber);
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : 'Drive upload failed';
+      if (msg === 'AUTH_REQUIRED' || msg === 'AUTH_EXPIRED') {
+        setNeedsDriveAuth(true);
+        setDriveUploadStatus({
+          type: 'error',
+          text: isAr
+            ? 'انتهت جلسة Google Drive المؤقتة — اضغط "Sign in with Google" لإعادة الربط.'
+            : 'Google Drive session expired — please click Sign in with Google again.'
+        });
+      } else {
+        setDriveUploadStatus({ type: 'error', text: msg });
+      }
+      return null;
+    } finally {
+      setIsUploadingToDrive(false);
+    }
+  };
+
+  const handleDirectDriveFilePick = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    e.target.value = '';
+    if (!file) return;
+    lastCapturedBlobRef.current = file;
+    if (file.type.startsWith('image/')) {
+      try {
+        const prepared = await prepareInvoiceImageForVision(file, 2200, 0.9, 0);
+        setPreviewDataUrl(prepared.dataUrl);
+      } catch {
+        // optional preview
+      }
+    }
+    await uploadBlobToDriveAndFirestore(file, file.name);
+  };
+
+  const handlePreviewArchivedDriveImage = async (record: InvoiceDriveRecord) => {
+    if (!getWorkspaceAccessToken()) {
+      setNeedsDriveAuth(true);
+      setDriveUploadStatus({
+        type: 'error',
+        text: isAr
+          ? 'يرجى الضغط على "Sign in with Google" لمعاينة الصورة المحفوظة في Google Drive.'
+          : 'Please Sign in with Google to preview the image stored in Google Drive.'
+      });
+      return;
+    }
+
+    setIsLoadingPreviewId(record.id);
+    setDriveUploadStatus(null);
+    try {
+      const blob = await downloadDriveFileBlob(record.driveFileId);
+      if (previewingDriveImage?.objectUrl) {
+        URL.revokeObjectURL(previewingDriveImage.objectUrl);
+      }
+      const objectUrl = URL.createObjectURL(blob);
+      setPreviewingDriveImage({ record, objectUrl });
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : 'Failed to load image';
+      if (msg === 'AUTH_REQUIRED' || msg === 'AUTH_EXPIRED') {
+        setNeedsDriveAuth(true);
+      }
+      setDriveUploadStatus({
+        type: 'error',
+        text:
+          msg === 'AUTH_REQUIRED' || msg === 'AUTH_EXPIRED'
+            ? isAr
+              ? 'يرجى تسجيل الدخول بحساب Google لعرض الصورة من Drive.'
+              : 'Sign in with Google to view this Drive file.'
+            : msg
+      });
+    } finally {
+      setIsLoadingPreviewId(null);
+    }
+  };
+
+  const handleApplyArchivedMetadata = (record: InvoiceDriveRecord) => {
+    if (record.vendorName) setSupplierName(record.vendorName);
+    if (record.vendorIce) setSupplierIce(record.vendorIce);
+    if (record.invoiceNumber) setInvoiceNumber(record.invoiceNumber);
+    if (record.date || record.invoiceDate) setInvoiceDate(record.date || record.invoiceDate || '');
+    if (typeof record.totalAmount === 'number' && record.totalAmount > 0) {
+      setManualTotalAmount(record.totalAmount.toFixed(2));
+    }
+    setUploadedDriveRecord(record);
+    setModalTab('scan');
+    setScanNotice(
+      isAr
+        ? `📎 تم ربط الفاتورة #${record.invoiceNumber || record.fileName} (${record.vendorName}) من أرشيف Drive و Firestore.`
+        : `📎 Loaded invoice #${record.invoiceNumber || record.fileName} (${record.vendorName}) from Drive & Firestore.`
+    );
+  };
+
+  const handleConfirmDeleteArchivedRecord = async () => {
+    if (!pendingDeleteDriveRecord) return;
+    const target = pendingDeleteDriveRecord;
+    setIsDeletingDriveRecord(true);
+    setDriveUploadStatus(null);
+    try {
+      await deleteInvoiceDriveRecord({
+        record: target,
+        alsoDeleteFromDrive: Boolean(getWorkspaceAccessToken())
+      });
+      setDriveArchiveRecords((prev) => prev.filter((r) => r.id !== target.id));
+      if (uploadedDriveRecord?.id === target.id) {
+        setUploadedDriveRecord(null);
+      }
+      if (previewingDriveImage?.record.id === target.id) {
+        URL.revokeObjectURL(previewingDriveImage.objectUrl);
+        setPreviewingDriveImage(null);
+      }
+      setPendingDeleteDriveRecord(null);
+      setDriveUploadStatus({
+        type: 'success',
+        text: isAr
+          ? `🗑️ تم حذف "${target.fileName}" من Google Drive و Firestore.`
+          : `🗑️ Deleted "${target.fileName}" from Google Drive and Firestore.`
+      });
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : 'Failed to delete archived file';
+      if (msg === 'AUTH_REQUIRED' || msg === 'AUTH_EXPIRED') {
+        setNeedsDriveAuth(true);
+      }
+      setDriveUploadStatus({ type: 'error', text: msg });
+    } finally {
+      setIsDeletingDriveRecord(false);
+    }
+  };
+
+  const filteredDriveArchiveRecords = useMemo(() => {
+    const q = archiveSearchQuery.trim().toLowerCase();
+    if (!q) return driveArchiveRecords;
+    return driveArchiveRecords.filter(
+      (r) =>
+        r.invoiceNumber.toLowerCase().includes(q) ||
+        r.vendorName.toLowerCase().includes(q) ||
+        (r.vendorIce || '').toLowerCase().includes(q) ||
+        r.fileName.toLowerCase().includes(q) ||
+        r.driveFileId.toLowerCase().includes(q)
+    );
+  }, [driveArchiveRecords, archiveSearchQuery]);
 
   const handleCameraBarcodeDetected = (rawCode: string) => {
     const clean = rawCode.trim();
@@ -688,6 +1067,47 @@ export const PurchaseInvoiceScanModal: React.FC = () => {
       ).length,
     [items]
   );
+
+  // Supplier Price Change Watchdog: detect wholesale cost increases/decreases vs catalog
+  const priceChangeAlerts = useMemo(() => {
+    return items
+      .filter((it) => it.include && it.matchedProductId && Number(it.unitCost) > 0)
+      .map((it) => {
+        const prod = products.find((p) => p.id === it.matchedProductId);
+        if (!prod || !(prod.costPrice > 0)) return null;
+        const delta = Number((Number(it.unitCost) - prod.costPrice).toFixed(2));
+        if (Math.abs(delta) < 0.01) return null;
+        const pct = Number(((delta / prod.costPrice) * 100).toFixed(1));
+        const marginRatio = prod.price > prod.costPrice ? prod.price / prod.costPrice : 1.2;
+        const suggestedSellPrice = Number((Number(it.unitCost) * marginRatio).toFixed(2));
+        return {
+          lineId: it.id,
+          productName: prod.name,
+          oldCost: prod.costPrice,
+          newCost: Number(it.unitCost),
+          delta,
+          pct,
+          currentSell: prod.price,
+          suggestedSellPrice
+        };
+      })
+      .filter((entry): entry is NonNullable<typeof entry> => entry !== null);
+  }, [items, products]);
+
+  const applyAllMarginPreservingPrices = () => {
+    if (priceChangeAlerts.length === 0) return;
+    const alertMap = new Map(priceChangeAlerts.map((a) => [a.lineId, a]));
+    setItems((prev) =>
+      prev.map((it) => {
+        const alert = alertMap.get(it.id);
+        if (!alert || alert.delta <= 0) return it;
+        return {
+          ...it,
+          sellPrice: Math.max(Number(it.sellPrice) || 0, alert.suggestedSellPrice)
+        };
+      })
+    );
+  };
 
   const filteredQuickProducts = useMemo(() => {
     const q = quickCatalogQuery.trim().toLowerCase();
@@ -1543,7 +1963,7 @@ export const PurchaseInvoiceScanModal: React.FC = () => {
     [items]
   );
 
-  const handleConfirmRestock = (e: React.FormEvent) => {
+  const handleConfirmRestock = async (e: React.FormEvent) => {
     e.preventDefault();
     setScanError(null);
 
@@ -1650,6 +2070,12 @@ export const PurchaseInvoiceScanModal: React.FC = () => {
         );
         if (Number(row.unitCost) > 0) existingMerged.unitCost = Number(row.unitCost);
         if (Number(row.sellPrice) > 0) existingMerged.sellPrice = Number(row.sellPrice);
+        if (
+          row.batchExpiryDate &&
+          (!existingMerged.batchExpiryDate || row.batchExpiryDate < existingMerged.batchExpiryDate)
+        ) {
+          existingMerged.batchExpiryDate = row.batchExpiryDate;
+        }
       } else {
         mergedRowsMap.set(key, {
           ...row,
@@ -1670,12 +2096,25 @@ export const PurchaseInvoiceScanModal: React.FC = () => {
           ? parsedDefSell
           : unitCost || 1;
       const sellPrice = Math.max(unitCost, resolvedRowSell);
+      const cleanBatchExpiry = row.batchExpiryDate?.trim() || '';
       const existing = row.matchedProductId
         ? products.find((p) => p.id === row.matchedProductId)
         : undefined;
 
       if (existing) {
         adjustStock(existing.id, qty, restockReason, 'restock');
+        if (cleanBatchExpiry) {
+          addProductBatch(
+            existing.id,
+            {
+              quantity: qty,
+              expiryDate: cleanBatchExpiry,
+              costPrice: unitCost > 0 ? Number(unitCost.toFixed(2)) : existing.costPrice,
+              supplierName: supplierName.trim() || undefined
+            },
+            { skipStockIncrement: true }
+          );
+        }
         if (unitCost > 0 && Math.abs(unitCost - existing.costPrice) > 0.001) {
           updateProductPurchaseCostAndRecalculateProfit(existing.id, unitCost);
         }
@@ -1707,7 +2146,22 @@ export const PurchaseInvoiceScanModal: React.FC = () => {
           costPrice: Number(unitCost.toFixed(2)),
           stock: qty,
           lowStockThreshold: Math.max(2, Math.round(qty * 0.2)),
-          unitType: row.unitType
+          unitType: row.unitType,
+          ...(cleanBatchExpiry
+            ? {
+                expiryDate: cleanBatchExpiry,
+                batches: [
+                  {
+                    id: `batch-${Date.now()}-${index}`,
+                    quantity: qty,
+                    expiryDate: cleanBatchExpiry,
+                    costPrice: Number(unitCost.toFixed(2)),
+                    receivedAt: new Date().toISOString(),
+                    supplierName: supplierName.trim() || undefined
+                  }
+                ]
+              }
+            : {})
         });
         createdNewCount += 1;
         summarySnapshot.push({
@@ -1718,6 +2172,8 @@ export const PurchaseInvoiceScanModal: React.FC = () => {
         });
       }
     });
+
+    let linkedDriveRecord = uploadedDriveRecord;
 
     if (invoiceMode === 'official_ice') {
       const totalVal =
@@ -1730,6 +2186,33 @@ export const PurchaseInvoiceScanModal: React.FC = () => {
         paidAmount.trim() === ''
           ? totalVal
           : Math.min(totalVal, Math.max(0, Number(paidAmount) || 0));
+
+      // Auto-upload captured image to Google Drive + save metadata to Firestore if connected
+      if (
+        !linkedDriveRecord &&
+        autoSaveToDriveOnConfirm &&
+        lastCapturedBlobRef.current &&
+        getWorkspaceAccessToken() &&
+        auth.currentUser?.emailVerified
+      ) {
+        const maybeFile = lastCapturedBlobRef.current;
+        const origName = maybeFile instanceof File ? maybeFile.name : undefined;
+        linkedDriveRecord = await uploadBlobToDriveAndFirestore(maybeFile, origName, cleanInvNum);
+      } else if (linkedDriveRecord && auth.currentUser?.emailVerified) {
+        // Keep Firestore metadata synced if user edited invoiceNumber/supplierName after uploading
+        try {
+          await updateInvoiceDriveMetadataInFirestore(linkedDriveRecord.id, {
+            invoiceNumber: cleanInvNum,
+            vendorName: supplierName.trim(),
+            vendorIce: normalizedSupplierIce,
+            date: invoiceDate || todayStr,
+            totalAmount: Number(totalVal.toFixed(2)),
+            notes: invoiceNotes.trim() || undefined
+          });
+        } catch {
+          // Non-blocking metadata refresh
+        }
+      }
 
       const taxBreakdownSuffix =
         extractedTaxInfo && (extractedTaxInfo.totalHt || extractedTaxInfo.tvaAmount)
@@ -1759,6 +2242,9 @@ export const PurchaseInvoiceScanModal: React.FC = () => {
         itemsSummary: summarySnapshot.length > 0 ? summarySnapshot : undefined,
         scannedViaCamera:
           entryMethod === 'camera' && (Boolean(previewDataUrl) || Boolean(uploadedPdfName)),
+        driveFileId: linkedDriveRecord?.driveFileId,
+        driveFileName: linkedDriveRecord?.fileName,
+        driveWebViewLink: linkedDriveRecord?.webViewLink,
         notes: invoiceNotes.trim() || defaultNote
       });
     }
@@ -1767,10 +2253,10 @@ export const PurchaseInvoiceScanModal: React.FC = () => {
       invoiceMode === 'official_ice'
         ? activeRows.length > 0
           ? isAr
-            ? `✅ تزادو السلع للمخزون (${updatedExistingCount} محدثة، ${createdNewCount} جديدة) وتسجلات الفاتورة #${cleanInvNum}!`
+            ? `✅ تزادو السلع للمخزون (${updatedExistingCount} محدثة، ${createdNewCount} جديدة) وتسجلات الفاتورة #${cleanInvNum}${linkedDriveRecord ? ' + أرشيف Drive' : ''}!`
             : `✅ Stock updated (${updatedExistingCount + createdNewCount} items) & invoice #${cleanInvNum} saved!`
           : isAr
-          ? `✅ تسجلات فاتورة المورد (${supplierName.trim()}) رقم #${cleanInvNum} بنجاح في الأرشيف!`
+          ? `✅ تسجلات فاتورة المورد (${supplierName.trim()}) رقم #${cleanInvNum} بنجاح في الأرشيف${linkedDriveRecord ? ' + Drive' : ''}!`
           : `✅ Supplier invoice #${cleanInvNum} recorded cleanly!`
         : isAr
         ? `✅ تزادت الكميات فـ المخزون (${updatedExistingCount} محدثة، ${createdNewCount} جديدة) فـ وضع نوار/بوار بلا تسجيل أرقام.`
@@ -1814,7 +2300,7 @@ export const PurchaseInvoiceScanModal: React.FC = () => {
     >
       <div className="bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-3xl shadow-2xl w-full max-w-4xl max-h-[92vh] flex flex-col overflow-hidden">
         {/* Header */}
-        <div className="px-5 py-4 border-b border-slate-200 dark:border-slate-800 flex items-center justify-between gap-3 shrink-0">
+        <div className="px-5 py-4 border-b border-slate-200 dark:border-slate-800 flex flex-wrap items-center justify-between gap-3 shrink-0">
           <div className="flex items-center gap-3 min-w-0">
             <div className="w-10 h-10 rounded-2xl bg-amber-400 text-slate-950 flex items-center justify-center shrink-0">
               <Camera className="w-5 h-5" />
@@ -1833,23 +2319,354 @@ export const PurchaseInvoiceScanModal: React.FC = () => {
               </div>
               <p className="text-xs text-slate-500 dark:text-slate-400 truncate">
                 {isAr
-                  ? 'أتقداو (ATACADAO)، الحليبة (سنطرال، دانون، جبال، كولينور)، جملة، بون — باقتراح هامش الربح تلقائياً'
-                  : 'Atacadao, Dairy (Centrale/Danone/Jibal/Colainor), wholesale, bons — with smart margin suggestions'}
+                  ? 'أتقداو (ATACADAO)، الحليبة، جملة، بون — مع حفظ الصور في Google Drive و Firestore'
+                  : 'Atacadao, Dairy, wholesale, bons — with Google Drive & Firestore invoice archiving'}
               </p>
             </div>
           </div>
-          <button
-            type="button"
-            onClick={closeModal}
-            className="p-2 rounded-xl text-slate-400 hover:text-slate-700 dark:hover:text-white hover:bg-slate-100 dark:hover:bg-slate-800"
-            title={isAr ? 'سد' : 'Close'}
-          >
-            <X className="w-5 h-5" />
-          </button>
+
+          <div className="flex items-center gap-2">
+            <div className="inline-flex p-1 rounded-xl bg-slate-100 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 text-[11px] font-black">
+              <button
+                type="button"
+                onClick={() => setModalTab('scan')}
+                className={`px-3 py-1.5 rounded-lg transition-colors flex items-center gap-1.5 ${
+                  modalTab === 'scan'
+                    ? 'bg-white dark:bg-slate-900 text-slate-900 dark:text-white shadow-2xs'
+                    : 'text-slate-500 dark:text-slate-400'
+                }`}
+              >
+                <Camera className="w-3.5 h-3.5" />
+                <span>{isAr ? 'مسح الفاتورة' : 'Scan Invoice'}</span>
+              </button>
+              <button
+                type="button"
+                onClick={() => setModalTab('drive_archive')}
+                className={`px-3 py-1.5 rounded-lg transition-colors flex items-center gap-1.5 ${
+                  modalTab === 'drive_archive'
+                    ? 'bg-blue-600 text-white shadow-2xs'
+                    : 'text-slate-500 dark:text-slate-400'
+                }`}
+              >
+                <Cloud className="w-3.5 h-3.5" />
+                <span>
+                  {isAr
+                    ? `أرشيف Drive (${driveArchiveRecords.length})`
+                    : `Drive Archive (${driveArchiveRecords.length})`}
+                </span>
+              </button>
+            </div>
+
+            <button
+              type="button"
+              onClick={closeModal}
+              className="p-2 rounded-xl text-slate-400 hover:text-slate-700 dark:hover:text-white hover:bg-slate-100 dark:hover:bg-slate-800"
+              title={isAr ? 'سد' : 'Close'}
+            >
+              <X className="w-5 h-5" />
+            </button>
+          </div>
         </div>
 
-        {/* Scrollable Body */}
-        <form onSubmit={handleConfirmRestock} className="flex-1 overflow-y-auto p-4 sm:p-5 space-y-4">
+        {/* Archive Browser View (Google Drive + Firestore) */}
+        {modalTab === 'drive_archive' ? (
+          <div className="flex-1 overflow-y-auto p-4 sm:p-5 space-y-4">
+            <div className="p-4 rounded-2xl bg-blue-50/70 dark:bg-blue-950/30 border border-blue-200 dark:border-blue-800/70 flex flex-wrap items-center justify-between gap-3">
+              <div className="space-y-0.5">
+                <div className="text-sm font-black text-slate-900 dark:text-white flex items-center gap-2">
+                  <FolderOpen className="w-4 h-4 text-blue-600" />
+                  <span>
+                    {isAr
+                      ? `أرشيف صور الفواتير (${INVOICES_FOLDER_NAME} · Firestore)`
+                      : `Invoice Photos Archive (${INVOICES_FOLDER_NAME} · Firestore)`}
+                  </span>
+                </div>
+                <p className="text-[11px] text-slate-600 dark:text-slate-300">
+                  {isAr
+                    ? 'ابحث برقم الفاتورة أو اسم المورد للرجوع إلى صورة الفاتورة المحفوظة في Google Drive ومعرّفها في Firestore.'
+                    : 'Search by invoice number or vendor name to retrieve archived invoice images from Google Drive & Firestore.'}
+                </p>
+              </div>
+
+              <div className="flex flex-wrap items-center gap-2">
+                {needsDriveAuth ? (
+                  <button
+                    type="button"
+                    onClick={() => void handleGoogleDriveSignIn()}
+                    disabled={isLoggingInDrive}
+                    className="gsi-material-button inline-flex items-center gap-2 px-3.5 py-2 rounded-xl bg-white dark:bg-slate-900 border border-slate-300 dark:border-slate-600 text-slate-800 dark:text-slate-100 text-xs font-bold shadow-xs hover:bg-slate-50 dark:hover:bg-slate-800 disabled:opacity-60"
+                  >
+                    <span className="gsi-material-button-state" />
+                    <span className="gsi-material-button-content-wrapper flex items-center gap-2">
+                      <span className="gsi-material-button-icon w-4 h-4 shrink-0">
+                        <svg
+                          version="1.1"
+                          xmlns="http://www.w3.org/2000/svg"
+                          viewBox="0 0 48 48"
+                          style={{ display: 'block', width: '100%', height: '100%' }}
+                        >
+                          <path
+                            fill="#EA4335"
+                            d="M24 9.5c3.54 0 6.71 1.22 9.21 3.6l6.85-6.85C35.9 2.38 30.47 0 24 0 14.62 0 6.51 5.38 2.56 13.22l7.98 6.19C12.43 13.72 17.74 9.5 24 9.5z"
+                          />
+                          <path
+                            fill="#4285F4"
+                            d="M46.98 24.55c0-1.57-.15-3.09-.38-4.55H24v9.02h12.94c-.58 2.96-2.26 5.48-4.78 7.18l7.73 6c4.51-4.18 7.09-10.36 7.09-17.65z"
+                          />
+                          <path
+                            fill="#FBBC05"
+                            d="M10.53 28.59c-.48-1.45-.76-2.99-.76-4.59s.27-3.14.76-4.59l-7.98-6.19C.92 16.46 0 20.12 0 24c0 3.88.92 7.54 2.56 10.78l7.97-6.19z"
+                          />
+                          <path
+                            fill="#34A853"
+                            d="M24 48c6.48 0 11.93-2.13 15.89-5.81l-7.73-6c-2.15 1.45-4.92 2.3-8.16 2.3-6.26 0-11.57-4.22-13.47-9.91l-7.98 6.19C6.51 42.62 14.62 48 24 48z"
+                          />
+                          <path fill="none" d="M0 0h48v48H0z" />
+                        </svg>
+                      </span>
+                      <span className="gsi-material-button-contents">
+                        {isLoggingInDrive
+                          ? isAr
+                            ? 'جاري الربط...'
+                            : 'Connecting...'
+                          : 'Sign in with Google'}
+                      </span>
+                    </span>
+                  </button>
+                ) : (
+                  <span className="px-3 py-1.5 rounded-xl bg-emerald-100 dark:bg-emerald-950/70 border border-emerald-300 dark:border-emerald-800 text-emerald-800 dark:text-emerald-300 text-xs font-bold flex items-center gap-1.5">
+                    <CheckCircle2 className="w-3.5 h-3.5" />
+                    <span>{wsUser?.email || (isAr ? 'متصل بـ Google Drive' : 'Drive Connected')}</span>
+                  </span>
+                )}
+
+                <button
+                  type="button"
+                  onClick={() => void handleRefreshDriveArchive()}
+                  disabled={isLoadingArchive}
+                  className="px-3 py-2 rounded-xl bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-700 text-xs font-bold text-slate-700 dark:text-slate-200 hover:bg-slate-50 flex items-center gap-1.5"
+                >
+                  <RefreshCw className={`w-3.5 h-3.5 ${isLoadingArchive ? 'animate-spin' : ''}`} />
+                  <span>{isAr ? 'تحديث من Firestore' : 'Refresh'}</span>
+                </button>
+              </div>
+            </div>
+
+            {driveUploadStatus && (
+              <div
+                className={`p-3 rounded-2xl text-xs font-bold flex items-center justify-between gap-2 border ${
+                  driveUploadStatus.type === 'success'
+                    ? 'bg-emerald-50 dark:bg-emerald-950/50 border-emerald-200 dark:border-emerald-800 text-emerald-800 dark:text-emerald-300'
+                    : 'bg-rose-50 dark:bg-rose-950/50 border-rose-200 dark:border-rose-800 text-rose-800 dark:text-rose-300'
+                }`}
+              >
+                <span>{driveUploadStatus.text}</span>
+                <button
+                  type="button"
+                  onClick={() => setDriveUploadStatus(null)}
+                  className="p-1 opacity-70 hover:opacity-100"
+                >
+                  <X className="w-3.5 h-3.5" />
+                </button>
+              </div>
+            )}
+
+            <div className="flex flex-wrap items-center gap-2">
+              <div className="relative flex-1 min-w-[220px]">
+                <Search className="w-4 h-4 text-slate-400 absolute top-1/2 -translate-y-1/2 start-3 pointer-events-none" />
+                <input
+                  type="text"
+                  value={archiveSearchQuery}
+                  onChange={(e) => setArchiveSearchQuery(e.target.value)}
+                  placeholder={
+                    isAr
+                      ? 'ابحث برقم الفاتورة، اسم المورد، ICE، أو File ID...'
+                      : 'Search by invoice #, vendor name, ICE, or Drive File ID...'
+                  }
+                  className="w-full ps-9 pe-3 py-2.5 rounded-xl bg-slate-50 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 text-xs font-bold text-slate-900 dark:text-white"
+                />
+              </div>
+              <button
+                type="button"
+                onClick={() => driveDirectUploadInputRef.current?.click()}
+                disabled={isUploadingToDrive}
+                className="px-4 py-2.5 rounded-xl bg-blue-600 hover:bg-blue-700 text-white text-xs font-black flex items-center gap-1.5 disabled:opacity-60"
+              >
+                {isUploadingToDrive ? (
+                  <Loader2 className="w-4 h-4 animate-spin" />
+                ) : (
+                  <CloudUpload className="w-4 h-4" />
+                )}
+                <span>{isAr ? 'رفع صورة فاتورة جديدة لـ Drive' : 'Upload New Invoice Image'}</span>
+              </button>
+            </div>
+
+            {previewingDriveImage && (
+              <div className="rounded-2xl border border-slate-300 dark:border-slate-700 bg-slate-950 p-3 space-y-2">
+                <div className="flex flex-wrap items-center justify-between gap-2 text-xs text-white">
+                  <div className="font-bold flex items-center gap-2">
+                    <span>{previewingDriveImage.record.vendorName || '-'}</span>
+                    <span className="font-mono text-amber-300">
+                      #{previewingDriveImage.record.invoiceNumber || '-'}
+                    </span>
+                    <span className="font-mono text-[10px] text-slate-400">
+                      ID: {previewingDriveImage.record.driveFileId}
+                    </span>
+                  </div>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      URL.revokeObjectURL(previewingDriveImage.objectUrl);
+                      setPreviewingDriveImage(null);
+                    }}
+                    className="px-2.5 py-1 rounded-lg bg-slate-800 hover:bg-slate-700 text-[11px] font-bold flex items-center gap-1"
+                  >
+                    <X className="w-3.5 h-3.5" />
+                    <span>{isAr ? 'إغلاق المعاينة' : 'Close Preview'}</span>
+                  </button>
+                </div>
+                {previewingDriveImage.record.mimeType === 'application/pdf' ? (
+                  <div className="p-6 text-center text-xs text-slate-300 space-y-2">
+                    <FileText className="w-8 h-8 mx-auto text-indigo-400" />
+                    <div>
+                      {isAr
+                        ? 'ملف PDF محفوظ في Google Drive.'
+                        : 'PDF document stored in Google Drive.'}
+                    </div>
+                    {previewingDriveImage.record.webViewLink && (
+                      <a
+                        href={previewingDriveImage.record.webViewLink}
+                        target="_blank"
+                        rel="noopener noreferrer"
+                        className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-xl bg-blue-600 text-white font-bold"
+                      >
+                        <ExternalLink className="w-3.5 h-3.5" />
+                        <span>{isAr ? 'فتح PDF في Google Drive' : 'Open PDF in Drive'}</span>
+                      </a>
+                    )}
+                  </div>
+                ) : (
+                  <img
+                    src={previewingDriveImage.objectUrl}
+                    alt={previewingDriveImage.record.fileName}
+                    className="w-full max-h-96 object-contain rounded-xl mx-auto bg-black"
+                  />
+                )}
+              </div>
+            )}
+
+            {filteredDriveArchiveRecords.length === 0 ? (
+              <div className="py-12 px-4 text-center rounded-2xl border border-dashed border-slate-200 dark:border-slate-700 text-xs text-slate-500 space-y-2">
+                <Database className="w-8 h-8 mx-auto opacity-40" />
+                <div className="font-bold">
+                  {isLoadingArchive
+                    ? isAr
+                      ? 'جاري تحميل سجل الفواتير من Firestore...'
+                      : 'Loading archived invoice files from Firestore...'
+                    : isAr
+                    ? 'ما كاين حتى صورة فاتورة محفوظة فـ Drive و Firestore مطابقة للبحث.'
+                    : 'No matching archived invoice files found in Firestore.'}
+                </div>
+              </div>
+            ) : (
+              <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+                {filteredDriveArchiveRecords.map((rec) => (
+                  <div
+                    key={rec.id}
+                    className="p-4 rounded-2xl bg-slate-50 dark:bg-slate-800/50 border border-slate-200 dark:border-slate-700 space-y-2.5"
+                  >
+                    <div className="flex items-start justify-between gap-2">
+                      <div className="min-w-0">
+                        <div className="flex flex-wrap items-center gap-1.5">
+                          <span className="text-sm font-black text-slate-900 dark:text-white truncate">
+                            {rec.vendorName || (isAr ? 'مورد غير محدد' : 'Vendor')}
+                          </span>
+                          {rec.invoiceNumber && (
+                            <span className="px-2 py-0.5 rounded-md bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-700 font-mono text-[11px] font-bold text-indigo-700 dark:text-indigo-300">
+                              #{rec.invoiceNumber}
+                            </span>
+                          )}
+                        </div>
+                        <div className="text-[11px] text-slate-500 font-mono mt-0.5 truncate" dir="ltr">
+                          {rec.fileName}
+                        </div>
+                      </div>
+                      {typeof rec.totalAmount === 'number' && rec.totalAmount > 0 && (
+                        <span className="text-xs font-mono font-black text-emerald-700 dark:text-emerald-400 tabular-nums shrink-0">
+                          {rec.totalAmount.toFixed(2)} {currencySymbol}
+                        </span>
+                      )}
+                    </div>
+
+                    <div className="flex flex-wrap items-center gap-2 text-[10px] font-mono text-slate-500">
+                      <span className="px-2 py-0.5 rounded bg-blue-50 dark:bg-blue-950/60 text-blue-700 dark:text-blue-300 border border-blue-200 dark:border-blue-800">
+                        Drive ID: {rec.driveFileId.slice(0, 14)}...
+                      </span>
+                      {rec.invoiceDate && <span>{rec.invoiceDate}</span>}
+                      {rec.vendorIce && <span>ICE: {rec.vendorIce}</span>}
+                      {rec.fileSize ? <span>{(rec.fileSize / 1024).toFixed(0)} KB</span> : null}
+                    </div>
+
+                    <div className="pt-2 border-t border-slate-200 dark:border-slate-700 flex flex-wrap items-center justify-between gap-1.5">
+                      <div className="flex flex-wrap items-center gap-1.5">
+                        <button
+                          type="button"
+                          onClick={() => void handlePreviewArchivedDriveImage(rec)}
+                          disabled={isLoadingPreviewId === rec.id}
+                          className="px-2.5 py-1.5 rounded-lg bg-blue-600 hover:bg-blue-700 text-white text-[11px] font-black flex items-center gap-1 disabled:opacity-60"
+                        >
+                          {isLoadingPreviewId === rec.id ? (
+                            <Loader2 className="w-3 h-3 animate-spin" />
+                          ) : (
+                            <Eye className="w-3 h-3" />
+                          )}
+                          <span>{isAr ? 'معاينة' : 'View'}</span>
+                        </button>
+
+                        <button
+                          type="button"
+                          onClick={() => handleApplyArchivedMetadata(rec)}
+                          className="px-2.5 py-1.5 rounded-lg bg-emerald-50 dark:bg-emerald-950/60 text-emerald-700 dark:text-emerald-300 border border-emerald-200 dark:border-emerald-800 text-[11px] font-bold"
+                        >
+                          {isAr ? 'تعبئة البيانات' : 'Use Metadata'}
+                        </button>
+
+                        {rec.webViewLink && (
+                          <a
+                            href={rec.webViewLink}
+                            target="_blank"
+                            rel="noopener noreferrer"
+                            className="px-2.5 py-1.5 rounded-lg bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-700 text-slate-700 dark:text-slate-200 text-[11px] font-bold inline-flex items-center gap-1 hover:bg-slate-100"
+                          >
+                            <ExternalLink className="w-3 h-3" />
+                            <span>Drive</span>
+                          </a>
+                        )}
+                      </div>
+
+                      <button
+                        type="button"
+                        onClick={() => setPendingDeleteDriveRecord(rec)}
+                        className="p-1.5 rounded-lg text-slate-400 hover:text-rose-600 hover:bg-rose-50 dark:hover:bg-rose-950/40"
+                        title={isAr ? 'حذف من Drive و Firestore' : 'Delete from Drive & Firestore'}
+                      >
+                        <Trash2 className="w-3.5 h-3.5" />
+                      </button>
+                    </div>
+                  </div>
+                ))}
+              </div>
+            )}
+          </div>
+        ) : null}
+
+        {/* Scrollable Body (Scan / Entry Form) */}
+        <form
+          onSubmit={handleConfirmRestock}
+          className={`flex-1 overflow-y-auto p-4 sm:p-5 space-y-4 ${
+            modalTab !== 'scan' ? 'hidden' : ''
+          }`}
+        >
           {/* DRAFT RECOVERY BANNER */}
           {hasSavedDraftBanner && (
             <div className="px-3.5 py-2 rounded-2xl bg-indigo-50 dark:bg-indigo-950/40 border border-indigo-200 dark:border-indigo-800 flex flex-wrap items-center justify-between gap-2 text-xs">
@@ -2472,6 +3289,200 @@ export const PurchaseInvoiceScanModal: React.FC = () => {
             </div>
           )}
 
+          {/* GOOGLE DRIVE + FIRESTORE INVOICE FILE UPLOAD BAR */}
+          <div className="p-3.5 rounded-2xl bg-blue-50/60 dark:bg-blue-950/25 border border-blue-200 dark:border-blue-800/70 space-y-2.5">
+            <div className="flex flex-wrap items-center justify-between gap-2">
+              <div className="flex items-center gap-2 text-xs font-black text-slate-900 dark:text-white">
+                <Cloud className="w-4 h-4 text-blue-600 shrink-0" />
+                <span>
+                  {isAr
+                    ? 'حفظ صورة الفاتورة في Google Drive + ربطها في Firestore'
+                    : 'Upload Invoice Image to Google Drive & Save Metadata to Firestore'}
+                </span>
+              </div>
+
+              <div className="flex flex-wrap items-center gap-2">
+                {needsDriveAuth ? (
+                  <button
+                    type="button"
+                    onClick={() => void handleGoogleDriveSignIn()}
+                    disabled={isLoggingInDrive}
+                    className="gsi-material-button inline-flex items-center gap-2 px-3 py-1.5 rounded-xl bg-white dark:bg-slate-900 border border-slate-300 dark:border-slate-600 text-slate-800 dark:text-slate-100 text-[11px] font-bold shadow-2xs hover:bg-slate-50 dark:hover:bg-slate-800 disabled:opacity-60"
+                  >
+                    <span className="gsi-material-button-state" />
+                    <span className="gsi-material-button-content-wrapper flex items-center gap-2">
+                      <span className="gsi-material-button-icon w-3.5 h-3.5 shrink-0">
+                        <svg
+                          version="1.1"
+                          xmlns="http://www.w3.org/2000/svg"
+                          viewBox="0 0 48 48"
+                          style={{ display: 'block', width: '100%', height: '100%' }}
+                        >
+                          <path
+                            fill="#EA4335"
+                            d="M24 9.5c3.54 0 6.71 1.22 9.21 3.6l6.85-6.85C35.9 2.38 30.47 0 24 0 14.62 0 6.51 5.38 2.56 13.22l7.98 6.19C12.43 13.72 17.74 9.5 24 9.5z"
+                          />
+                          <path
+                            fill="#4285F4"
+                            d="M46.98 24.55c0-1.57-.15-3.09-.38-4.55H24v9.02h12.94c-.58 2.96-2.26 5.48-4.78 7.18l7.73 6c4.51-4.18 7.09-10.36 7.09-17.65z"
+                          />
+                          <path
+                            fill="#FBBC05"
+                            d="M10.53 28.59c-.48-1.45-.76-2.99-.76-4.59s.27-3.14.76-4.59l-7.98-6.19C.92 16.46 0 20.12 0 24c0 3.88.92 7.54 2.56 10.78l7.97-6.19z"
+                          />
+                          <path
+                            fill="#34A853"
+                            d="M24 48c6.48 0 11.93-2.13 15.89-5.81l-7.73-6c-2.15 1.45-4.92 2.3-8.16 2.3-6.26 0-11.57-4.22-13.47-9.91l-7.98 6.19C6.51 42.62 14.62 48 24 48z"
+                          />
+                          <path fill="none" d="M0 0h48v48H0z" />
+                        </svg>
+                      </span>
+                      <span className="gsi-material-button-contents">
+                        {isLoggingInDrive
+                          ? isAr
+                            ? 'جاري الربط...'
+                            : 'Connecting...'
+                          : 'Sign in with Google'}
+                      </span>
+                    </span>
+                  </button>
+                ) : (
+                  <>
+                    {lastCapturedBlobRef.current && (
+                      <button
+                        type="button"
+                        disabled={isUploadingToDrive}
+                        onClick={() => {
+                          const blob = lastCapturedBlobRef.current;
+                          if (blob) {
+                            void uploadBlobToDriveAndFirestore(
+                              blob,
+                              blob instanceof File ? blob.name : undefined
+                            );
+                          }
+                        }}
+                        className="px-3 py-1.5 rounded-xl bg-blue-600 hover:bg-blue-700 text-white text-[11px] font-black flex items-center gap-1.5 disabled:opacity-60"
+                      >
+                        {isUploadingToDrive ? (
+                          <Loader2 className="w-3.5 h-3.5 animate-spin" />
+                        ) : (
+                          <CloudUpload className="w-3.5 h-3.5" />
+                        )}
+                        <span>
+                          {uploadedDriveRecord
+                            ? isAr
+                              ? 'إعادة رفع نسخة جديدة'
+                              : 'Re-upload to Drive'
+                            : isAr
+                            ? 'رفع الصورة الحالية لـ Drive + Firestore'
+                            : 'Save Current Photo to Drive + Firestore'}
+                        </span>
+                      </button>
+                    )}
+
+                    <button
+                      type="button"
+                      disabled={isUploadingToDrive}
+                      onClick={() => driveDirectUploadInputRef.current?.click()}
+                      className="px-3 py-1.5 rounded-xl bg-white dark:bg-slate-900 border border-blue-300 dark:border-blue-700 text-blue-700 dark:text-blue-300 text-[11px] font-black flex items-center gap-1.5 hover:bg-blue-50 disabled:opacity-60"
+                    >
+                      <Upload className="w-3.5 h-3.5" />
+                      <span>{isAr ? 'اختر ملف صورة للرفع' : 'Pick Image File'}</span>
+                    </button>
+                  </>
+                )}
+              </div>
+            </div>
+
+            {!needsDriveAuth && (
+              <div className="flex flex-wrap items-center justify-between gap-2 text-[11px] text-slate-600 dark:text-slate-300">
+                <label className="inline-flex items-center gap-2 font-bold cursor-pointer">
+                  <input
+                    type="checkbox"
+                    checked={autoSaveToDriveOnConfirm}
+                    onChange={(e) => setAutoSaveToDriveOnConfirm(e.target.checked)}
+                    className="rounded border-slate-300 text-blue-600"
+                  />
+                  <span>
+                    {isAr
+                      ? 'رفع تلقائي لصورة الفاتورة لـ Drive وحفظ File ID في Firestore عند تأكيد الفاتورة الرسمية'
+                      : 'Auto-upload scanned image to Drive & save File ID to Firestore on confirm'}
+                  </span>
+                </label>
+
+                <button
+                  type="button"
+                  onClick={() => setModalTab('drive_archive')}
+                  className="text-blue-700 dark:text-blue-300 font-black hover:underline flex items-center gap-1"
+                >
+                  <Database className="w-3.5 h-3.5" />
+                  <span>
+                    {isAr
+                      ? `عرض الأرشيف (${driveArchiveRecords.length})`
+                      : `Browse Archive (${driveArchiveRecords.length})`}
+                  </span>
+                </button>
+              </div>
+            )}
+
+            {uploadedDriveRecord && (
+              <div className="px-3 py-2 rounded-xl bg-emerald-50 dark:bg-emerald-950/50 border border-emerald-300 dark:border-emerald-800 text-[11px] flex flex-wrap items-center justify-between gap-2">
+                <div className="flex flex-wrap items-center gap-2 text-emerald-900 dark:text-emerald-200 font-bold">
+                  <CheckCircle2 className="w-4 h-4 text-emerald-600 shrink-0" />
+                  <span>
+                    {isAr ? 'محفوظة في Drive & Firestore:' : 'Archived in Drive & Firestore:'}
+                  </span>
+                  <span className="font-mono px-1.5 py-0.5 rounded bg-white dark:bg-slate-900 border border-emerald-200 dark:border-emerald-700 text-[10px]">
+                    ID: {uploadedDriveRecord.driveFileId}
+                  </span>
+                </div>
+                <div className="flex items-center gap-2">
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setModalTab('drive_archive');
+                      void handlePreviewArchivedDriveImage(uploadedDriveRecord);
+                    }}
+                    className="px-2 py-1 rounded-lg bg-blue-600 text-white text-[10px] font-black flex items-center gap-1"
+                  >
+                    <Eye className="w-3 h-3" />
+                    <span>{isAr ? 'معاينة' : 'Preview'}</span>
+                  </button>
+                  {uploadedDriveRecord.webViewLink && (
+                    <a
+                      href={uploadedDriveRecord.webViewLink}
+                      target="_blank"
+                      rel="noopener noreferrer"
+                      className="px-2 py-1 rounded-lg bg-white dark:bg-slate-900 border border-emerald-300 dark:border-emerald-700 text-emerald-800 dark:text-emerald-200 text-[10px] font-bold inline-flex items-center gap-1"
+                    >
+                      <ExternalLink className="w-3 h-3" />
+                      <span>Drive</span>
+                    </a>
+                  )}
+                </div>
+              </div>
+            )}
+
+            {driveUploadStatus && modalTab === 'scan' && (
+              <div
+                className={`px-3 py-2 rounded-xl text-[11px] font-bold flex items-center justify-between gap-2 border ${
+                  driveUploadStatus.type === 'success'
+                    ? 'bg-emerald-50 dark:bg-emerald-950/50 border-emerald-200 dark:border-emerald-800 text-emerald-800 dark:text-emerald-300'
+                    : 'bg-rose-50 dark:bg-rose-950/50 border-rose-200 dark:border-rose-800 text-rose-800 dark:text-rose-300'
+                }`}
+              >
+                <span>{driveUploadStatus.text}</span>
+                <button
+                  type="button"
+                  onClick={() => setDriveUploadStatus(null)}
+                  className="p-0.5 opacity-70 hover:opacity-100"
+                >
+                  <X className="w-3.5 h-3.5" />
+                </button>
+              </div>
+            )}
+          </div>
+
           {sharpnessNotice && !isLiveCameraOpen && (
             <div className="px-3.5 py-2.5 rounded-2xl bg-amber-50 dark:bg-amber-950/40 border border-amber-300 dark:border-amber-700 text-amber-900 dark:text-amber-200 text-xs font-bold flex flex-wrap items-center justify-between gap-2">
               <div className="flex items-center gap-2">
@@ -2939,6 +3950,40 @@ export const PurchaseInvoiceScanModal: React.FC = () => {
               </div>
             </div>
 
+            {priceChangeAlerts.length > 0 && invoiceMode !== 'informal_noir' && (
+              <div className="p-3 rounded-2xl bg-amber-50 dark:bg-amber-950/30 border border-amber-300 dark:border-amber-800/70 flex flex-wrap items-center justify-between gap-2.5">
+                <div className="flex items-start gap-2 text-xs">
+                  <TrendingUp className="w-4 h-4 text-amber-600 dark:text-amber-400 shrink-0 mt-0.5" />
+                  <div>
+                    <div className="font-black text-amber-950 dark:text-amber-100">
+                      {isAr
+                        ? `مراقب الأسعار: تغيّر ثمن الجملة في ${priceChangeAlerts.length} سلعة`
+                        : `Price Watchdog: ${priceChangeAlerts.length} item(s) changed wholesale cost`}
+                    </div>
+                    <div className="text-[11px] font-bold text-amber-800 dark:text-amber-300 mt-0.5">
+                      {isAr
+                        ? `${priceChangeAlerts.filter((a) => a.delta > 0).length} زاد ثمنها، ${priceChangeAlerts.filter((a) => a.delta < 0).length} نقص ثمنها مقارنة بثمن المخزون السابق.`
+                        : `${priceChangeAlerts.filter((a) => a.delta > 0).length} increased, ${priceChangeAlerts.filter((a) => a.delta < 0).length} decreased vs previous cost.`}
+                    </div>
+                  </div>
+                </div>
+                {priceChangeAlerts.some((a) => a.delta > 0) && (
+                  <button
+                    type="button"
+                    onClick={applyAllMarginPreservingPrices}
+                    className="px-3 py-1.5 rounded-xl bg-amber-500 hover:bg-amber-600 text-slate-950 font-black text-[11px] flex items-center gap-1.5 shadow-2xs"
+                  >
+                    <Sparkles className="w-3.5 h-3.5" />
+                    <span>
+                      {isAr
+                        ? 'حافظ على هامش الربح (تحديث البيع)'
+                        : 'Preserve Margins (Auto Sell Price)'}
+                    </span>
+                  </button>
+                )}
+              </div>
+            )}
+
             <div className="border border-slate-200 dark:border-slate-800 rounded-2xl overflow-x-auto">
               <table className="w-full text-start text-xs">
                 <thead className="bg-slate-50 dark:bg-slate-800/70 text-slate-500 dark:text-slate-400 border-b border-slate-200 dark:border-slate-800">
@@ -2996,7 +4041,9 @@ export const PurchaseInvoiceScanModal: React.FC = () => {
                       </td>
                     </tr>
                   ) : (
-                    items.map((it, idx) => (
+                    items.map((it, idx) => {
+                      const costAlert = priceChangeAlerts.find((a) => a.lineId === it.id);
+                      return (
                       <tr
                         key={it.id}
                         className={
@@ -3036,17 +4083,34 @@ export const PurchaseInvoiceScanModal: React.FC = () => {
                             placeholder={isAr ? 'كتب إسم السلعة...' : 'Product name'}
                             className="w-full px-2.5 py-1.5 rounded-lg bg-slate-50 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 font-bold text-slate-900 dark:text-white"
                           />
-                          <input
-                            type="text"
-                            value={it.barcode}
-                            onChange={(e) =>
-                              updateLine(it.id, {
-                                barcode: e.target.value.replace(/[^0-9A-Za-z-]/g, '')
-                              })
-                            }
-                            placeholder={isAr ? 'باركود (اختياري)...' : 'Barcode (optional)'}
-                            className="w-full px-2 py-0.5 rounded-md bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-700 font-mono text-[10px] text-slate-500 dark:text-slate-400"
-                          />
+                          <div className="flex items-center gap-1">
+                            <input
+                              type="text"
+                              value={it.barcode}
+                              onChange={(e) =>
+                                updateLine(it.id, {
+                                  barcode: e.target.value.replace(/[^0-9A-Za-z-]/g, '')
+                                })
+                              }
+                              placeholder={isAr ? 'باركود (اختياري)...' : 'Barcode (optional)'}
+                              className="flex-1 min-w-0 px-2 py-0.5 rounded-md bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-700 font-mono text-[10px] text-slate-500 dark:text-slate-400"
+                            />
+                            <div
+                              className="flex items-center gap-1 px-1.5 py-0.5 rounded-md bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-700"
+                              title={isAr ? 'تاريخ انتهاء صلاحية الدفعة (FEFO)' : 'Batch expiry date (FEFO)'}
+                            >
+                              <Calendar className="w-3 h-3 text-slate-400 shrink-0" />
+                              <input
+                                type="date"
+                                value={it.batchExpiryDate || ''}
+                                onChange={(e) =>
+                                  updateLine(it.id, { batchExpiryDate: e.target.value })
+                                }
+                                aria-label={isAr ? 'تاريخ الصلاحية' : 'Expiry date'}
+                                className="bg-transparent font-mono text-[10px] text-slate-600 dark:text-slate-300 outline-none w-[96px]"
+                              />
+                            </div>
+                          </div>
                         </td>
                         <td className="py-2 px-2.5 min-w-[155px]">
                           <select
@@ -3105,18 +4169,45 @@ export const PurchaseInvoiceScanModal: React.FC = () => {
                           </div>
                         </td>
                         <td className="py-2 px-2.5 text-end">
-                          <input
-                            type="number"
-                            step="0.01"
-                            min="0"
-                            value={it.unitCost}
-                            onChange={(e) =>
-                              updateLine(it.id, {
-                                unitCost: Math.max(0, Number(e.target.value) || 0)
-                              })
-                            }
-                            className="w-18 px-2 py-1 rounded-lg bg-slate-50 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 text-end font-mono tabular-nums font-bold"
-                          />
+                          <div className="flex flex-col items-end gap-0.5">
+                            <input
+                              type="number"
+                              step="0.01"
+                              min="0"
+                              value={it.unitCost}
+                              onChange={(e) =>
+                                updateLine(it.id, {
+                                  unitCost: Math.max(0, Number(e.target.value) || 0)
+                                })
+                              }
+                              className={`w-18 px-2 py-1 rounded-lg bg-slate-50 dark:bg-slate-800 border text-end font-mono tabular-nums font-bold ${
+                                costAlert && costAlert.delta > 0
+                                  ? 'border-rose-400 dark:border-rose-700 text-rose-700 dark:text-rose-300'
+                                  : costAlert && costAlert.delta < 0
+                                  ? 'border-emerald-400 dark:border-emerald-700 text-emerald-700 dark:text-emerald-300'
+                                  : 'border-slate-200 dark:border-slate-700'
+                              }`}
+                            />
+                            {costAlert && (
+                              <span
+                                className={`inline-flex items-center gap-0.5 text-[9px] font-black tabular-nums ${
+                                  costAlert.delta > 0
+                                    ? 'text-rose-600 dark:text-rose-400'
+                                    : 'text-emerald-600 dark:text-emerald-400'
+                                }`}
+                                title={`${isAr ? 'كان' : 'Prev'}: ${costAlert.oldCost.toFixed(2)}`}
+                              >
+                                {costAlert.delta > 0 ? (
+                                  <TrendingUp className="w-2.5 h-2.5" />
+                                ) : (
+                                  <TrendingDown className="w-2.5 h-2.5" />
+                                )}
+                                {costAlert.delta > 0 ? '+' : ''}
+                                {costAlert.delta.toFixed(2)} ({costAlert.pct > 0 ? '+' : ''}
+                                {costAlert.pct}%)
+                              </span>
+                            )}
+                          </div>
                         </td>
                         <td className="py-2 px-2.5 text-end">
                           <input
@@ -3146,6 +4237,25 @@ export const PurchaseInvoiceScanModal: React.FC = () => {
                               }
                               className="w-18 px-2 py-1 rounded-lg bg-slate-50 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 text-end font-mono tabular-nums"
                             />
+                            {costAlert &&
+                              costAlert.delta > 0 &&
+                              costAlert.suggestedSellPrice > Number(it.sellPrice || 0) &&
+                              invoiceMode !== 'informal_noir' && (
+                                <button
+                                  type="button"
+                                  onClick={() =>
+                                    updateLine(it.id, { sellPrice: costAlert.suggestedSellPrice })
+                                  }
+                                  className="px-1.5 py-0.5 rounded bg-amber-100 hover:bg-amber-200 dark:bg-amber-950/60 dark:hover:bg-amber-900 text-[9px] font-black text-amber-800 dark:text-amber-300 tabular-nums"
+                                  title={
+                                    isAr
+                                      ? 'تعديل ثمن البيع للحفاظ على نفس هامش الربح'
+                                      : 'Update sell price to preserve margin'
+                                  }
+                                >
+                                  → {costAlert.suggestedSellPrice.toFixed(2)}
+                                </button>
+                              )}
                             {!it.matchedProductId && it.suggestedMarginPct ? (
                               <span className="text-[9px] font-bold text-emerald-600 dark:text-emerald-400">
                                 {isAr ? `مقترح +${it.suggestedMarginPct}%` : `+${it.suggestedMarginPct}% est.`}
@@ -3166,7 +4276,8 @@ export const PurchaseInvoiceScanModal: React.FC = () => {
                           </button>
                         </td>
                       </tr>
-                    ))
+                    );
+                    })
                   )}
                 </tbody>
               </table>
@@ -3218,6 +4329,68 @@ export const PurchaseInvoiceScanModal: React.FC = () => {
           </div>
         </form>
       </div>
+
+      <input
+        ref={driveDirectUploadInputRef}
+        type="file"
+        accept="image/*,application/pdf,.pdf"
+        onChange={(e) => void handleDirectDriveFilePick(e)}
+        className="hidden"
+      />
+
+      {/* Explicit React Confirmation Dialog for Deleting Archived Invoice from Google Drive & Firestore */}
+      {pendingDeleteDriveRecord && (
+        <div className="fixed inset-0 z-60 bg-slate-950/70 backdrop-blur-xs flex items-center justify-center p-4">
+          <div className="w-full max-w-md rounded-3xl bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 shadow-2xl p-5 space-y-4">
+            <div className="flex items-start justify-between gap-3">
+              <div className="flex items-center gap-2.5">
+                <div className="p-2 rounded-xl bg-rose-100 text-rose-700 dark:bg-rose-950/70 dark:text-rose-300">
+                  <AlertTriangle className="w-5 h-5" />
+                </div>
+                <h4 className="font-black text-sm text-slate-900 dark:text-white">
+                  {isAr
+                    ? 'تأكيد حذف صورة الفاتورة من Google Drive و Firestore'
+                    : 'Confirm Delete Invoice from Google Drive & Firestore'}
+                </h4>
+              </div>
+              <button
+                type="button"
+                onClick={() => setPendingDeleteDriveRecord(null)}
+                disabled={isDeletingDriveRecord}
+                className="p-1 text-slate-400 hover:text-slate-600"
+              >
+                <X className="w-4 h-4" />
+              </button>
+            </div>
+
+            <p className="text-xs leading-relaxed text-slate-600 dark:text-slate-300">
+              {isAr
+                ? `هل أنت متأكد من حذف الملف "${pendingDeleteDriveRecord.fileName}" (المورد: ${pendingDeleteDriveRecord.vendorName || '-'}، الفاتورة #${pendingDeleteDriveRecord.invoiceNumber || '-'}) من Google Drive و Firestore نهائياً؟`
+                : `Are you sure you want to permanently delete "${pendingDeleteDriveRecord.fileName}" (Vendor: ${pendingDeleteDriveRecord.vendorName || '-'}, Invoice #${pendingDeleteDriveRecord.invoiceNumber || '-'}) from Google Drive and Firestore?`}
+            </p>
+
+            <div className="flex items-center justify-end gap-2 pt-1">
+              <button
+                type="button"
+                onClick={() => setPendingDeleteDriveRecord(null)}
+                disabled={isDeletingDriveRecord}
+                className="px-4 py-2 rounded-xl border border-slate-200 dark:border-slate-700 text-xs font-bold text-slate-700 dark:text-slate-300 hover:bg-slate-50 dark:hover:bg-slate-800"
+              >
+                {isAr ? 'إلغاء' : 'Cancel'}
+              </button>
+              <button
+                type="button"
+                onClick={() => void handleConfirmDeleteArchivedRecord()}
+                disabled={isDeletingDriveRecord}
+                className="px-4 py-2 rounded-xl bg-rose-600 hover:bg-rose-700 text-white text-xs font-black flex items-center gap-1.5 disabled:opacity-60"
+              >
+                {isDeletingDriveRecord && <Loader2 className="w-3.5 h-3.5 animate-spin" />}
+                <span>{isAr ? 'تأكيد الحذف' : 'Delete Permanently'}</span>
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
 
       {showBarcodeCamScanner && (
         <BarcodeScannerModal

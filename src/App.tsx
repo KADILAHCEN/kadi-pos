@@ -18,6 +18,7 @@ import { OrdersView } from './components/orders/OrdersView';
 import { ShiftsView } from './components/shifts/ShiftsView';
 import { CustomersView } from './components/customers/CustomersView';
 import { ExpensesView } from './components/expenses/ExpensesView';
+import { RemiseBoxView } from './components/remise/RemiseBoxView';
 import { RemoteSalesView } from './components/remote/RemoteSalesView';
 import { PublicCatalogView } from './components/remote/PublicCatalogView';
 import { CpuTaxView } from './components/cpu/CpuTaxView';
@@ -730,6 +731,7 @@ const PosMainContent: React.FC = () => {
         {currentTab === 'shifts' && <ShiftsView />}
         {currentTab === 'customers' && <CustomersView />}
         {currentTab === 'expenses' && <ExpensesView />}
+        {currentTab === 'remise_box' && <RemiseBoxView />}
         {currentTab === 'remote_sales' && <RemoteSalesView />}
         {currentTab === 'cpu_tax' && <CpuTaxView />}
         {currentTab === 'analytics' && <AnalyticsView />}
@@ -831,9 +833,13 @@ const PosMainContent: React.FC = () => {
             : (isAr ? 'الإعدادات محمية برقم سري' : 'Settings Protected')
         }
         description={
-          isAr
-            ? 'هذا القسم محمي بكلمة مرور. المرجو إدخال الرقم السري الخاص بالمدير (الافتراضي: 1234) للمتابعة.'
-            : 'Manager authorization required. Enter PIN (Default: 1234).'
+          !settings.managerPin || settings.managerPin === '1234'
+            ? isAr
+              ? 'هذا القسم محمي بكلمة مرور. المرجو إدخال الرقم السري الخاص بالمدير (الافتراضي: 1234) للمتابعة.'
+              : 'Manager authorization required. Enter PIN (Default: 1234).'
+            : isAr
+            ? 'هذا القسم محمي بكلمة مرور. المرجو إدخال الرقم السري الخاص بالمدير للمتابعة.'
+            : 'Manager authorization required. Enter your Manager PIN to continue.'
         }
       />
 

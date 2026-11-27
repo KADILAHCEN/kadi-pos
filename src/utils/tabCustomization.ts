@@ -314,6 +314,7 @@ export interface PosTabDefinition {
     | 'shifts'
     | 'customers'
     | 'expenses'
+    | 'remise_box'
     | 'remote_sales'
     | 'cpu_tax'
     | 'analytics'
@@ -334,6 +335,17 @@ export interface PosTabDefinition {
   defaultColor: TabColorKey;
   showInTopNav?: boolean;
 }
+
+export const FOCUSED_CASHIER_TAB_IDS: ReadonlySet<PosTabDefinition['id']> = new Set([
+  'home_summary',
+  'pos',
+  'customers',
+  'orders',
+  'shifts',
+  'inventory',
+  'alerts',
+  'settings'
+]);
 
 export const POS_TAB_CATALOG: PosTabDefinition[] = [
   {
@@ -454,6 +466,18 @@ export const POS_TAB_CATALOG: PosTabDefinition[] = [
     shortLabelEn: 'Expenses',
     defaultIcon: 'wallet',
     defaultColor: 'rose',
+    showInTopNav: true
+  },
+  {
+    id: 'remise_box',
+    labelAr: 'صندوق الريميز',
+    labelFr: 'Caisse Remises',
+    labelEn: 'Remise Box',
+    shortLabelAr: 'الريميز',
+    shortLabelFr: 'Remises',
+    shortLabelEn: 'Remise',
+    defaultIcon: 'coins',
+    defaultColor: 'emerald',
     showInTopNav: true
   },
   {

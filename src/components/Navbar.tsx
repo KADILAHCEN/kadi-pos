@@ -27,12 +27,17 @@ import {
   Wifi,
   WifiOff,
   Camera,
-  Tag
+  Tag,
+  SlidersHorizontal
 } from 'lucide-react';
 import { PinGateModal } from './auth/PinGateModal';
 import { KExecutivePanel } from './KExecutivePanel';
 import { PWAInstallButton } from './pwa/PWAInstallButton';
-import { POS_TAB_CATALOG, resolveTabVisual } from '../utils/tabCustomization';
+import {
+  FOCUSED_CASHIER_TAB_IDS,
+  POS_TAB_CATALOG,
+  resolveTabVisual
+} from '../utils/tabCustomization';
 import { formatFriendlySyncError } from '../utils/firestoreSync';
 
 export const Navbar: React.FC = () => {
@@ -57,6 +62,7 @@ export const Navbar: React.FC = () => {
     setCurrentUserId,
     isTabProtected,
     settings,
+    updateSettings,
     zakatSummary,
     remoteOrders,
     cpuAlerts,
@@ -110,7 +116,12 @@ export const Navbar: React.FC = () => {
     }
   };
 
-  const navItems = POS_TAB_CATALOG.filter((t) => t.showInTopNav !== false);
+  const isFocusedCashierMode = Boolean(settings.simpleCashierMode);
+  const navItems = POS_TAB_CATALOG.filter(
+    (t) =>
+      t.showInTopNav !== false &&
+      (!isFocusedCashierMode || FOCUSED_CASHIER_TAB_IDS.has(t.id) || t.id === currentTab)
+  );
 
   return (
     <header className="sticky top-0 z-30 flex flex-nowrap items-center justify-between gap-2 xl:gap-3 px-2.5 sm:px-4 py-1.5 bg-white dark:bg-slate-900 border-b border-slate-200 dark:border-slate-800 transition-colors">
@@ -584,7 +595,11 @@ export const Navbar: React.FC = () => {
                             <div>{u.name}</div>
                             <div className="text-[10px] opacity-70">
                               {u.role === 'manager'
-                                ? isAr ? 'مدير (رمز: 1234)' : 'Manager'
+                                ? isAr
+                                  ? !settings.managerPin || settings.managerPin === '1234'
+                                    ? 'مدير (رمز: 1234)'
+                                    : 'مدير'
+                                  : 'Manager'
                                 : u.role === 'courier'
                                 ? isAr ? 'موزّع / توصيل (Livreur)' : 'Courier'
                                 : isAr ? 'كاشير' : 'Cashier'}
@@ -892,6 +907,37 @@ export const Navbar: React.FC = () => {
           <span className="absolute -top-0.5 -end-0.5 w-2 h-2 rounded-full bg-emerald-500 border border-white dark:border-slate-900" />
         </button>
 
+        {/* Focused Cashier Mode vs Full Manager Mode Toggle */}
+        <button
+          type="button"
+          onClick={() => updateSettings({ simpleCashierMode: !isFocusedCashierMode })}
+          className={`hidden md:inline-flex items-center gap-1 px-2 py-1.5 rounded-lg text-[11px] font-extrabold border transition-colors whitespace-nowrap shrink-0 ${
+            isFocusedCashierMode
+              ? 'bg-emerald-600 hover:bg-emerald-700 border-emerald-600 text-white shadow-2xs'
+              : 'bg-slate-50 dark:bg-slate-800/80 border-slate-200/70 dark:border-slate-700 text-slate-600 dark:text-slate-200 hover:bg-slate-100 dark:hover:bg-slate-700'
+          }`}
+          title={
+            isFocusedCashierMode
+              ? isAr
+                ? 'وضع الكاشير المبسط مفعّل — اضغط لعرض جميع الأقسام'
+                : 'Simple Cashier Mode active — click for all modules'
+              : isAr
+              ? 'تفعيل وضع الكاشير المبسط (إخفاء الأقسام المتقدمة)'
+              : 'Switch to Simple Cashier Mode'
+          }
+        >
+          <SlidersHorizontal className="w-3.5 h-3.5 shrink-0" />
+          <span className="hidden xl:inline">
+            {isFocusedCashierMode
+              ? isAr
+                ? 'مبسط'
+                : 'Simple'
+              : isAr
+              ? 'شامل'
+              : 'Full'}
+          </span>
+        </button>
+
         {/* Dark/Light mode toggle */}
         <button
           onClick={toggleTheme}
@@ -993,9 +1039,13 @@ export const Navbar: React.FC = () => {
             : (isAr ? 'الإعدادات محمية برقم سري' : 'Settings Protected')
         }
         description={
-          isAr
-            ? 'هذا القسم محمي بكلمة مرور. المرجو إدخال الرقم السري الخاص بالمدير (الافتراضي: 1234) للمتابعة.'
-            : 'Manager authorization required. Enter PIN (Default: 1234).'
+          !settings.managerPin || settings.managerPin === '1234'
+            ? isAr
+              ? 'هذا القسم محمي بكلمة مرور. أدخل الرقم السري للمدير (الافتراضي: 1234) للمتابعة.'
+              : 'Manager authorization required. Enter PIN (Default: 1234).'
+            : isAr
+            ? 'هذا القسم محمي بكلمة مرور. المرجو إدخال الرقم السري المخصص للمدير للمتابعة.'
+            : 'Manager authorization required. Enter custom Manager PIN.'
         }
       />
     </header>

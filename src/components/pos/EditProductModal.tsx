@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useRef } from 'react';
-import { Product, UnitType } from '../../types';
+import { Product, ProductBatch, UnitType } from '../../types';
 import { usePos } from '../../context/PosContext';
 import { getT } from '../../utils/translations';
 import {
@@ -20,7 +20,9 @@ import {
   Smartphone,
   Search,
   Loader2,
-  Globe
+  Globe,
+  Plus,
+  Trash2
 } from 'lucide-react';
 import { playSound } from '../../utils/audio';
 import { compressImageFile } from '../../utils/imageUtils';
@@ -31,6 +33,12 @@ import { lookupProductByBarcode } from '../../utils/openFoodFacts';
 import { bluetoothScanner } from '../../utils/bluetoothScanner';
 import { PriceAlertAdvisor } from '../alerts/PriceAlertAdvisor';
 import { markPriceAlertFixed, recordPriceAlert } from '../../utils/priceAlerts';
+import {
+  addBatchFefo,
+  getEarliestExpiryFromBatches,
+  sortBatchesFefo
+} from '../../utils/fefoBatches';
+import { RetailProductSearchSelect } from './RetailProductSearchSelect';
 
 interface EditProductModalProps {
   product: Product | null;
@@ -69,6 +77,10 @@ export const EditProductModal: React.FC<EditProductModalProps> = ({
   const [barcode, setBarcode] = useState('');
   const [sku, setSku] = useState('');
   const [expiryDate, setExpiryDate] = useState<string>('');
+  const [batches, setBatches] = useState<ProductBatch[]>([]);
+  const [newBatchQty, setNewBatchQty] = useState<string>('');
+  const [newBatchExpiry, setNewBatchExpiry] = useState<string>('');
+  const [newBatchLot, setNewBatchLot] = useState<string>('');
   const [image, setImage] = useState<string>('');
   const [color, setColor] = useState<string>('#059669');
   const [repType, setRepType] = useState<'image' | 'color'>('image');
@@ -105,7 +117,12 @@ export const EditProductModal: React.FC<EditProductModalProps> = ({
       setStockInput(String(product.stock ?? 0));
       setBarcode(product.barcode || '');
       setSku(product.sku || '');
-      setExpiryDate(product.expiryDate || '');
+      const sortedExistingBatches = product.batches ? sortBatchesFefo(product.batches) : [];
+      setBatches(sortedExistingBatches);
+      setExpiryDate(getEarliestExpiryFromBatches(sortedExistingBatches) || product.expiryDate || '');
+      setNewBatchQty('');
+      setNewBatchExpiry('');
+      setNewBatchLot('');
       setImage(product.image || '');
       setColor(product.color || '#059669');
       setRepType(product.image ? 'image' : 'color');
@@ -266,6 +283,9 @@ export const EditProductModal: React.FC<EditProductModalProps> = ({
     const parsedWsQty = parseFloat(wholesaleMinQty);
     const parsedWsPrice = parseFloat(wholesalePrice);
 
+    const sortedBatches = batches.length > 0 ? sortBatchesFefo(batches) : [];
+    const earliestBatchExpiry = getEarliestExpiryFromBatches(sortedBatches);
+
     updateProduct(product.id, {
       name: name.trim(),
       nameEn: nameEn.trim() || name.trim(),
@@ -278,7 +298,8 @@ export const EditProductModal: React.FC<EditProductModalProps> = ({
       sku: sku.trim(),
       image: repType === 'image' ? image : undefined,
       color: color,
-      expiryDate: expiryDate ? expiryDate : undefined,
+      batches: sortedBatches.length > 0 ? sortedBatches : undefined,
+      expiryDate: earliestBatchExpiry || (expiryDate ? expiryDate : undefined),
       scalePlu: scalePlu.trim() ? scalePlu.trim() : undefined,
       boxChildProductId: unitType === 'box' && boxChildProductId ? boxChildProductId : undefined,
       unitsPerBox: unitType === 'box' && parsedUnitsPerBox > 0 ? parsedUnitsPerBox : undefined,
@@ -729,20 +750,19 @@ export const EditProductModal: React.FC<EditProductModalProps> = ({
                   <label className="block text-[11px] font-bold text-slate-700 dark:text-slate-300 mb-1">
                     {isAr ? 'سلعة التفصيل عند فك الكرتون (اختياري)' : 'Unpack Target Product'}
                   </label>
-                  <select
+                  <RetailProductSearchSelect
+                    products={products}
                     value={boxChildProductId}
-                    onChange={(e) => setBoxChildProductId(e.target.value)}
-                    className="w-full px-2.5 py-1.5 text-xs bg-slate-50 dark:bg-slate-900 border border-slate-200 dark:border-slate-700 rounded-lg text-slate-900 dark:text-white"
-                  >
-                    <option value="">{isAr ? '— اختر السلعة بالحبة —' : '— Select retail unit —'}</option>
-                    {products
-                      .filter((p) => p.id !== product.id && p.unitType !== 'box')
-                      .map((p) => (
-                        <option key={p.id} value={p.id}>
-                          {p.name} ({p.stock})
-                        </option>
-                      ))}
-                  </select>
+                    onChange={setBoxChildProductId}
+                    excludeProductId={product.id}
+                    currencySymbol={currencySymbol}
+                    isAr={isAr}
+                    placeholder={
+                      isAr
+                        ? 'ابحث عن السلعة بالحبة بالاسم أو الباركود...'
+                        : 'Search retail unit by name or barcode...'
+                    }
+                  />
                 </div>
                 <div>
                   <label className="block text-[11px] font-bold text-slate-700 dark:text-slate-300 mb-1">
@@ -814,6 +834,110 @@ export const EditProductModal: React.FC<EditProductModalProps> = ({
                     {isAr ? 'مسح التاريخ' : 'Clear Date'}
                   </button>
                 )}
+              </div>
+
+              {/* Manual FEFO Batches Management */}
+              <div className="pt-3 mt-2 border-t border-slate-200/80 dark:border-slate-700/70 space-y-2.5">
+                <div className="flex items-center justify-between">
+                  <span className="text-[11px] font-extrabold text-slate-800 dark:text-slate-200">
+                    {isAr ? 'تتبع الدفعات حسب الصلاحية (FEFO)' : 'Expiry Batches (FEFO)'}
+                  </span>
+                  <span className="text-[10px] font-mono text-slate-500">
+                    {batches.length} {isAr ? 'دفعة' : 'batches'}
+                  </span>
+                </div>
+
+                {batches.length > 0 && (
+                  <div className="space-y-1.5 max-h-36 overflow-y-auto pe-1">
+                    {batches.map((b, idx) => (
+                      <div
+                        key={b.id}
+                        className={`flex items-center justify-between gap-2 px-2.5 py-1.5 rounded-xl border text-[11px] ${
+                          idx === 0
+                            ? 'bg-amber-50/90 dark:bg-amber-950/35 border-amber-200 dark:border-amber-800/70'
+                            : 'bg-white dark:bg-slate-900 border-slate-200 dark:border-slate-700'
+                        }`}
+                      >
+                        <div className="flex flex-wrap items-center gap-2 font-mono">
+                          <span className="font-bold text-slate-900 dark:text-white">
+                            {b.expiryDate}
+                          </span>
+                          <span className="px-1.5 py-0.5 rounded bg-slate-100 dark:bg-slate-800 text-slate-700 dark:text-slate-200 font-bold">
+                            ×{b.quantity}
+                          </span>
+                          {b.lotNumber && (
+                            <span className="text-[10px] text-slate-500">Lot: {b.lotNumber}</span>
+                          )}
+                          {idx === 0 && (
+                            <span className="font-sans text-[10px] font-bold text-amber-700 dark:text-amber-300">
+                              {isAr ? 'تُصرف أولاً' : 'Next out'}
+                            </span>
+                          )}
+                        </div>
+                        <button
+                          type="button"
+                          onClick={() => {
+                            const remaining = batches.filter((item) => item.id !== b.id);
+                            setBatches(remaining);
+                            const nextEarliest = getEarliestExpiryFromBatches(remaining);
+                            setExpiryDate(nextEarliest || '');
+                          }}
+                          className="p-1 rounded-lg text-slate-400 hover:text-rose-600 hover:bg-rose-50 dark:hover:bg-rose-950/40"
+                          title={isAr ? 'حذف الدفعة' : 'Remove batch'}
+                        >
+                          <Trash2 className="w-3.5 h-3.5" />
+                        </button>
+                      </div>
+                    ))}
+                  </div>
+                )}
+
+                <div className="grid grid-cols-12 gap-1.5 items-center">
+                  <input
+                    type="number"
+                    step="any"
+                    min="0"
+                    value={newBatchQty}
+                    onChange={(e) => setNewBatchQty(e.target.value)}
+                    placeholder={isAr ? 'الكمية' : 'Qty'}
+                    className="col-span-3 px-2.5 py-1.5 rounded-lg border border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-900 text-xs font-mono"
+                  />
+                  <input
+                    type="date"
+                    value={newBatchExpiry}
+                    onChange={(e) => setNewBatchExpiry(e.target.value)}
+                    className="col-span-5 px-2 py-1.5 rounded-lg border border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-900 text-[11px] font-mono"
+                  />
+                  <input
+                    type="text"
+                    value={newBatchLot}
+                    onChange={(e) => setNewBatchLot(e.target.value)}
+                    placeholder={isAr ? 'رقم الدفعة' : 'Lot #'}
+                    className="col-span-2 px-2 py-1.5 rounded-lg border border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-900 text-[11px]"
+                  />
+                  <button
+                    type="button"
+                    onClick={() => {
+                      const q = Number(newBatchQty);
+                      if (!Number.isFinite(q) || q <= 0 || !newBatchExpiry) return;
+                      const { nextBatches, nextExpiryDate } = addBatchFefo(batches, {
+                        quantity: q,
+                        expiryDate: newBatchExpiry,
+                        lotNumber: newBatchLot.trim() || undefined,
+                        costPrice
+                      });
+                      setBatches(nextBatches);
+                      if (nextExpiryDate) setExpiryDate(nextExpiryDate);
+                      setNewBatchQty('');
+                      setNewBatchExpiry('');
+                      setNewBatchLot('');
+                    }}
+                    className="col-span-2 py-1.5 px-2 rounded-lg bg-amber-600 hover:bg-amber-700 text-white text-[11px] font-bold flex items-center justify-center gap-1"
+                  >
+                    <Plus className="w-3.5 h-3.5" />
+                    <span>{isAr ? 'دفعة' : 'Add'}</span>
+                  </button>
+                </div>
               </div>
             </div>
           </div>

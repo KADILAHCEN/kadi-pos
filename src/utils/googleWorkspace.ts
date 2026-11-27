@@ -14,6 +14,7 @@ export const WORKSPACE_SCOPES = [
 ];
 
 export const BACKUP_FOLDER_NAME = 'Kadi POS Backups';
+export const INVOICES_FOLDER_NAME = 'Kadi POS Invoices';
 
 let appInstance: FirebaseApp | null = null;
 function getFirebaseApp(): FirebaseApp {
@@ -123,7 +124,10 @@ async function driveFetchJson<T>(url: string, init?: RequestInit): Promise<T> {
   return res.json() as Promise<T>;
 }
 
-export async function ensureKadiDriveFolder(preferredId?: string): Promise<string> {
+export async function ensureKadiDriveFolderByName(
+  folderName: string,
+  preferredId?: string
+): Promise<string> {
   if (preferredId) {
     try {
       const check = await driveFetchJson<{ id: string; trashed?: boolean }>(
@@ -138,7 +142,7 @@ export async function ensureKadiDriveFolder(preferredId?: string): Promise<strin
   }
 
   const q = encodeURIComponent(
-    `name='${BACKUP_FOLDER_NAME}' and mimeType='application/vnd.google-apps.folder' and trashed=false`
+    `name='${folderName}' and mimeType='application/vnd.google-apps.folder' and trashed=false`
   );
   const search = await driveFetchJson<{ files?: { id: string }[] }>(
     `https://www.googleapis.com/drive/v3/files?q=${q}&fields=files(id,name)&spaces=drive`
@@ -154,12 +158,20 @@ export async function ensureKadiDriveFolder(preferredId?: string): Promise<strin
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
-        name: BACKUP_FOLDER_NAME,
+        name: folderName,
         mimeType: 'application/vnd.google-apps.folder'
       })
     }
   );
   return created.id;
+}
+
+export async function ensureKadiDriveFolder(preferredId?: string): Promise<string> {
+  return ensureKadiDriveFolderByName(BACKUP_FOLDER_NAME, preferredId);
+}
+
+export async function ensureKadiInvoicesDriveFolder(preferredId?: string): Promise<string> {
+  return ensureKadiDriveFolderByName(INVOICES_FOLDER_NAME, preferredId);
 }
 
 export async function listDriveFolderFiles(folderId: string): Promise<GoogleDriveFileItem[]> {
@@ -240,6 +252,24 @@ export async function downloadDriveFileText(fileId: string): Promise<string> {
     throw new Error(`Failed to download Drive file (${res.status})`);
   }
   return res.text();
+}
+
+export async function downloadDriveFileBlob(fileId: string): Promise<Blob> {
+  const token = await requireToken();
+  const res = await fetch(
+    `https://www.googleapis.com/drive/v3/files/${encodeURIComponent(fileId)}?alt=media`,
+    {
+      headers: { Authorization: `Bearer ${token}` }
+    }
+  );
+  if (res.status === 401) {
+    cachedAccessToken = null;
+    throw new Error('AUTH_EXPIRED');
+  }
+  if (!res.ok) {
+    throw new Error(`Failed to load Drive file (${res.status})`);
+  }
+  return res.blob();
 }
 
 export async function deleteDriveFile(fileId: string): Promise<void> {

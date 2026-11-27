@@ -47,6 +47,10 @@ service cloud.firestore {
           'customers',
           'creditTransactions',
           'categories',
+          'expenses',
+          'supplierInvoices',
+          'suppliers',
+          'remiseBox',
           'lastUpdated',
           'updatedBy',
           'devices',
@@ -63,6 +67,19 @@ service cloud.firestore {
         && (!('customers' in data) || (data.customers is list && data.customers.size() <= 1000 && (data.customers.size() == 0 || data.customers[0] is map)))
         && (!('creditTransactions' in data) || (data.creditTransactions is list && data.creditTransactions.size() <= 1000 && (data.creditTransactions.size() == 0 || data.creditTransactions[0] is map)))
         && (!('categories' in data) || (data.categories is list && data.categories.size() <= 200 && (data.categories.size() == 0 || data.categories[0] is map)))
+        && (!('expenses' in data) || (data.expenses is list && data.expenses.size() <= 400 && (data.expenses.size() == 0 || data.expenses[0] is map)))
+        && (!('supplierInvoices' in data) || (data.supplierInvoices is list && data.supplierInvoices.size() <= 300 && (data.supplierInvoices.size() == 0 || data.supplierInvoices[0] is map)))
+        && (!('suppliers' in data) || (data.suppliers is list && data.suppliers.size() <= 200 && (data.suppliers.size() == 0 || data.suppliers[0] is map)))
+        && (!('remiseBox' in data) || (
+          data.remiseBox is map
+          && data.remiseBox.keys().hasAll(['wallets', 'history'])
+          && data.remiseBox.keys().hasOnly(['wallets', 'history'])
+          && data.remiseBox.wallets is map
+          && data.remiseBox.wallets.size() <= 100
+          && data.remiseBox.history is list
+          && data.remiseBox.history.size() <= 300
+          && (data.remiseBox.history.size() == 0 || data.remiseBox.history[0] is map)
+        ))
         && data.lastUpdated is number
         && data.lastUpdated >= 0
         && data.updatedBy is string
@@ -80,6 +97,128 @@ service cloud.firestore {
         && data.allowedEmails.size() <= 20
         && (data.allowedEmails.size() == 0 || data.allowedEmails[0] is string)
         && data.serverSyncedAt is timestamp;
+    }
+
+    function isValidInvoiceFile(data) {
+      return data.keys().hasAll([
+          'driveFileId',
+          'fileName',
+          'mimeType',
+          'invoiceNumber',
+          'vendorName',
+          'ownerUid',
+          'ownerEmail',
+          'createdAt',
+          'updatedAt'
+        ])
+        && data.keys().hasOnly([
+          'driveFileId',
+          'driveFolderId',
+          'fileName',
+          'mimeType',
+          'fileSize',
+          'webViewLink',
+          'invoiceNumber',
+          'vendorName',
+          'vendorIce',
+          'invoiceDate',
+          'totalAmount',
+          'notes',
+          'ownerUid',
+          'ownerEmail',
+          'createdAt',
+          'updatedAt'
+        ])
+        && data.driveFileId is string
+        && data.driveFileId.size() > 0
+        && data.driveFileId.size() <= 256
+        && (!('driveFolderId' in data) || (data.driveFolderId is string && data.driveFolderId.size() <= 256))
+        && data.fileName is string
+        && data.fileName.size() > 0
+        && data.fileName.size() <= 256
+        && data.mimeType is string
+        && data.mimeType.size() > 0
+        && data.mimeType.size() <= 120
+        && (!('fileSize' in data) || (data.fileSize is number && data.fileSize >= 0 && data.fileSize <= 104857600))
+        && (!('webViewLink' in data) || (data.webViewLink is string && data.webViewLink.size() <= 512))
+        && data.invoiceNumber is string
+        && data.invoiceNumber.size() <= 120
+        && data.vendorName is string
+        && data.vendorName.size() <= 160
+        && (!('vendorIce' in data) || (data.vendorIce is string && data.vendorIce.size() <= 20))
+        && (!('invoiceDate' in data) || (data.invoiceDate is string && data.invoiceDate.size() <= 32))
+        && (!('totalAmount' in data) || (data.totalAmount is number && data.totalAmount >= 0))
+        && (!('notes' in data) || (data.notes is string && data.notes.size() <= 500))
+        && data.ownerUid is string
+        && isValidId(data.ownerUid)
+        && data.ownerUid == request.auth.uid
+        && data.ownerEmail is string
+        && data.ownerEmail.size() > 0
+        && data.ownerEmail.size() <= 160
+        && data.createdAt is timestamp
+        && data.updatedAt is timestamp;
+    }
+
+    function isValidInvoiceScan(data) {
+      return data.keys().hasAll([
+          'driveFileId',
+          'fileName',
+          'mimeType',
+          'invoiceNumber',
+          'vendorName',
+          'date',
+          'userId',
+          'userEmail',
+          'createdAt',
+          'updatedAt'
+        ])
+        && data.keys().hasOnly([
+          'driveFileId',
+          'driveFolderId',
+          'fileName',
+          'mimeType',
+          'fileSize',
+          'webViewLink',
+          'invoiceNumber',
+          'vendorName',
+          'date',
+          'vendorIce',
+          'totalAmount',
+          'notes',
+          'userId',
+          'userEmail',
+          'createdAt',
+          'updatedAt'
+        ])
+        && data.driveFileId is string
+        && data.driveFileId.size() > 0
+        && data.driveFileId.size() <= 256
+        && (!('driveFolderId' in data) || (data.driveFolderId is string && data.driveFolderId.size() <= 256))
+        && data.fileName is string
+        && data.fileName.size() > 0
+        && data.fileName.size() <= 256
+        && data.mimeType is string
+        && data.mimeType.size() > 0
+        && data.mimeType.size() <= 120
+        && (!('fileSize' in data) || (data.fileSize is number && data.fileSize >= 0 && data.fileSize <= 104857600))
+        && (!('webViewLink' in data) || (data.webViewLink is string && data.webViewLink.size() <= 512))
+        && data.invoiceNumber is string
+        && data.invoiceNumber.size() <= 120
+        && data.vendorName is string
+        && data.vendorName.size() <= 160
+        && data.date is string
+        && data.date.size() <= 32
+        && (!('vendorIce' in data) || (data.vendorIce is string && data.vendorIce.size() <= 20))
+        && (!('totalAmount' in data) || (data.totalAmount is number && data.totalAmount >= 0))
+        && (!('notes' in data) || (data.notes is string && data.notes.size() <= 500))
+        && data.userId is string
+        && isValidId(data.userId)
+        && data.userId == request.auth.uid
+        && data.userEmail is string
+        && data.userEmail.size() > 0
+        && data.userEmail.size() <= 160
+        && data.createdAt is timestamp
+        && data.updatedAt is timestamp;
     }
 
     function isStoreOwner(docData) {
@@ -147,6 +286,10 @@ service cloud.firestore {
               'customers',
               'creditTransactions',
               'categories',
+              'expenses',
+              'supplierInvoices',
+              'suppliers',
+              'remiseBox',
               'lastUpdated',
               'updatedBy',
               'devices',
@@ -168,6 +311,85 @@ service cloud.firestore {
         );
 
       allow delete: if false;
+    }
+
+    // Legacy archived scanned purchase invoice files
+    match /kadi_pos_invoice_files/{fileId} {
+      allow get: if isVerifiedUser()
+        && isValidId(fileId)
+        && (resource == null || existing().ownerUid == request.auth.uid);
+
+      allow list: if isVerifiedUser()
+        && existing().ownerUid == request.auth.uid;
+
+      allow create: if isVerifiedUser()
+        && isValidId(fileId)
+        && isValidInvoiceFile(incoming())
+        && incoming().ownerEmail == request.auth.token.email
+        && incoming().createdAt == request.time
+        && incoming().updatedAt == request.time;
+
+      allow update: if isVerifiedUser()
+        && isValidId(fileId)
+        && isValidInvoiceFile(incoming())
+        && existing().ownerUid == request.auth.uid
+        && incoming().ownerUid == existing().ownerUid
+        && incoming().ownerEmail == existing().ownerEmail
+        && incoming().createdAt == existing().createdAt
+        && incoming().updatedAt == request.time
+        && incoming().diff(existing()).affectedKeys().hasOnly([
+          'invoiceNumber',
+          'vendorName',
+          'vendorIce',
+          'invoiceDate',
+          'totalAmount',
+          'notes',
+          'updatedAt'
+        ]);
+
+      allow delete: if isVerifiedUser()
+        && isValidId(fileId)
+        && existing().ownerUid == request.auth.uid;
+    }
+
+    // Scanned purchase invoices (Google Drive File ID + form metadata linked to user's account)
+    match /invoice_scans/{scanId} {
+      allow get: if isVerifiedUser()
+        && isValidId(scanId)
+        && (resource == null || existing().userId == request.auth.uid);
+
+      allow list: if isVerifiedUser()
+        && existing().userId == request.auth.uid;
+
+      allow create: if isVerifiedUser()
+        && isValidId(scanId)
+        && isValidInvoiceScan(incoming())
+        && incoming().userEmail == request.auth.token.email
+        && incoming().createdAt == request.time
+        && incoming().updatedAt == request.time;
+
+      allow update: if isVerifiedUser()
+        && isValidId(scanId)
+        && isValidInvoiceScan(incoming())
+        && existing().userId == request.auth.uid
+        && incoming().userId == existing().userId
+        && incoming().userEmail == existing().userEmail
+        && incoming().driveFileId == existing().driveFileId
+        && incoming().createdAt == existing().createdAt
+        && incoming().updatedAt == request.time
+        && incoming().diff(existing()).affectedKeys().hasOnly([
+          'invoiceNumber',
+          'vendorName',
+          'date',
+          'vendorIce',
+          'totalAmount',
+          'notes',
+          'updatedAt'
+        ]);
+
+      allow delete: if isVerifiedUser()
+        && isValidId(scanId)
+        && existing().userId == request.auth.uid;
     }
   }
 }

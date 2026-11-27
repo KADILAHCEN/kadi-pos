@@ -1,6 +1,13 @@
-import React, { useMemo, useState } from 'react';
+import React, { useEffect, useMemo, useState } from 'react';
+import { onAuthStateChanged } from 'firebase/auth';
+import { auth } from '../../firebase';
 import { usePos } from '../../context/PosContext';
 import { Expense, ExpenseCategory, SupplierInvoice, SupplierProfile } from '../../types';
+import {
+  InvoiceDriveRecord,
+  loadCachedInvoiceDriveRecords,
+  subscribeInvoiceDriveRecords
+} from '../../utils/invoiceDriveArchive';
 import {
   EXPENSE_CATEGORIES,
   computeExpenseMetrics,
@@ -32,7 +39,9 @@ import {
   Building2,
   MessageCircle,
   CreditCard,
-  Users
+  Users,
+  Cloud,
+  ExternalLink
 } from 'lucide-react';
 
 const CategoryIcon: React.FC<{ category: ExpenseCategory; className?: string }> = ({
@@ -130,6 +139,34 @@ export const ExpensesView: React.FC = () => {
   } | null>(null);
   const [fifoPayAmount, setFifoPayAmount] = useState('');
   const [confirmDeleteSupplierId, setConfirmDeleteSupplierId] = useState<string | null>(null);
+
+  // Linked invoice_scans (Google Drive archive)
+  const [invoiceScans, setInvoiceScans] = useState<InvoiceDriveRecord[]>(() =>
+    loadCachedInvoiceDriveRecords()
+  );
+
+  useEffect(() => {
+    let unsubScans: (() => void) | undefined;
+    const unsubAuth = onAuthStateChanged(auth, (user) => {
+      if (unsubScans) {
+        unsubScans();
+        unsubScans = undefined;
+      }
+      if (user && user.emailVerified) {
+        unsubScans = subscribeInvoiceDriveRecords(
+          user,
+          (records) => setInvoiceScans(records),
+          () => setInvoiceScans(loadCachedInvoiceDriveRecords())
+        );
+      } else {
+        setInvoiceScans(loadCachedInvoiceDriveRecords());
+      }
+    });
+    return () => {
+      unsubAuth();
+      if (unsubScans) unsubScans();
+    };
+  }, []);
 
   const supplierDirectoryList = useMemo(() => {
     interface DirEntry {
@@ -670,6 +707,17 @@ export const ExpensesView: React.FC = () => {
                       )}`
                     : '';
 
+                  const cleanVendorIce = (entry.ice || '').replace(/[^0-9]/g, '');
+                  const cleanVendorName = entry.name.trim().toLowerCase();
+                  const matchedVendorScans = invoiceScans.filter((scan) => {
+                    const scanIce = (scan.vendorIce || '').replace(/[^0-9]/g, '');
+                    if (cleanVendorIce && scanIce && cleanVendorIce === scanIce) return true;
+                    return (
+                      cleanVendorName.length > 0 &&
+                      scan.vendorName.trim().toLowerCase() === cleanVendorName
+                    );
+                  });
+
                   return (
                     <div
                       key={entry.key}
@@ -778,6 +826,31 @@ export const ExpensesView: React.FC = () => {
                               <MessageCircle className="w-3 h-3" />
                               <span>{isAr ? 'واتساب' : 'WA'}</span>
                             </a>
+                          )}
+
+                          {matchedVendorScans.length > 0 && (
+                            <button
+                              type="button"
+                              onClick={() =>
+                                window.dispatchEvent(
+                                  new CustomEvent('kadi:open-purchase-invoice-scanner', {
+                                    detail: {
+                                      initialView: 'drive_archive',
+                                      searchQuery: entry.name
+                                    }
+                                  })
+                                )
+                              }
+                              className="px-2.5 py-1 rounded-lg bg-blue-50 dark:bg-blue-950/60 text-blue-700 dark:text-blue-300 hover:bg-blue-100 text-[11px] font-bold inline-flex items-center gap-1"
+                              title={isAr ? 'فتح فواتير المورد المؤرشفة في Drive' : 'Open supplier scans in Drive'}
+                            >
+                              <Cloud className="w-3 h-3" />
+                              <span>
+                                {isAr
+                                  ? `أرشيف (${matchedVendorScans.length})`
+                                  : `Scans (${matchedVendorScans.length})`}
+                              </span>
+                            </button>
                           )}
                         </div>
 
@@ -1031,6 +1104,21 @@ export const ExpensesView: React.FC = () => {
                     className="ps-8 pe-3 py-1.5 text-xs bg-slate-50 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 rounded-xl"
                   />
                 </div>
+
+                <button
+                  type="button"
+                  onClick={() =>
+                    window.dispatchEvent(
+                      new CustomEvent('kadi:open-purchase-invoice-scanner', {
+                        detail: { initialView: 'drive_archive' }
+                      })
+                    )
+                  }
+                  className="px-3 py-1.5 rounded-xl bg-blue-50 hover:bg-blue-100 dark:bg-blue-950/60 dark:hover:bg-blue-950 border border-blue-200 dark:border-blue-800 text-blue-700 dark:text-blue-300 text-xs font-black flex items-center gap-1.5"
+                >
+                  <Cloud className="w-3.5 h-3.5" />
+                  <span>{isAr ? 'أرشيف صور Drive و Firestore' : 'Drive & Firestore Photos'}</span>
+                </button>
               </div>
             </div>
 
@@ -1148,6 +1236,63 @@ export const ExpensesView: React.FC = () => {
                           {inv.notes}
                         </div>
                       )}
+
+                      {(() => {
+                        const cleanInvNum = (inv.invoiceNumber || '').trim().toLowerCase();
+                        const cleanInvVendor = inv.supplierName.trim().toLowerCase();
+                        const cleanInvIce = (inv.supplierIce || '').replace(/[^0-9]/g, '');
+                        const matchedScan = invoiceScans.find((scan) => {
+                          if (inv.driveFileId && scan.driveFileId === inv.driveFileId) return true;
+                          const scanInvNum = (scan.invoiceNumber || '').trim().toLowerCase();
+                          if (cleanInvNum && scanInvNum && cleanInvNum === scanInvNum) {
+                            const scanIce = (scan.vendorIce || '').replace(/[^0-9]/g, '');
+                            if (cleanInvIce && scanIce) return cleanInvIce === scanIce;
+                            const scanVendor = scan.vendorName.trim().toLowerCase();
+                            return !scanVendor || !cleanInvVendor || scanVendor === cleanInvVendor;
+                          }
+                          return false;
+                        });
+                        const resolvedDriveFileId = inv.driveFileId || matchedScan?.driveFileId;
+                        const resolvedDriveLink = inv.driveWebViewLink || matchedScan?.webViewLink;
+                        if (!resolvedDriveFileId) return null;
+
+                        return (
+                          <div className="px-3 py-1.5 rounded-xl bg-blue-50/80 dark:bg-blue-950/35 border border-blue-200 dark:border-blue-800/80 flex flex-wrap items-center justify-between gap-2 text-[11px]">
+                            <button
+                              type="button"
+                              onClick={() =>
+                                window.dispatchEvent(
+                                  new CustomEvent('kadi:open-purchase-invoice-scanner', {
+                                    detail: {
+                                      initialView: 'drive_archive',
+                                      searchQuery: inv.invoiceNumber || inv.supplierName
+                                    }
+                                  })
+                                )
+                              }
+                              className="font-bold text-blue-700 dark:text-blue-300 flex items-center gap-1.5 hover:underline"
+                            >
+                              <Cloud className="w-3.5 h-3.5 shrink-0" />
+                              <span>
+                                {isAr
+                                  ? `صورة الفاتورة في Drive (${resolvedDriveFileId.slice(0, 10)}...)`
+                                  : `Drive Photo (${resolvedDriveFileId.slice(0, 10)}...)`}
+                              </span>
+                            </button>
+                            {resolvedDriveLink && (
+                              <a
+                                href={resolvedDriveLink}
+                                target="_blank"
+                                rel="noopener noreferrer"
+                                className="inline-flex items-center gap-1 text-[10px] font-black text-blue-700 dark:text-blue-300 hover:underline"
+                              >
+                                <ExternalLink className="w-3 h-3" />
+                                <span>{isAr ? 'فتح في Drive' : 'Open in Drive'}</span>
+                              </a>
+                            )}
+                          </div>
+                        );
+                      })()}
 
                       <div className="pt-2 border-t border-slate-200 dark:border-slate-700 flex flex-wrap items-center justify-between gap-2">
                         {remaining > 0 ? (

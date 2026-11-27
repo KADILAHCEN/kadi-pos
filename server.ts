@@ -65,9 +65,85 @@ function safeParseGeminiJson<T>(rawText: string, fallback: T): T {
   }
 }
 
+const AI_RATE_LIMIT_WINDOW_MS = 60_000;
+const AI_RATE_LIMIT_MAX_REQUESTS = 45;
+const aiRateLimitMap = new Map<string, number[]>();
+
+setInterval(() => {
+  const cutoff = Date.now() - AI_RATE_LIMIT_WINDOW_MS;
+  for (const [key, timestamps] of aiRateLimitMap.entries()) {
+    const recent = timestamps.filter((t) => t > cutoff);
+    if (recent.length === 0) {
+      aiRateLimitMap.delete(key);
+    } else {
+      aiRateLimitMap.set(key, recent);
+    }
+  }
+}, 120_000).unref?.();
+
+function getClientIp(req: express.Request): string {
+  const forwarded = req.headers['x-forwarded-for'];
+  if (typeof forwarded === 'string' && forwarded.trim()) {
+    return forwarded.split(',')[0].trim();
+  }
+  return req.ip || req.socket.remoteAddress || 'unknown';
+}
+
+function aiOriginGuard(
+  req: express.Request,
+  res: express.Response,
+  next: express.NextFunction
+) {
+  const originHeader = req.headers.origin;
+  if (typeof originHeader === 'string' && originHeader.trim()) {
+    try {
+      const originHost = new URL(originHeader).hostname.toLowerCase();
+      const rawHost = String(req.headers['x-forwarded-host'] || req.headers.host || '').split(',')[0].trim();
+      const expectedHost = rawHost.replace(/:\d+$/, '').toLowerCase();
+      const isLocalOrigin = originHost === 'localhost' || originHost === '127.0.0.1';
+      if (expectedHost && originHost !== expectedHost && !isLocalOrigin) {
+        return res.status(403).json({
+          error: 'Cross-origin AI API request blocked.',
+          code: 'FORBIDDEN_ORIGIN'
+        });
+      }
+    } catch {
+      return res.status(400).json({ error: 'Invalid Origin header', code: 'INVALID_ORIGIN' });
+    }
+  }
+  return next();
+}
+
+function aiRateLimiter(
+  req: express.Request,
+  res: express.Response,
+  next: express.NextFunction
+) {
+  const now = Date.now();
+  const cutoff = now - AI_RATE_LIMIT_WINDOW_MS;
+  const ip = getClientIp(req);
+  const recent = (aiRateLimitMap.get(ip) || []).filter((t) => t > cutoff);
+
+  if (recent.length >= AI_RATE_LIMIT_MAX_REQUESTS) {
+    const oldest = recent[0] || now;
+    const retryAfterSec = Math.max(1, Math.ceil((oldest + AI_RATE_LIMIT_WINDOW_MS - now) / 1000));
+    res.setHeader('Retry-After', String(retryAfterSec));
+    return res.status(429).json({
+      error: 'Too many AI requests. Please wait a moment and try again.',
+      code: 'RATE_LIMIT_EXCEEDED',
+      retryAfterSeconds: retryAfterSec
+    });
+  }
+
+  recent.push(now);
+  aiRateLimitMap.set(ip, recent);
+  return next();
+}
+
 async function startServer() {
   const app = express();
   app.use(express.json({ limit: '25mb' }));
+  app.use('/api/ai', aiOriginGuard, aiRateLimiter);
 
   app.post('/api/ai/analyze', async (req, res) => {
     const ai = createGeminiClient();
@@ -79,10 +155,21 @@ async function startServer() {
     }
 
     try {
-      const { storeSummary, language = 'ar' } = req.body as {
+      const body = (req.body && typeof req.body === 'object' ? req.body : {}) as {
         storeSummary?: Record<string, unknown>;
         language?: 'ar' | 'fr' | 'en';
       };
+      const storeSummary =
+        body.storeSummary && typeof body.storeSummary === 'object' && !Array.isArray(body.storeSummary)
+          ? body.storeSummary
+          : {};
+      const language: 'ar' | 'fr' | 'en' =
+        body.language === 'fr' || body.language === 'en' ? body.language : 'ar';
+
+      const summaryJson = JSON.stringify(storeSummary, null, 2);
+      if (summaryJson.length > 150_000) {
+        return res.status(413).json({ error: 'storeSummary payload is too large' });
+      }
 
       const langLabel =
         language === 'ar' ? 'Arabic (Moroccan business & retail finance context)' : language === 'fr' ? 'French' : 'English';
@@ -175,15 +262,34 @@ Keep every point specific to the actual metrics provided, concise, and practical
     }
 
     try {
-      const { question, history = [], storeSummary, language = 'ar', mode = 'advisor' } = req.body as {
-        question: string;
-        history?: { role: 'user' | 'assistant'; text: string }[];
+      const body = (req.body && typeof req.body === 'object' ? req.body : {}) as {
+        question?: unknown;
+        history?: unknown;
         storeSummary?: Record<string, unknown>;
-        language?: 'ar' | 'fr' | 'en';
-        mode?: 'advisor' | 'tutor' | 'investigator';
+        language?: unknown;
+        mode?: unknown;
       };
+      const question = typeof body.question === 'string' ? body.question.trim().slice(0, 4000) : '';
+      const rawHistory = Array.isArray(body.history) ? body.history.slice(-10) : [];
+      const history = rawHistory
+        .filter(
+          (m): m is { role: 'user' | 'assistant'; text: string } =>
+            Boolean(m) &&
+            typeof m === 'object' &&
+            ((m as { role?: unknown }).role === 'user' || (m as { role?: unknown }).role === 'assistant') &&
+            typeof (m as { text?: unknown }).text === 'string'
+        )
+        .map((m) => ({ role: m.role, text: m.text.slice(0, 2000) }));
+      const storeSummary =
+        body.storeSummary && typeof body.storeSummary === 'object' && !Array.isArray(body.storeSummary)
+          ? body.storeSummary
+          : {};
+      const language: 'ar' | 'fr' | 'en' =
+        body.language === 'fr' || body.language === 'en' ? body.language : 'ar';
+      const mode: 'advisor' | 'tutor' | 'investigator' =
+        body.mode === 'tutor' || body.mode === 'investigator' ? body.mode : 'advisor';
 
-      if (!question || !question.trim()) {
+      if (!question) {
         return res.status(400).json({ error: 'Question is required' });
       }
 
@@ -232,16 +338,31 @@ Keep every point specific to the actual metrics provided, concise, and practical
     }
 
     try {
-      const { transcript, audioBase64, audioMimeType, existingProducts = [], existingCustomers = [] } = req.body as {
-        transcript?: string;
-        audioBase64?: string;
-        audioMimeType?: string;
-        existingProducts?: string[];
-        existingCustomers?: string[];
+      const body = (req.body && typeof req.body === 'object' ? req.body : {}) as {
+        transcript?: unknown;
+        audioBase64?: unknown;
+        audioMimeType?: unknown;
+        existingProducts?: unknown;
+        existingCustomers?: unknown;
       };
+      const transcript = typeof body.transcript === 'string' ? body.transcript.trim().slice(0, 4000) : '';
+      const audioBase64 = typeof body.audioBase64 === 'string' ? body.audioBase64 : undefined;
+      const audioMimeType =
+        typeof body.audioMimeType === 'string' && body.audioMimeType.startsWith('audio/')
+          ? body.audioMimeType
+          : undefined;
+      const existingProducts = Array.isArray(body.existingProducts)
+        ? body.existingProducts.filter((v): v is string => typeof v === 'string').slice(0, 500)
+        : [];
+      const existingCustomers = Array.isArray(body.existingCustomers)
+        ? body.existingCustomers.filter((v): v is string => typeof v === 'string').slice(0, 500)
+        : [];
 
-      if (!transcript?.trim() && !audioBase64) {
+      if (!transcript && !audioBase64) {
         return res.status(400).json({ error: 'Transcript or audio is required' });
+      }
+      if (audioBase64 && audioBase64.length > 10_000_000) {
+        return res.status(413).json({ error: 'Audio payload is too large' });
       }
 
       const systemInstruction = `You are a Moroccan Darija, Arabic, and French Voice POS Parser for Kadi POS.
@@ -405,14 +526,24 @@ If audio is provided, transcribe what was said verbatim into "transcript" in Ara
     }
 
     try {
-      const { audioBase64, audioMimeType = 'audio/webm', language = 'ar' } = req.body as {
-        audioBase64?: string;
-        audioMimeType?: string;
-        language?: 'ar' | 'fr' | 'en';
+      const body = (req.body && typeof req.body === 'object' ? req.body : {}) as {
+        audioBase64?: unknown;
+        audioMimeType?: unknown;
+        language?: unknown;
       };
+      const audioBase64 = typeof body.audioBase64 === 'string' ? body.audioBase64 : '';
+      const audioMimeType =
+        typeof body.audioMimeType === 'string' && body.audioMimeType.startsWith('audio/')
+          ? body.audioMimeType
+          : 'audio/webm';
+      const language: 'ar' | 'fr' | 'en' =
+        body.language === 'fr' || body.language === 'en' ? body.language : 'ar';
 
       if (!audioBase64) {
         return res.status(400).json({ error: 'audioBase64 is required' });
+      }
+      if (audioBase64.length > 10_000_000) {
+        return res.status(413).json({ error: 'Audio payload is too large' });
       }
 
       const promptText =
@@ -453,23 +584,24 @@ If audio is provided, transcribe what was said verbatim into "transcript" in Ara
     }
 
     try {
-      const {
-        imageBase64,
-        mimeType = 'image/jpeg',
-        returnRawArray = false
-      } = req.body as {
-        imageBase64?: string;
-        mimeType?: string;
-        returnRawArray?: boolean;
+      const body = (req.body && typeof req.body === 'object' ? req.body : {}) as {
+        imageBase64?: unknown;
+        mimeType?: unknown;
+        returnRawArray?: unknown;
       };
+      const imageBase64 = typeof body.imageBase64 === 'string' ? body.imageBase64 : '';
+      const mimeType = typeof body.mimeType === 'string' ? body.mimeType : 'image/jpeg';
+      const returnRawArray = Boolean(body.returnRawArray);
 
       if (!imageBase64) {
         return res.status(400).json({ error: 'imageBase64 is required' });
       }
+      if (imageBase64.length > 18_000_000) {
+        return res.status(413).json({ error: 'Invoice image or PDF exceeds maximum allowed size' });
+      }
 
       const normalizedMime =
-        typeof mimeType === 'string' &&
-        (mimeType === 'application/pdf' || mimeType.startsWith('image/'))
+        mimeType === 'application/pdf' || mimeType.startsWith('image/')
           ? mimeType
           : 'image/jpeg';
 

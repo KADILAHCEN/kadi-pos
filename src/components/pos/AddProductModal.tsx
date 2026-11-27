@@ -35,6 +35,7 @@ import { lookupProductByBarcode } from '../../utils/openFoodFacts';
 import { bluetoothScanner } from '../../utils/bluetoothScanner';
 import { PriceAlertAdvisor } from '../alerts/PriceAlertAdvisor';
 import { recordPriceAlert } from '../../utils/priceAlerts';
+import { RetailProductSearchSelect } from './RetailProductSearchSelect';
 
 interface AddProductModalProps {
   isOpen: boolean;
@@ -465,6 +466,18 @@ export const AddProductModal: React.FC<AddProductModalProps> = ({
       hasVariants,
       variants: parsedVariants,
       expiryDate: expiryDate ? expiryDate : undefined,
+      batches:
+        expiryDate && trackStock && totalStock > 0
+          ? [
+              {
+                id: `batch-${Date.now()}`,
+                quantity: Number(totalStock.toFixed(3)),
+                expiryDate,
+                costPrice: Math.max(0, Number(costPrice) || 0),
+                receivedAt: new Date().toISOString()
+              }
+            ]
+          : undefined,
       scalePlu: scalePlu.trim() ? scalePlu.trim() : undefined,
       boxChildProductId:
         soldBy === 'each' && unitType === 'box' && boxChildProductId
@@ -928,20 +941,18 @@ export const AddProductModal: React.FC<AddProductModalProps> = ({
                       <label className="block text-[11px] font-bold text-slate-700 dark:text-slate-300 mb-1">
                         {isAr ? 'سلعة التفصيل عند فك الكرتون (اختياري)' : 'Unpack Target Product'}
                       </label>
-                      <select
+                      <RetailProductSearchSelect
+                        products={products}
                         value={boxChildProductId}
-                        onChange={(e) => setBoxChildProductId(e.target.value)}
-                        className="w-full px-2.5 py-1.5 text-xs bg-slate-50 dark:bg-slate-900 border border-slate-200 dark:border-slate-700 rounded-lg text-slate-900 dark:text-white"
-                      >
-                        <option value="">{isAr ? '— اختر السلعة بالحبة —' : '— Select retail unit —'}</option>
-                        {products
-                          .filter((p) => p.unitType !== 'box')
-                          .map((p) => (
-                            <option key={p.id} value={p.id}>
-                              {p.name} ({p.stock})
-                            </option>
-                          ))}
-                      </select>
+                        onChange={setBoxChildProductId}
+                        currencySymbol={currencySymbol}
+                        isAr={isAr}
+                        placeholder={
+                          isAr
+                            ? 'ابحث عن السلعة بالحبة بالاسم أو الباركود...'
+                            : 'Search retail unit by name or barcode...'
+                        }
+                      />
                     </div>
                     <div>
                       <label className="block text-[11px] font-bold text-slate-700 dark:text-slate-300 mb-1">

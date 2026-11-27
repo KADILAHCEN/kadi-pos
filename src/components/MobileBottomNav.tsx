@@ -15,10 +15,15 @@ import {
   Sun,
   Tag,
   X,
-  Zap
+  Zap,
+  SlidersHorizontal
 } from 'lucide-react';
 import { AppTabId, usePos } from '../context/PosContext';
-import { POS_TAB_CATALOG, resolveTabVisual } from '../utils/tabCustomization';
+import {
+  FOCUSED_CASHIER_TAB_IDS,
+  POS_TAB_CATALOG,
+  resolveTabVisual
+} from '../utils/tabCustomization';
 import { PWAInstallButton } from './pwa/PWAInstallButton';
 
 interface MobileBottomNavProps {
@@ -37,6 +42,7 @@ export const MobileBottomNav: React.FC<MobileBottomNavProps> = ({ onSelectProtec
     unresolvedTheftAlerts,
     isTabProtected,
     settings,
+    updateSettings,
     language,
     toggleLanguage,
     isDark,
@@ -177,30 +183,65 @@ export const MobileBottomNav: React.FC<MobileBottomNavProps> = ({ onSelectProtec
             </div>
 
             {/* Header */}
-            <div className="px-4 py-2.5 border-b border-slate-100 dark:border-slate-800 flex items-center justify-between shrink-0">
+            <div className="px-4 py-2.5 border-b border-slate-100 dark:border-slate-800 flex items-center justify-between gap-2 shrink-0">
               <div>
                 <h3 className="text-sm font-black text-slate-900 dark:text-white">
-                  {isAr ? 'جميع أقسام kadi pos' : isFr ? 'Tous les modules' : 'All kadi pos Modules'}
+                  {settings.simpleCashierMode
+                    ? isAr
+                      ? 'وضع الكاشير المبسط'
+                      : 'Simple Cashier Mode'
+                    : isAr
+                    ? 'جميع أقسام kadi pos'
+                    : isFr
+                    ? 'Tous les modules'
+                    : 'All kadi pos Modules'}
                 </h3>
                 <p className="text-[11px] text-slate-500 dark:text-slate-400">
                   {activeBranch.name} · {currentUser.name}
                 </p>
               </div>
-              <button
-                type="button"
-                onClick={() => setShowMoreSheet(false)}
-                className="min-w-[40px] min-h-[40px] rounded-xl bg-slate-100 dark:bg-slate-800 text-slate-600 dark:text-slate-300 flex items-center justify-center"
-                aria-label={isAr ? 'إغلاق' : 'Close'}
-              >
-                <X className="w-4 h-4" />
-              </button>
+              <div className="flex items-center gap-1.5">
+                <button
+                  type="button"
+                  onClick={() => updateSettings({ simpleCashierMode: !settings.simpleCashierMode })}
+                  className={`px-2.5 py-1.5 rounded-xl text-[11px] font-black flex items-center gap-1 border transition-colors ${
+                    settings.simpleCashierMode
+                      ? 'bg-emerald-600 border-emerald-600 text-white'
+                      : 'bg-slate-100 dark:bg-slate-800 border-slate-200 dark:border-slate-700 text-slate-700 dark:text-slate-200'
+                  }`}
+                >
+                  <SlidersHorizontal className="w-3.5 h-3.5" />
+                  <span>
+                    {settings.simpleCashierMode
+                      ? isAr
+                        ? 'عرض الكل'
+                        : 'Show All'
+                      : isAr
+                      ? 'مبسط'
+                      : 'Simple'}
+                  </span>
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setShowMoreSheet(false)}
+                  className="min-w-[40px] min-h-[40px] rounded-xl bg-slate-100 dark:bg-slate-800 text-slate-600 dark:text-slate-300 flex items-center justify-center"
+                  aria-label={isAr ? 'إغلاق' : 'Close'}
+                >
+                  <X className="w-4 h-4" />
+                </button>
+              </div>
             </div>
 
             {/* Scrollable Body */}
             <div className="flex-1 overflow-y-auto p-4 space-y-4 pb-8">
               {/* All Customized Tabs Grid */}
               <div className="grid grid-cols-3 gap-2.5">
-                {POS_TAB_CATALOG.map((tab) => {
+                {POS_TAB_CATALOG.filter(
+                  (tab) =>
+                    !settings.simpleCashierMode ||
+                    FOCUSED_CASHIER_TAB_IDS.has(tab.id) ||
+                    tab.id === currentTab
+                ).map((tab) => {
                   const tabId = tab.id as AppTabId;
                   const { IconComponent, colorPreset } = resolveTabVisual(tabId, customizations);
                   const isActive = currentTab === tabId;

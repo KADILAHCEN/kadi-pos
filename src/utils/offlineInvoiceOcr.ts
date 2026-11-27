@@ -1107,3 +1107,164 @@ export async function runTesseractInvoiceOcr(
   };
 }
 
+// ---------------------------------------------------------------------------
+// Remise Box Multi-Line Invoice OCR Parser (BRUT / NET / Vendor / Invoice #)
+// ---------------------------------------------------------------------------
+
+export const REMISE_OCR_BLACKLIST = [
+  'TOTAL',
+  'BRUT',
+  'NET A PAYER',
+  'TVA',
+  'TIMBRE',
+  'DROIT',
+  'FRAIS',
+  'VENDEUR',
+  'MONTANT',
+  'TTC',
+  'HT',
+  'REMISE',
+  'SOLDE'
+] as const;
+
+export function isRemiseBlacklistedName(name: string): boolean {
+  const upper = (name || '').toUpperCase().trim();
+  if (!upper) return false;
+  return REMISE_OCR_BLACKLIST.some((term) => upper.includes(term));
+}
+
+export interface RemiseOcrParsedLine {
+  name: string;
+  qty: number;
+  brut: number;
+  net: number;
+}
+
+export interface RemiseOcrResult {
+  rawText: string;
+  companyHint?: string;
+  vendor?: string;
+  vendorCode?: string;
+  invoiceNumber?: string;
+  items: RemiseOcrParsedLine[];
+}
+
+const KNOWN_REMISE_PRODUCTS: Array<{ key: string; name: string }> = [
+  { key: 'LEVURE', name: 'LEVURE IDEAL 100 SAC' },
+  { key: 'CACAO', name: 'CACAO SPECIAL' },
+  { key: 'VANIL', name: 'SUCRE VANILLINE' },
+  { key: 'ETUI', name: 'ETUI SUCRE' },
+  { key: 'SUCRE', name: 'SUCRE' },
+  { key: 'FARINE', name: 'FARINE' },
+  { key: 'HUILE', name: 'HUILE' }
+];
+
+export function parseRemiseInvoiceText(text: string): Omit<RemiseOcrResult, 'rawText'> {
+  const lines = text
+    .split(/\r?\n/)
+    .map((l) => l.trim())
+    .filter((l) => l.length > 3);
+
+  const upperAll = text.toUpperCase();
+  let companyHint: string | undefined;
+  if (upperAll.includes('IDEAL')) {
+    companyHint = 'IDEAL';
+  }
+
+  const vendorMatch = text.match(/Vendeur\s*:?\s*([A-ZÀ-Ÿ][A-ZÀ-Ÿ\s]{2,40})/i);
+  const vendor = vendorMatch ? vendorMatch[1].replace(/\s+/g, ' ').trim() : undefined;
+
+  const codeMatch = text.match(/\b(E\d{2,3})\b/i);
+  const vendorCode = codeMatch ? codeMatch[1].toUpperCase() : undefined;
+
+  const numMatch =
+    text.match(/\b(70\d{8,})\b/) ||
+    text.match(/(?:Facture|Bon|BL|N°)\s*[:#\-]?\s*([A-Z0-9\-\/]{5,20})/i);
+  const invoiceNumber = numMatch ? numMatch[1].trim() : undefined;
+
+  const products: RemiseOcrParsedLine[] = [];
+
+  for (const line of lines) {
+    const upper = line.toUpperCase();
+    if (isRemiseBlacklistedName(upper)) continue;
+    if (
+      upper.includes('CLIENT') ||
+      upper.includes('KADI') ||
+      upper.includes('COMMANDE') ||
+      upper.includes('DATE')
+    ) {
+      continue;
+    }
+
+    const rawNums = line.match(/(\d+[.,]\d+|\d+)/g);
+    if (!rawNums || rawNums.length < 2) continue;
+
+    const cleanName = line
+      .replace(/[\d.,]+/g, ' ')
+      .replace(/[^A-Za-zÀ-ÿ\u0600-\u06FF ]/g, ' ')
+      .replace(/\s+/g, ' ')
+      .trim();
+    if (cleanName.length < 3 || isRemiseBlacklistedName(cleanName)) continue;
+
+    const parsedNums = rawNums
+      .map((n) => parseFloat(n.replace(',', '.')))
+      .filter((n) => Number.isFinite(n) && n > 0 && n < 50000);
+
+    if (parsedNums.length < 2) continue;
+
+    const brut = parsedNums[parsedNums.length - 2];
+    const net = parsedNums[parsedNums.length - 1];
+    const first = parsedNums[0];
+    const qty =
+      parsedNums.length >= 3 && Number.isInteger(first) && first > 0 && first < 500 ? first : 1;
+
+    if (brut > 0 && net > 0 && brut >= net && brut < 25000) {
+      products.push({
+        name: cleanName.toUpperCase(),
+        qty,
+        brut: Number(brut.toFixed(2)),
+        net: Number(net.toFixed(2))
+      });
+    }
+  }
+
+  if (products.length === 0) {
+    for (const k of KNOWN_REMISE_PRODUCTS) {
+      if (upperAll.includes(k.key)) {
+        products.push({ name: k.name, qty: 1, brut: 0, net: 0 });
+      }
+    }
+  }
+
+  const deduped = products.filter(
+    (p, idx) => products.findIndex((other) => other.name === p.name) === idx
+  );
+
+  return {
+    companyHint,
+    vendor,
+    vendorCode,
+    invoiceNumber,
+    items: deduped
+  };
+}
+
+export async function runRemiseInvoiceOcr(
+  imageInput: Blob | string,
+  onProgress?: (pct: number) => void
+): Promise<RemiseOcrResult> {
+  onProgress?.(15);
+  const worker = await getTesseractWorker();
+  onProgress?.(55);
+  const ret = await worker.recognize(imageInput);
+  onProgress?.(95);
+  const rawText = ret?.data?.text || '';
+  const parsed = parseRemiseInvoiceText(rawText);
+  onProgress?.(100);
+  return {
+    rawText,
+    ...parsed
+  };
+}
+
+

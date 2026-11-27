@@ -39,6 +39,7 @@ import {
 import { AddCategoryModal } from './AddCategoryModal';
 import { BulkUpdateModal } from './BulkUpdateModal';
 import { EditProductModal } from '../pos/EditProductModal';
+import { RetailProductSearchSelect } from '../pos/RetailProductSearchSelect';
 import { BarcodeScannerModal } from '../pos/BarcodeScannerModal';
 import { ExportCatalogGmailModal } from './ExportCatalogGmailModal';
 import { ShelfLabelPrintModal } from './ShelfLabelPrintModal';
@@ -136,6 +137,7 @@ export const InventoryView: React.FC = () => {
     updateProduct,
     deleteProduct,
     adjustStock,
+    addProductBatch,
     unpackBoxProduct,
     seedLargeCatalogDemo,
     stockMovements,
@@ -298,6 +300,7 @@ export const InventoryView: React.FC = () => {
   const [adjustQty, setAdjustQty] = useState<number>(10);
   const [adjustType, setAdjustType] = useState<'restock' | 'waste' | 'audit_adjustment'>('restock');
   const [adjustReason, setAdjustReason] = useState<string>('');
+  const [adjustBatchExpiry, setAdjustBatchExpiry] = useState<string>('');
 
   // Overall Inventory Value & Profit Margin Calculations
   const inventoryMetrics = React.useMemo(() => {
@@ -584,9 +587,21 @@ export const InventoryView: React.FC = () => {
     const reasonText = adjustReason.trim() || (adjustType === 'restock' ? 'توريد كمية جديدة' : adjustType === 'waste' ? 'هدر وتالف' : 'تعديل جرد يدوي');
 
     adjustStock(selectedProductForAdjust.id, delta, reasonText, adjustType);
+    if (adjustType === 'restock' && delta > 0 && adjustBatchExpiry.trim()) {
+      addProductBatch(
+        selectedProductForAdjust.id,
+        {
+          quantity: delta,
+          expiryDate: adjustBatchExpiry.trim(),
+          costPrice: selectedProductForAdjust.costPrice
+        },
+        { skipStockIncrement: true }
+      );
+    }
     setShowAdjustModal(false);
     setSelectedProductForAdjust(null);
     setAdjustReason('');
+    setAdjustBatchExpiry('');
   };
 
   // CSV Export
@@ -2513,6 +2528,20 @@ export const InventoryView: React.FC = () => {
               />
             </div>
 
+            {adjustType === 'restock' && (
+              <div>
+                <label className="block text-xs font-semibold text-slate-600 dark:text-slate-400 mb-1">
+                  {isAr ? 'تاريخ صلاحية الدفعة الجديدة (FEFO - اختياري)' : 'New Batch Expiry Date (FEFO - Optional)'}
+                </label>
+                <input
+                  type="date"
+                  value={adjustBatchExpiry}
+                  onChange={(e) => setAdjustBatchExpiry(e.target.value)}
+                  className="w-full px-3 py-2 text-xs font-mono bg-slate-50 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 rounded-xl"
+                />
+              </div>
+            )}
+
             <button
               type="submit"
               className="w-full py-3 rounded-2xl font-bold text-white bg-emerald-600 hover:bg-emerald-700 transition-colors shadow-sm"
@@ -2736,21 +2765,21 @@ export const InventoryView: React.FC = () => {
               <label className="block text-xs font-bold text-slate-700 dark:text-slate-300 mb-1">
                 {isAr ? 'منتج الحبة / التجزئة المستهدف' : 'Target Piece Product'}
               </label>
-              <select
-                required
+              <RetailProductSearchSelect
+                products={products}
                 value={unpackChildId}
-                onChange={(e) => setUnpackChildId(e.target.value)}
-                className="w-full px-3 py-2 text-xs font-bold bg-slate-50 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 rounded-xl"
-              >
-                <option value="">{isAr ? 'اختر منتج الحبة لإضافة الكمية إليه...' : 'Select target retail piece product...'}</option>
-                {products
-                  .filter((pr) => pr.id !== unpackModalProduct.id && pr.unitType !== 'box')
-                  .map((pr) => (
-                    <option key={pr.id} value={pr.id}>
-                      {pr.name} ({isAr ? `الرصيد: ${pr.stock}` : `Stock: ${pr.stock}`})
-                    </option>
-                  ))}
-              </select>
+                onChange={setUnpackChildId}
+                excludeProductId={unpackModalProduct.id}
+                currencySymbol={currencySymbol}
+                isAr={isAr}
+                required
+                placeholder={
+                  isAr
+                    ? 'ابحث عن منتج الحبة لإضافة الكمية إليه...'
+                    : 'Search target retail piece product...'
+                }
+                inputClassName="w-full ps-8 pe-7 py-2 text-xs font-bold bg-slate-50 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 rounded-xl text-slate-900 dark:text-white focus:outline-none focus:ring-2 focus:ring-amber-500/40 focus:border-amber-500 transition-colors"
+              />
             </div>
 
             <div className="p-3 rounded-xl bg-emerald-50 dark:bg-emerald-950/40 border border-emerald-200 dark:border-emerald-800/70 text-xs font-bold text-emerald-800 dark:text-emerald-300 flex items-center justify-between">

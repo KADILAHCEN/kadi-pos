@@ -29,6 +29,22 @@
           "type": "array",
           "description": "Synced store product categories."
         },
+        "expenses": {
+          "type": "array",
+          "description": "Synced operating expenses ledger (max 400)."
+        },
+        "supplierInvoices": {
+          "type": "array",
+          "description": "Synced supplier purchase invoices and debt payments (max 300)."
+        },
+        "suppliers": {
+          "type": "array",
+          "description": "Synced supplier directory profiles (max 200)."
+        },
+        "remiseBox": {
+          "type": "object",
+          "description": "Synced Remise Box wallets map (max 100) and history entries array (max 300)."
+        },
         "lastUpdated": {
           "type": "number",
           "description": "Epoch milliseconds timestamp of latest merged store update."
@@ -75,6 +91,207 @@
         "allowedEmails",
         "serverSyncedAt"
       ]
+    },
+    "InvoiceDriveFile": {
+      "title": "InvoiceDriveFile",
+      "description": "Metadata record stored in Firestore linking a purchase invoice image uploaded to Google Drive with invoice number, vendor name, ICE, date, and amount.",
+      "type": "object",
+      "properties": {
+        "driveFileId": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 256,
+          "description": "Google Drive file ID returned by Drive v3 upload API."
+        },
+        "driveFolderId": {
+          "type": "string",
+          "maxLength": 256,
+          "description": "Google Drive folder ID where the invoice image is stored."
+        },
+        "fileName": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 256,
+          "description": "Original or generated filename stored in Google Drive."
+        },
+        "mimeType": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 120,
+          "description": "MIME type of the uploaded invoice file (e.g. image/jpeg, image/png, application/pdf)."
+        },
+        "fileSize": {
+          "type": "number",
+          "description": "File size in bytes."
+        },
+        "webViewLink": {
+          "type": "string",
+          "maxLength": 512,
+          "description": "Google Drive web view link for the uploaded file."
+        },
+        "invoiceNumber": {
+          "type": "string",
+          "maxLength": 120,
+          "description": "Supplier invoice number associated with the uploaded image."
+        },
+        "vendorName": {
+          "type": "string",
+          "maxLength": 160,
+          "description": "Supplier or vendor name associated with the invoice."
+        },
+        "vendorIce": {
+          "type": "string",
+          "maxLength": 20,
+          "description": "Optional 15-digit Moroccan ICE tax identifier of the vendor."
+        },
+        "invoiceDate": {
+          "type": "string",
+          "maxLength": 32,
+          "description": "Invoice issue date (YYYY-MM-DD)."
+        },
+        "totalAmount": {
+          "type": "number",
+          "description": "Total TTC amount on the invoice."
+        },
+        "notes": {
+          "type": "string",
+          "maxLength": 500,
+          "description": "Optional notes attached to the archived invoice file."
+        },
+        "ownerUid": {
+          "type": "string",
+          "maxLength": 128,
+          "pattern": "^[a-zA-Z0-9_\\-]+$",
+          "description": "Authenticated Firebase UID of the merchant who uploaded the invoice."
+        },
+        "ownerEmail": {
+          "type": "string",
+          "maxLength": 160,
+          "description": "Verified Google email of the merchant who uploaded the invoice."
+        },
+        "createdAt": {
+          "type": "string",
+          "format": "date-time",
+          "description": "Firestore server creation timestamp."
+        },
+        "updatedAt": {
+          "type": "string",
+          "format": "date-time",
+          "description": "Firestore server last-updated timestamp."
+        }
+      },
+      "required": [
+        "driveFileId",
+        "fileName",
+        "mimeType",
+        "invoiceNumber",
+        "vendorName",
+        "ownerUid",
+        "ownerEmail",
+        "createdAt",
+        "updatedAt"
+      ]
+    },
+    "InvoiceScan": {
+      "title": "InvoiceScan",
+      "description": "Scanned purchase invoice record stored in Firestore collection invoice_scans linking the Google Drive File ID with form metadata (invoice number, vendor name, date) and the user's account.",
+      "type": "object",
+      "properties": {
+        "driveFileId": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 256,
+          "description": "Google Drive file ID returned upon successful image upload."
+        },
+        "driveFolderId": {
+          "type": "string",
+          "maxLength": 256,
+          "description": "Google Drive folder ID where the scanned invoice image is stored."
+        },
+        "fileName": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 256,
+          "description": "Filename stored in Google Drive."
+        },
+        "mimeType": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 120,
+          "description": "MIME type of the uploaded invoice image or PDF."
+        },
+        "fileSize": {
+          "type": "number",
+          "description": "File size in bytes."
+        },
+        "webViewLink": {
+          "type": "string",
+          "maxLength": 512,
+          "description": "Google Drive web view link for the uploaded file."
+        },
+        "invoiceNumber": {
+          "type": "string",
+          "maxLength": 120,
+          "description": "Invoice number entered or scanned in the form."
+        },
+        "vendorName": {
+          "type": "string",
+          "maxLength": 160,
+          "description": "Vendor or supplier name entered or scanned in the form."
+        },
+        "date": {
+          "type": "string",
+          "maxLength": 32,
+          "description": "Invoice date from the form (YYYY-MM-DD)."
+        },
+        "vendorIce": {
+          "type": "string",
+          "maxLength": 20,
+          "description": "Optional Moroccan ICE identifier for the vendor."
+        },
+        "totalAmount": {
+          "type": "number",
+          "description": "Optional total TTC invoice amount."
+        },
+        "notes": {
+          "type": "string",
+          "maxLength": 500,
+          "description": "Optional notes associated with the invoice scan."
+        },
+        "userId": {
+          "type": "string",
+          "maxLength": 128,
+          "pattern": "^[a-zA-Z0-9_\\-]+$",
+          "description": "Authenticated Firebase UID linking this invoice scan to the user's account."
+        },
+        "userEmail": {
+          "type": "string",
+          "maxLength": 160,
+          "description": "Verified Google account email of the user who uploaded the invoice."
+        },
+        "createdAt": {
+          "type": "string",
+          "format": "date-time",
+          "description": "Firestore server creation timestamp."
+        },
+        "updatedAt": {
+          "type": "string",
+          "format": "date-time",
+          "description": "Firestore server update timestamp."
+        }
+      },
+      "required": [
+        "driveFileId",
+        "fileName",
+        "mimeType",
+        "invoiceNumber",
+        "vendorName",
+        "date",
+        "userId",
+        "userEmail",
+        "createdAt",
+        "updatedAt"
+      ]
     }
   },
   "firestore": {
@@ -83,6 +300,18 @@
         "$ref": "#/entities/KadiPosStore"
       },
       "description": "Per-merchant isolated store synchronization documents (store_<uid>) or shared store document (store) storing products, sales, cash drawer state, customers, credit ledger, categories, lastUpdated, updatedBy, and connected devices registry."
+    },
+    "/kadi_pos_invoice_files/{fileId}": {
+      "schema": {
+        "$ref": "#/entities/InvoiceDriveFile"
+      },
+      "description": "Legacy metadata records linking scanned purchase invoice files uploaded to Google Drive with invoice number, vendor name, ICE, date, and total amount."
+    },
+    "/invoice_scans/{scanId}": {
+      "schema": {
+        "$ref": "#/entities/InvoiceScan"
+      },
+      "description": "Scanned purchase invoice metadata linking the returned Google Drive File ID with invoice number, vendor name, date, and the authenticated user's account."
     }
   }
 }

@@ -13,13 +13,17 @@ import {
   CreditTransaction,
   Customer,
   EmergencyOpeningSession,
+  Expense,
   FirestoreCashState,
   Order,
   Product,
-  Shift
+  Shift,
+  SupplierInvoice,
+  SupplierProfile
 } from '../types';
 import { db, handleFirestoreError, OperationType } from '../firebase';
 import { safeLocalStorageSet } from './storage';
+import { RemiseBoxData, RemiseHistoryEntry, RemiseWallet } from './remiseVault';
 
 export const FIRESTORE_COLLECTION = 'kadi_pos';
 export const FIRESTORE_STORE_DOC_ID = 'store';
@@ -94,6 +98,10 @@ export interface LocalStoreSyncPayload {
   customers?: Customer[];
   creditTransactions?: CreditTransaction[];
   categories?: Category[];
+  expenses?: Expense[];
+  supplierInvoices?: SupplierInvoice[];
+  suppliers?: SupplierProfile[];
+  remiseBox?: RemiseBoxData;
   lastUpdated: number;
   updatedBy: string;
 }
@@ -210,6 +218,19 @@ export function saveLocalCloudBackup(payload: LocalStoreSyncPayload): void {
         ? payload.creditTransactions.slice(0, 1000)
         : undefined,
       categories: Array.isArray(payload.categories) ? payload.categories.slice(0, 200) : undefined,
+      expenses: Array.isArray(payload.expenses) ? payload.expenses.slice(0, 400) : undefined,
+      supplierInvoices: Array.isArray(payload.supplierInvoices)
+        ? payload.supplierInvoices.slice(0, 300)
+        : undefined,
+      suppliers: Array.isArray(payload.suppliers) ? payload.suppliers.slice(0, 200) : undefined,
+      remiseBox: payload.remiseBox
+        ? {
+            wallets: payload.remiseBox.wallets || {},
+            history: Array.isArray(payload.remiseBox.history)
+              ? payload.remiseBox.history.slice(0, 250)
+              : []
+          }
+        : undefined,
       lastUpdated: payload.lastUpdated,
       updatedBy: payload.updatedBy
     };
@@ -237,6 +258,19 @@ export function loadLocalCloudBackup(): LocalStoreSyncPayload | null {
         ? parsed.creditTransactions
         : undefined,
       categories: Array.isArray(parsed.categories) ? parsed.categories : undefined,
+      expenses: Array.isArray(parsed.expenses) ? parsed.expenses : undefined,
+      supplierInvoices: Array.isArray(parsed.supplierInvoices) ? parsed.supplierInvoices : undefined,
+      suppliers: Array.isArray(parsed.suppliers) ? parsed.suppliers : undefined,
+      remiseBox:
+        parsed.remiseBox && typeof parsed.remiseBox === 'object'
+          ? {
+              wallets:
+                parsed.remiseBox.wallets && typeof parsed.remiseBox.wallets === 'object'
+                  ? parsed.remiseBox.wallets
+                  : {},
+              history: Array.isArray(parsed.remiseBox.history) ? parsed.remiseBox.history : []
+            }
+          : undefined,
       lastUpdated: Number(parsed.lastUpdated) || 0,
       updatedBy: typeof parsed.updatedBy === 'string' ? parsed.updatedBy : ''
     };
@@ -439,6 +473,31 @@ export function compactStoreForFirestore(
       })
     : undefined;
 
+  let compactExpenses = Array.isArray(payload.expenses)
+    ? payload.expenses.slice(0, 380).map((e) => stripUndefinedDeep({ ...e }))
+    : undefined;
+
+  let compactSupplierInvoices = Array.isArray(payload.supplierInvoices)
+    ? payload.supplierInvoices.slice(0, 280).map((inv) => stripUndefinedDeep({ ...inv }))
+    : undefined;
+
+  let compactSuppliers = Array.isArray(payload.suppliers)
+    ? payload.suppliers.slice(0, 190).map((sup) => stripUndefinedDeep({ ...sup }))
+    : undefined;
+
+  let compactRemiseBox: RemiseBoxData | undefined = payload.remiseBox
+    ? {
+        wallets: Object.fromEntries(
+          Object.entries(payload.remiseBox.wallets || {})
+            .slice(0, 90)
+            .map(([k, v]) => [k, stripUndefinedDeep({ ...v })])
+        ),
+        history: Array.isArray(payload.remiseBox.history)
+          ? payload.remiseBox.history.slice(0, 250).map((h) => stripUndefinedDeep({ ...h }))
+          : []
+      }
+    : undefined;
+
   const buildResult = (): LocalStoreSyncPayload => {
     const res: LocalStoreSyncPayload = {
       products: compactProducts,
@@ -450,6 +509,10 @@ export function compactStoreForFirestore(
     if (compactCustomers) res.customers = compactCustomers;
     if (compactCreditTx) res.creditTransactions = compactCreditTx;
     if (compactCategories) res.categories = compactCategories;
+    if (compactExpenses) res.expenses = compactExpenses;
+    if (compactSupplierInvoices) res.supplierInvoices = compactSupplierInvoices;
+    if (compactSuppliers) res.suppliers = compactSuppliers;
+    if (compactRemiseBox) res.remiseBox = compactRemiseBox;
     return res;
   };
 
@@ -475,6 +538,15 @@ export function compactStoreForFirestore(
       emergencySessions: compactCash.emergencySessions.slice(0, 30)
     };
     if (compactCreditTx) compactCreditTx = compactCreditTx.slice(0, 450);
+    if (compactExpenses) compactExpenses = compactExpenses.slice(0, 220);
+    if (compactSupplierInvoices) compactSupplierInvoices = compactSupplierInvoices.slice(0, 150);
+    if (compactSuppliers) compactSuppliers = compactSuppliers.slice(0, 150);
+    if (compactRemiseBox) {
+      compactRemiseBox = {
+        ...compactRemiseBox,
+        history: compactRemiseBox.history.slice(0, 120)
+      };
+    }
     result = buildResult();
   }
 
@@ -488,6 +560,20 @@ export function compactStoreForFirestore(
     };
     if (compactCustomers) compactCustomers = compactCustomers.slice(0, 500);
     if (compactCreditTx) compactCreditTx = compactCreditTx.slice(0, 200);
+    if (compactExpenses) compactExpenses = compactExpenses.slice(0, 100);
+    if (compactSupplierInvoices) {
+      compactSupplierInvoices = compactSupplierInvoices.slice(0, 80).map((inv) => {
+        const { itemsSummary: _sum, ...rest } = inv;
+        return rest as SupplierInvoice;
+      });
+    }
+    if (compactSuppliers) compactSuppliers = compactSuppliers.slice(0, 100);
+    if (compactRemiseBox) {
+      compactRemiseBox = {
+        ...compactRemiseBox,
+        history: compactRemiseBox.history.slice(0, 60)
+      };
+    }
     result = buildResult();
   }
 
@@ -743,6 +829,116 @@ export function mergePosStoreData(
     mergedCategories = Array.from(catMap.values());
   }
 
+  // 7. Merge Expenses by ID
+  let mergedExpenses: Expense[] | undefined;
+  if (Array.isArray(local.expenses) || Array.isArray(remote.expenses)) {
+    const expMap = new Map<string, Expense>();
+    (local.expenses || []).forEach((e) => expMap.set(e.id, e));
+    (remote.expenses || []).forEach((re) => {
+      const le = expMap.get(re.id);
+      if (!le) {
+        expMap.set(re.id, re);
+        return;
+      }
+      const lTs = le.updatedAt || Date.parse(le.createdAt || '') || local.lastUpdated || 0;
+      const rTs = re.updatedAt || Date.parse(re.createdAt || '') || remote.lastUpdated || 0;
+      const winner = rTs > lTs ? re : rTs < lTs ? le : remoteIsNewerStore ? re : le;
+      expMap.set(re.id, winner);
+    });
+    mergedExpenses = Array.from(expMap.values()).sort(
+      (a, b) => Date.parse(b.createdAt || b.date || '') - Date.parse(a.createdAt || a.date || '')
+    );
+  }
+
+  // 8. Merge Supplier Invoices by ID (preferring latest update or higher paidAmount when timestamps tie)
+  let mergedSupplierInvoices: SupplierInvoice[] | undefined;
+  if (Array.isArray(local.supplierInvoices) || Array.isArray(remote.supplierInvoices)) {
+    const invMap = new Map<string, SupplierInvoice>();
+    (local.supplierInvoices || []).forEach((inv) => invMap.set(inv.id, inv));
+    (remote.supplierInvoices || []).forEach((ri) => {
+      const li = invMap.get(ri.id);
+      if (!li) {
+        invMap.set(ri.id, ri);
+        return;
+      }
+      const lTs = li.updatedAt || Date.parse(li.createdAt || '') || local.lastUpdated || 0;
+      const rTs = ri.updatedAt || Date.parse(ri.createdAt || '') || remote.lastUpdated || 0;
+      const winner =
+        rTs > lTs
+          ? ri
+          : rTs < lTs
+          ? li
+          : (ri.paidAmount || 0) > (li.paidAmount || 0)
+          ? ri
+          : (li.paidAmount || 0) > (ri.paidAmount || 0)
+          ? li
+          : remoteIsNewerStore
+          ? ri
+          : li;
+      invMap.set(ri.id, winner);
+    });
+    mergedSupplierInvoices = Array.from(invMap.values()).sort(
+      (a, b) => Date.parse(b.createdAt || b.date || '') - Date.parse(a.createdAt || a.date || '')
+    );
+  }
+
+  // 9. Merge Suppliers Directory by ID
+  let mergedSuppliers: SupplierProfile[] | undefined;
+  if (Array.isArray(local.suppliers) || Array.isArray(remote.suppliers)) {
+    const supMap = new Map<string, SupplierProfile>();
+    (local.suppliers || []).forEach((s) => supMap.set(s.id, s));
+    (remote.suppliers || []).forEach((rs) => {
+      const ls = supMap.get(rs.id);
+      if (!ls) {
+        supMap.set(rs.id, rs);
+        return;
+      }
+      const lTs = Date.parse(ls.updatedAt || ls.createdAt || '') || local.lastUpdated || 0;
+      const rTs = Date.parse(rs.updatedAt || rs.createdAt || '') || remote.lastUpdated || 0;
+      const winner = rTs > lTs ? rs : rTs < lTs ? ls : remoteIsNewerStore ? rs : ls;
+      supMap.set(rs.id, winner);
+    });
+    mergedSuppliers = Array.from(supMap.values());
+  }
+
+  // 10. Merge Remise Box wallets & history by ID/timestamp
+  let mergedRemiseBox: RemiseBoxData | undefined;
+  if (local.remiseBox || remote.remiseBox) {
+    const localWallets = local.remiseBox?.wallets || {};
+    const remoteWallets = remote.remiseBox?.wallets || {};
+    const mergedWallets: Record<string, RemiseWallet> = { ...localWallets };
+    Object.entries(remoteWallets).forEach(([company, rw]) => {
+      const lw = mergedWallets[company];
+      if (!lw) {
+        mergedWallets[company] = rw;
+        return;
+      }
+      const lTs = Date.parse(lw.updatedAt || '') || local.lastUpdated || 0;
+      const rTs = Date.parse(rw.updatedAt || '') || remote.lastUpdated || 0;
+      const winner = rTs > lTs ? rw : rTs < lTs ? lw : remoteIsNewerStore ? rw : lw;
+      mergedWallets[company] = {
+        ...winner,
+        vendors: { ...(lw.vendors || {}), ...(rw.vendors || {}) },
+        vendorCodes: { ...(lw.vendorCodes || {}), ...(rw.vendorCodes || {}) },
+        goal: winner.goal ?? lw.goal ?? rw.goal
+      };
+    });
+
+    const histMap = new Map<string, RemiseHistoryEntry>();
+    (local.remiseBox?.history || []).forEach((h) => histMap.set(h.id, h));
+    (remote.remiseBox?.history || []).forEach((h) => {
+      if (!histMap.has(h.id)) histMap.set(h.id, h);
+    });
+    const mergedHistory = Array.from(histMap.values()).sort(
+      (a, b) => Date.parse(b.date || '') - Date.parse(a.date || '')
+    );
+
+    mergedRemiseBox = {
+      wallets: mergedWallets,
+      history: mergedHistory
+    };
+  }
+
   const out: LocalStoreSyncPayload = {
     products: Array.from(mergedProductsMap.values()),
     sales: mergedSales,
@@ -762,6 +958,10 @@ export function mergePosStoreData(
   if (mergedCustomers) out.customers = mergedCustomers;
   if (mergedCreditTx) out.creditTransactions = mergedCreditTx;
   if (mergedCategories) out.categories = mergedCategories;
+  if (mergedExpenses) out.expenses = mergedExpenses;
+  if (mergedSupplierInvoices) out.supplierInvoices = mergedSupplierInvoices;
+  if (mergedSuppliers) out.suppliers = mergedSuppliers;
+  if (mergedRemiseBox) out.remiseBox = mergedRemiseBox;
 
   return out;
 }
@@ -810,6 +1010,19 @@ function parseRemoteDocData(
       ? data.creditTransactions
       : undefined,
     categories: Array.isArray(data.categories) ? data.categories : undefined,
+    expenses: Array.isArray(data.expenses) ? data.expenses : undefined,
+    supplierInvoices: Array.isArray(data.supplierInvoices) ? data.supplierInvoices : undefined,
+    suppliers: Array.isArray(data.suppliers) ? data.suppliers : undefined,
+    remiseBox:
+      data.remiseBox && typeof data.remiseBox === 'object'
+        ? {
+            wallets:
+              data.remiseBox.wallets && typeof data.remiseBox.wallets === 'object'
+                ? data.remiseBox.wallets
+                : {},
+            history: Array.isArray(data.remiseBox.history) ? data.remiseBox.history : []
+          }
+        : undefined,
     lastUpdated: Number(data.lastUpdated) || 0,
     updatedBy: typeof data.updatedBy === 'string' ? data.updatedBy : '',
     devices: sanitizeDevicesMap(data.devices),
@@ -944,6 +1157,10 @@ export async function pushMergedStoreToFirestore(params: {
         ...(compact.customers ? { customers: compact.customers } : {}),
         ...(compact.creditTransactions ? { creditTransactions: compact.creditTransactions } : {}),
         ...(compact.categories ? { categories: compact.categories } : {}),
+        ...(compact.expenses ? { expenses: compact.expenses } : {}),
+        ...(compact.supplierInvoices ? { supplierInvoices: compact.supplierInvoices } : {}),
+        ...(compact.suppliers ? { suppliers: compact.suppliers } : {}),
+        ...(compact.remiseBox ? { remiseBox: compact.remiseBox } : {}),
         lastUpdated: compact.lastUpdated,
         updatedBy: compact.updatedBy,
         devices: nextDevices,
@@ -1012,6 +1229,10 @@ export async function updateDeviceRegistryOnly(params: {
         ...(base.customers ? { customers: base.customers } : {}),
         ...(base.creditTransactions ? { creditTransactions: base.creditTransactions } : {}),
         ...(base.categories ? { categories: base.categories } : {}),
+        ...(base.expenses ? { expenses: base.expenses } : {}),
+        ...(base.supplierInvoices ? { supplierInvoices: base.supplierInvoices } : {}),
+        ...(base.suppliers ? { suppliers: base.suppliers } : {}),
+        ...(base.remiseBox ? { remiseBox: base.remiseBox } : {}),
         lastUpdated: Math.max(nowMs, base.lastUpdated || 0),
         updatedBy: `${params.deviceId} · ${params.cashierName}`.slice(0, 160),
         devices: sanitizeDevicesMap(computedDevices),

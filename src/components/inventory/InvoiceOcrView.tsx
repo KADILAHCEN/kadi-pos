@@ -941,27 +941,49 @@ export const InvoiceOcrView: React.FC = () => {
           </p>
         </div>
 
-        <div className="flex items-center gap-4 text-xs text-slate-600 dark:text-slate-300 tabular-nums">
-          <span>
-            {isAr ? 'السلع المقروءة:' : 'Parsed:'}{' '}
-            <strong className="text-slate-900 dark:text-white font-mono">
-              {parsedItems.length}
-            </strong>
-          </span>
-          <span aria-hidden="true">·</span>
-          <span>
-            {isAr ? 'إجمالي الشراء:' : 'Batch Buy:'}{' '}
-            <strong className="text-emerald-700 dark:text-emerald-400 font-mono">
-              {parsedBatchBuyTotal.toFixed(2)} {currencySymbol}
-            </strong>
-          </span>
-          <span aria-hidden="true">·</span>
-          <span>
-            {isAr ? 'مخزون الحانوت:' : 'Catalog:'}{' '}
-            <strong className="text-slate-900 dark:text-white font-mono">
-              {products.length}
-            </strong>
-          </span>
+        <div className="flex flex-wrap items-center gap-3">
+          <button
+            type="button"
+            onClick={() => window.dispatchEvent(new CustomEvent('kadi:open-purchase-invoice-scanner'))}
+            className="px-3.5 py-2 rounded-xl bg-amber-400 hover:bg-amber-500 text-slate-950 text-xs font-black flex items-center gap-1.5 shadow-2xs transition-colors"
+            title={
+              isAr
+                ? 'فتح الماسح الموحد بالذكاء الاصطناعي مع الحفظ في Google Drive ومراقبة أثمنة الموردين'
+                : 'Open unified Gemini Vision + Drive + Price Watchdog scanner'
+            }
+          >
+            <Sparkles className="w-3.5 h-3.5 shrink-0" />
+            <span>
+              {isAr
+                ? 'الماسح الموحد (AI + Drive + مراقب الأسعار)'
+                : isFr
+                ? 'Scanner Unifié (AI + Drive)'
+                : 'Unified AI + Drive Scanner'}
+            </span>
+          </button>
+
+          <div className="flex items-center gap-4 text-xs text-slate-600 dark:text-slate-300 tabular-nums">
+            <span>
+              {isAr ? 'السلع المقروءة:' : 'Parsed:'}{' '}
+              <strong className="text-slate-900 dark:text-white font-mono">
+                {parsedItems.length}
+              </strong>
+            </span>
+            <span aria-hidden="true">·</span>
+            <span>
+              {isAr ? 'إجمالي الشراء:' : 'Batch Buy:'}{' '}
+              <strong className="text-emerald-700 dark:text-emerald-400 font-mono">
+                {parsedBatchBuyTotal.toFixed(2)} {currencySymbol}
+              </strong>
+            </span>
+            <span aria-hidden="true">·</span>
+            <span>
+              {isAr ? 'مخزون الحانوت:' : 'Catalog:'}{' '}
+              <strong className="text-slate-900 dark:text-white font-mono">
+                {products.length}
+              </strong>
+            </span>
+          </div>
         </div>
       </div>
 

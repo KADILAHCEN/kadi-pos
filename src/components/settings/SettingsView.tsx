@@ -2412,7 +2412,13 @@ export const SettingsView: React.FC = () => {
             </div>
             <div className="flex items-center justify-between text-[11px]">
               <span className="text-slate-500 dark:text-slate-400">
-                {isAr ? 'الافتراضي: 1234 — تعديل مباشر بدون قيود' : 'Default: 1234 — direct edit unlocked'}
+                {!managerPin.trim() || managerPin.trim() === '1234'
+                  ? isAr
+                    ? 'الافتراضي: 1234 — تعديل مباشر بدون قيود'
+                    : 'Default: 1234 — direct edit unlocked'
+                  : isAr
+                  ? 'رمز سري مخصص مفعّل لحماية الإدارة'
+                  : 'Custom Manager PIN active'}
               </span>
               {pinSavedToast && (
                 <span className="font-bold text-emerald-600 dark:text-emerald-400">
@@ -2420,6 +2426,16 @@ export const SettingsView: React.FC = () => {
                 </span>
               )}
             </div>
+            {(!managerPin.trim() || managerPin.trim() === '1234') && (
+              <div className="p-2.5 rounded-xl bg-amber-50 dark:bg-amber-950/40 border border-amber-300/80 dark:border-amber-800/70 text-[11px] font-bold text-amber-800 dark:text-amber-300 flex items-center gap-2">
+                <AlertTriangle className="w-4 h-4 shrink-0 text-amber-600 dark:text-amber-400" />
+                <span>
+                  {isAr
+                    ? 'تنبيه أمان: الكود السري للمدير ما زال هو الافتراضي (1234). يُنصح بتغييره إلى رقم خاص لحماية المخزون وإعدادات الاستعادة.'
+                    : 'Security Notice: Manager PIN is still the default (1234). Change it to a personal PIN to protect inventory & reset actions.'}
+                </span>
+              </div>
+            )}
           </div>
 
           {/* Add New User Inline Form */}

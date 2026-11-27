@@ -389,7 +389,15 @@ export const TheftSecurityModal: React.FC<TheftSecurityModalProps> = ({
                     setManagerPinInput(e.target.value);
                     setPinError(null);
                   }}
-                  placeholder={isAr ? 'رمز المدير (الافتراضي 1234)' : 'Manager PIN (default 1234)'}
+                  placeholder={
+                    !settings.managerPin || settings.managerPin === '1234'
+                      ? isAr
+                        ? 'رمز المدير (الافتراضي 1234)'
+                        : 'Manager PIN (default 1234)'
+                      : isAr
+                      ? 'أدخل رمز المدير السري'
+                      : 'Enter Manager PIN'
+                  }
                   className="px-3 py-2 rounded-xl bg-slate-800 border border-slate-700 text-xs text-white font-mono w-48 outline-none focus:ring-2 focus:ring-rose-500"
                 />
                 {pinPromptTarget.mode === 'single' && (

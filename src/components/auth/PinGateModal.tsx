@@ -18,9 +18,9 @@ export const PinGateModal: React.FC<PinGateModalProps> = ({
   title,
   description
 }) => {
-  const { verifyManagerPin, language, currentUser } = usePos();
+  const { verifyManagerPin, language, settings } = usePos();
   const isAr = language === 'ar';
-  const isFr = language === 'fr';
+  const isUsingDefaultPin = !settings.managerPin || settings.managerPin === '1234';
 
   const [pin, setPin] = useState('');
   const [errorMsg, setErrorMsg] = useState<string | null>(null);
@@ -155,7 +155,13 @@ export const PinGateModal: React.FC<PinGateModalProps> = ({
         </div>
 
         <div className="text-[11px] text-slate-400">
-          {isAr ? 'الرقم السري الافتراضي للمدير: 1234' : 'Default Manager PIN: 1234'}
+          {isUsingDefaultPin
+            ? isAr
+              ? 'الرقم السري الافتراضي للمدير: 1234 (يُنصح بتغييره من الإعدادات)'
+              : 'Default Manager PIN: 1234 (change in Settings)'
+            : isAr
+            ? 'حماية مفعّلة برمز المدير المخصص'
+            : 'Custom Manager PIN enabled'}
         </div>
       </div>
     </div>

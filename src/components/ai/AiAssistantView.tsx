@@ -1436,9 +1436,13 @@ export const AiAssistantView: React.FC = () => {
                   {isAr ? 'المحقق السري محمي بالرقم السري للمدير' : 'Secret Auditor Locked'}
                 </h3>
                 <p className="text-xs text-slate-500 mt-1">
-                  {isAr
-                    ? 'أدخل الرمز السري للمدير (الافتراضي 1234) لفتح ملف التحقيق المالي والرقابي.'
-                    : 'Enter Manager PIN (default 1234) to unlock confidential audit findings.'}
+                  {!settings.managerPin || settings.managerPin === '1234'
+                    ? isAr
+                      ? 'أدخل الرمز السري للمدير (الافتراضي 1234) لفتح ملف التحقيق المالي والرقابي.'
+                      : 'Enter Manager PIN (default 1234) to unlock confidential audit findings.'
+                    : isAr
+                    ? 'أدخل الرمز السري للمدير لفتح ملف التحقيق المالي والرقابي.'
+                    : 'Enter Manager PIN to unlock confidential audit findings.'}
                 </p>
               </div>
               <form onSubmit={handleUnlockAuditor} className="space-y-2.5">

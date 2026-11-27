@@ -39,6 +39,8 @@ export const PriceOverrideModal: React.FC<PriceOverrideModalProps> = ({
 }) => {
   const t = getT(language);
   const isAr = language === 'ar';
+  const effectiveManagerPin = (managerPin || '1234').trim() || '1234';
+  const isUsingDefaultPin = effectiveManagerPin === '1234';
 
   // Authorization state
   const [isAuthorized, setIsAuthorized] = useState(false);
@@ -99,7 +101,7 @@ export const PriceOverrideModal: React.FC<PriceOverrideModalProps> = ({
 
   const handlePinSubmit = (e?: React.FormEvent) => {
     if (e) e.preventDefault();
-    if (enteredPin === managerPin || enteredPin === '1234') {
+    if (enteredPin === effectiveManagerPin) {
       setIsAuthorized(true);
       setPinError(false);
       playSound('success');
@@ -115,7 +117,7 @@ export const PriceOverrideModal: React.FC<PriceOverrideModalProps> = ({
       const updated = enteredPin + digit;
       setEnteredPin(updated);
       setPinError(false);
-      if (updated === managerPin || updated === '1234') {
+      if (updated === effectiveManagerPin) {
         setIsAuthorized(true);
         playSound('success');
       }
@@ -193,7 +195,13 @@ export const PriceOverrideModal: React.FC<PriceOverrideModalProps> = ({
               <form onSubmit={handlePinSubmit} className="space-y-3">
                 <div className="text-center">
                   <label className="block text-xs font-semibold text-slate-600 dark:text-slate-400 mb-2">
-                    {t.enter_manager_pin}
+                    {isUsingDefaultPin
+                      ? t.enter_manager_pin
+                      : isAr
+                      ? 'أدخل رمز PIN للمسؤول'
+                      : language === 'fr'
+                      ? 'Entrez le PIN responsable'
+                      : 'Enter Manager PIN'}
                   </label>
                   <div className="flex justify-center items-center gap-2">
                     {[0, 1, 2, 3].map((idx) => {
@@ -216,11 +224,17 @@ export const PriceOverrideModal: React.FC<PriceOverrideModalProps> = ({
                   </div>
                   {pinError && (
                     <p className="text-xs text-rose-600 dark:text-rose-400 font-bold mt-2 animate-shake">
-                      {isAr
-                        ? 'رمز المرور غير صحيح. الرمز الافتراضي هو 1234'
+                      {isUsingDefaultPin
+                        ? isAr
+                          ? 'رمز المرور غير صحيح. الرمز الافتراضي هو 1234'
+                          : language === 'fr'
+                          ? 'Code PIN incorrect. Le PIN par défaut est 1234'
+                          : 'Invalid PIN. Default manager PIN is 1234'
+                        : isAr
+                        ? 'رمز المرور السري للمدير غير صحيح'
                         : language === 'fr'
-                        ? 'Code PIN incorrect. Le PIN par défaut est 1234'
-                        : 'Invalid PIN. Default manager PIN is 1234'}
+                        ? 'Code PIN responsable incorrect'
+                        : 'Invalid Manager PIN'}
                     </p>
                   )}
                 </div>

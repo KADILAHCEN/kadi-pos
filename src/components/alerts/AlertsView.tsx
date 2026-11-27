@@ -24,6 +24,7 @@ import {
   Wrench
 } from 'lucide-react';
 import { Product } from '../../types';
+import { sortBatchesFefo } from '../../utils/fefoBatches';
 import { PriceAlertAdvisor } from './PriceAlertAdvisor';
 import {
   auditOldStockPrices,
@@ -258,8 +259,9 @@ export const AlertsView: React.FC = () => {
     window.setTimeout(() => setCopiedReorderToast(false), 2500);
   };
 
-  const handleApplyExpiryDiscount = (p: Product) => {
-    const discountedPrice = Math.max(0.5, Number((p.price * 0.7).toFixed(2)));
+  const handleApplyExpiryDiscount = (p: Product, discountPct: 20 | 30 = 30) => {
+    const multiplier = discountPct === 20 ? 0.8 : 0.7;
+    const discountedPrice = Math.max(0.5, Number((p.price * multiplier).toFixed(2)));
     updateProduct(p.id, { price: discountedPrice });
     setDiscountedIds((prev) => ({ ...prev, [p.id]: true }));
   };
@@ -1133,6 +1135,31 @@ export const AlertsView: React.FC = () => {
                             {p.expiryDate} · {isAr ? 'الكمية:' : 'Qty:'} {p.stock} · {p.price.toFixed(2)} {currencySymbol}
                           </span>
                         </div>
+                        {p.batches && p.batches.length > 0 && (
+                          <div className="flex flex-wrap items-center gap-1.5 mt-1.5">
+                            <span className="text-[10px] font-black text-slate-500 dark:text-slate-400">
+                              {isAr ? 'دفعات FEFO:' : 'FEFO Batches:'}
+                            </span>
+                            {sortBatchesFefo(p.batches).map((batch, bIdx) => (
+                              <span
+                                key={batch.id}
+                                className={`inline-flex items-center gap-1 px-2 py-0.5 rounded-md text-[10px] font-bold tabular-nums border ${
+                                  bIdx === 0
+                                    ? 'bg-amber-100/80 dark:bg-amber-950/60 border-amber-300 dark:border-amber-700 text-amber-900 dark:text-amber-200'
+                                    : 'bg-white dark:bg-slate-900 border-slate-200 dark:border-slate-700 text-slate-600 dark:text-slate-300'
+                                }`}
+                              >
+                                <span className="font-mono">{batch.expiryDate}</span>
+                                <span>· {batch.quantity}</span>
+                                {bIdx === 0 && (
+                                  <span className="text-[9px] font-black">
+                                    ({isAr ? 'أولوية البيع' : 'Sell 1st'})
+                                  </span>
+                                )}
+                              </span>
+                            ))}
+                          </div>
+                        )}
                       </div>
 
                       <div className="flex flex-wrap items-center gap-1.5 shrink-0">
@@ -1171,15 +1198,26 @@ export const AlertsView: React.FC = () => {
                         )}
 
                         {!isExpired && (
-                          <button
-                            type="button"
-                            onClick={() => handleApplyExpiryDiscount(p)}
-                            className="min-h-[38px] px-3 py-1.5 rounded-xl bg-amber-500 hover:bg-amber-600 text-slate-950 text-xs font-black flex items-center gap-1"
-                            title={isAr ? 'تخفيض الثمن بنسبة 30% لتسريع البيع قبل الانتهاء' : 'Discount 30%'}
-                          >
-                            <Percent className="w-3.5 h-3.5" />
-                            <span>{isAr ? 'تخفيض -30%' : '-30% Sale'}</span>
-                          </button>
+                          <>
+                            <button
+                              type="button"
+                              onClick={() => handleApplyExpiryDiscount(p, 20)}
+                              className="min-h-[38px] px-2.5 py-1.5 rounded-xl bg-amber-100 hover:bg-amber-200 dark:bg-amber-950/60 dark:hover:bg-amber-900 text-amber-900 dark:text-amber-200 text-xs font-black flex items-center gap-1"
+                              title={isAr ? 'تخفيض الثمن بنسبة 20%' : 'Discount 20%'}
+                            >
+                              <Percent className="w-3.5 h-3.5" />
+                              <span>-20%</span>
+                            </button>
+                            <button
+                              type="button"
+                              onClick={() => handleApplyExpiryDiscount(p, 30)}
+                              className="min-h-[38px] px-3 py-1.5 rounded-xl bg-amber-500 hover:bg-amber-600 text-slate-950 text-xs font-black flex items-center gap-1"
+                              title={isAr ? 'تخفيض الثمن بنسبة 30% لتسريع البيع قبل الانتهاء' : 'Discount 30%'}
+                            >
+                              <Percent className="w-3.5 h-3.5" />
+                              <span>{isAr ? 'تخفيض -30%' : '-30% Sale'}</span>
+                            </button>
+                          </>
                         )}
 
                         {p.stock > 0 && (
