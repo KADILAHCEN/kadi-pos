@@ -764,6 +764,7 @@ export interface FirestoreCashState {
   currentShift: Shift;
   shiftsHistory: Shift[];
   emergencySessions: EmergencyOpeningSession[];
+  dailyVisitorsByDate?: Record<string, number>;
 }
 
 export type FirestoreSyncStatus = 'synced' | 'syncing' | 'offline' | 'auth_required' | 'error';

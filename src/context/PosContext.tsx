@@ -345,6 +345,10 @@ interface PosContextType {
     }
   ) => Shift;
   addCashTransaction: (type: 'pay_in' | 'pay_out', amount: number, reason: string) => void;
+  dailyVisitorsByDate: Record<string, number>;
+  todayVisitors: number;
+  adjustTodayVisitors: (delta: number) => void;
+  setTodayVisitorsCount: (count: number) => void;
 
   // Emergency Re-Opening & Overtime Sales (الفتح الاستعجالي والوقت بدل الضائع - بلا مدة محدودة)
   currentEmergencySession: EmergencyOpeningSession | null;
@@ -4966,6 +4970,44 @@ export const PosProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
     safeLocalStorageSet('kadi_pos_shifts_history', JSON.stringify(shiftsHistory));
   }, [shiftsHistory]);
 
+  // Daily Store Visitors Tracker (عداد الزوار اليومي - دخلو اليوم)
+  const [dailyVisitorsByDate, setDailyVisitorsByDate] = useState<Record<string, number>>(() => {
+    const raw = safeReadStorageObject<Record<string, number>>('kadi_pos_daily_visitors_v1', {});
+    const clean: Record<string, number> = {};
+    if (raw && typeof raw === 'object') {
+      Object.entries(raw).forEach(([k, v]) => {
+        if (/^\d{4}-\d{2}-\d{2}$/.test(k) && typeof v === 'number' && Number.isFinite(v) && v >= 0) {
+          clean[k] = Math.round(v);
+        }
+      });
+    }
+    return clean;
+  });
+
+  useEffect(() => {
+    safeLocalStorageSet('kadi_pos_daily_visitors_v1', JSON.stringify(dailyVisitorsByDate));
+  }, [dailyVisitorsByDate]);
+
+  const todayVisitors = useMemo(() => {
+    const todayKey = getLocalTodayYMD();
+    return Math.max(0, Number(dailyVisitorsByDate[todayKey]) || 0);
+  }, [dailyVisitorsByDate]);
+
+  const adjustTodayVisitors = useCallback((delta: number) => {
+    const todayKey = getLocalTodayYMD();
+    setDailyVisitorsByDate((prev) => {
+      const currentVal = Math.max(0, Number(prev[todayKey]) || 0);
+      const nextVal = Math.max(0, Math.round(currentVal + delta));
+      return { ...prev, [todayKey]: nextVal };
+    });
+  }, []);
+
+  const setTodayVisitorsCount = useCallback((count: number) => {
+    const todayKey = getLocalTodayYMD();
+    const safeVal = Number.isFinite(count) ? Math.max(0, Math.round(count)) : 0;
+    setDailyVisitorsByDate((prev) => ({ ...prev, [todayKey]: safeVal }));
+  }, []);
+
   // Emergency Re-Opening Sessions (الفتح الاستعجالي والوقت بدل الضائع - بلا مدة محدودة)
   const [currentEmergencySession, setCurrentEmergencySession] = useState<EmergencyOpeningSession | null>(() => {
     try {
@@ -6109,6 +6151,7 @@ export const PosProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
     setStocktakeHistory([]);
     setCurrentEmergencySession(null);
     setEmergencySessions([]);
+    setDailyVisitorsByDate({});
     setShopEarRequests([]);
   };
 
@@ -6145,6 +6188,7 @@ export const PosProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
     stocktakeHistory,
     shiftsHistory: [currentShift, ...shiftsHistory],
     emergencySessions,
+    dailyVisitorsByDate,
     shopEarRequests
   });
 
@@ -6250,6 +6294,15 @@ export const PosProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
       if (data.emergencySessions && Array.isArray(data.emergencySessions)) {
         setEmergencySessions(data.emergencySessions);
       }
+      if (data.dailyVisitorsByDate && isPlainRecord(data.dailyVisitorsByDate)) {
+        const cleanVisitors: Record<string, number> = {};
+        Object.entries(data.dailyVisitorsByDate).forEach(([k, v]) => {
+          if (/^\d{4}-\d{2}-\d{2}$/.test(k) && typeof v === 'number' && Number.isFinite(v) && v >= 0) {
+            cleanVisitors[k] = Math.round(v);
+          }
+        });
+        setDailyVisitorsByDate(cleanVisitors);
+      }
       if (data.shopEarRequests && Array.isArray(data.shopEarRequests)) {
         setShopEarRequests(data.shopEarRequests);
       }
@@ -6335,6 +6388,7 @@ export const PosProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
   const latestCurrentShiftRef = useRef(currentShift);
   const latestShiftsHistoryRef = useRef(shiftsHistory);
   const latestEmergencySessionsRef = useRef(emergencySessions);
+  const latestDailyVisitorsRef = useRef(dailyVisitorsByDate);
   const latestCustomersRef = useRef(customers);
   const latestCreditTxRef = useRef(creditTransactions);
   const latestCategoriesRef = useRef(categories);
@@ -6361,6 +6415,7 @@ export const PosProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
   latestCurrentShiftRef.current = currentShift;
   latestShiftsHistoryRef.current = shiftsHistory;
   latestEmergencySessionsRef.current = emergencySessions;
+  latestDailyVisitorsRef.current = dailyVisitorsByDate;
   latestCustomersRef.current = customers;
   latestCreditTxRef.current = creditTransactions;
   latestCategoriesRef.current = categories;
@@ -6383,6 +6438,7 @@ export const PosProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
     supplierInvoices: Map<string, string>;
     suppliers: Map<string, string>;
     remiseBoxSig: string;
+    dailyVisitorsSig: string;
     productUpdatedAt: Map<string, number>;
     orderUpdatedAt: Map<string, number>;
     shiftUpdatedAt: Map<string, number>;
@@ -6400,6 +6456,7 @@ export const PosProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
     supplierInvoices: new Map(),
     suppliers: new Map(),
     remiseBoxSig: '',
+    dailyVisitorsSig: '',
     productUpdatedAt: new Map(),
     orderUpdatedAt: new Map(),
     shiftUpdatedAt: new Map(),
@@ -6445,7 +6502,8 @@ export const PosProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
       cash: {
         currentShift: stampedCurShift,
         shiftsHistory: stampedHistory,
-        emergencySessions: latestEmergencySessionsRef.current
+        emergencySessions: latestEmergencySessionsRef.current,
+        dailyVisitorsByDate: latestDailyVisitorsRef.current
       },
       customers: stampedCustomers,
       creditTransactions: latestCreditTxRef.current,
@@ -6642,7 +6700,9 @@ export const PosProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
           (merged.cash.currentShift.cashTransactions?.length || 0) !==
             (latestCurrentShiftRef.current.cashTransactions?.length || 0) ||
           merged.cash.shiftsHistory.length !== latestShiftsHistoryRef.current.length ||
-          merged.cash.emergencySessions.length !== latestEmergencySessionsRef.current.length;
+          merged.cash.emergencySessions.length !== latestEmergencySessionsRef.current.length ||
+          JSON.stringify(merged.cash.dailyVisitorsByDate || {}) !==
+            JSON.stringify(latestDailyVisitorsRef.current || {});
 
         const custChanged =
           Array.isArray(merged.customers) &&
@@ -6805,6 +6865,9 @@ export const PosProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
             setCurrentShift(merged.cash.currentShift);
             setShiftsHistory(merged.cash.shiftsHistory);
             setEmergencySessions(merged.cash.emergencySessions);
+            if (merged.cash.dailyVisitorsByDate) {
+              setDailyVisitorsByDate(merged.cash.dailyVisitorsByDate);
+            }
           }
           if (custChanged && merged.customers) setCustomers(merged.customers);
           if (creditChanged && merged.creditTransactions) {
@@ -6946,6 +7009,14 @@ export const PosProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
       }
     });
     sigs.shifts = nextShiftSigs;
+
+    const nextVisitorsSig = JSON.stringify(
+      Object.entries(dailyVisitorsByDate).sort((a, b) => a[0].localeCompare(b[0]))
+    );
+    if (sigs.initialized && sigs.dailyVisitorsSig !== nextVisitorsSig) {
+      cashModified = true;
+    }
+    sigs.dailyVisitorsSig = nextVisitorsSig;
 
     const nextCustSigs = new Map<string, string>();
     let customersModifiedCount = 0;
@@ -7113,6 +7184,7 @@ export const PosProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
     currentShift,
     shiftsHistory,
     emergencySessions,
+    dailyVisitorsByDate,
     customers,
     creditTransactions,
     categories,
@@ -7640,6 +7712,10 @@ export const PosProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
         openNewShift,
         closeCurrentShift,
         addCashTransaction,
+        dailyVisitorsByDate,
+        todayVisitors,
+        adjustTodayVisitors,
+        setTodayVisitorsCount,
         shiftsHistory,
         currentEmergencySession,
         emergencySessions,

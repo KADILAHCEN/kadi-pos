@@ -203,6 +203,16 @@ export function saveStoredDeviceName(name: string): string {
   return clean;
 }
 
+function sanitizeDailyVisitorsMap(raw: unknown): Record<string, number> {
+  if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return {};
+  const entries = Object.entries(raw as Record<string, unknown>)
+    .filter(([k, v]) => /^\d{4}-\d{2}-\d{2}$/.test(k) && typeof v === 'number' && Number.isFinite(v) && v >= 0)
+    .sort((a, b) => b[0].localeCompare(a[0]))
+    .slice(0, 90)
+    .map(([k, v]) => [k, Math.round(v as number)]);
+  return Object.fromEntries(entries);
+}
+
 export function saveLocalCloudBackup(payload: LocalStoreSyncPayload): void {
   try {
     const compact: LocalStoreSyncPayload = {
@@ -211,7 +221,8 @@ export function saveLocalCloudBackup(payload: LocalStoreSyncPayload): void {
       cash: {
         currentShift: payload.cash.currentShift,
         shiftsHistory: payload.cash.shiftsHistory.slice(0, 150),
-        emergencySessions: payload.cash.emergencySessions.slice(0, 100)
+        emergencySessions: payload.cash.emergencySessions.slice(0, 100),
+        dailyVisitorsByDate: sanitizeDailyVisitorsMap(payload.cash.dailyVisitorsByDate)
       },
       customers: Array.isArray(payload.customers) ? payload.customers.slice(0, 1000) : undefined,
       creditTransactions: Array.isArray(payload.creditTransactions)
@@ -252,7 +263,10 @@ export function loadLocalCloudBackup(): LocalStoreSyncPayload | null {
     return {
       products: parsed.products,
       sales: parsed.sales,
-      cash: parsed.cash,
+      cash: {
+        ...parsed.cash,
+        dailyVisitorsByDate: sanitizeDailyVisitorsMap(parsed.cash.dailyVisitorsByDate)
+      },
       customers: Array.isArray(parsed.customers) ? parsed.customers : undefined,
       creditTransactions: Array.isArray(parsed.creditTransactions)
         ? parsed.creditTransactions
@@ -452,7 +466,8 @@ export function compactStoreForFirestore(
         cashTransactions: (s.cashTransactions || []).slice(0, 100)
       })
     ),
-    emergencySessions: payload.cash.emergencySessions.slice(0, 80).map((e) => stripUndefinedDeep(e))
+    emergencySessions: payload.cash.emergencySessions.slice(0, 80).map((e) => stripUndefinedDeep(e)),
+    dailyVisitorsByDate: sanitizeDailyVisitorsMap(payload.cash.dailyVisitorsByDate)
   };
 
   let compactCustomers = Array.isArray(payload.customers)
@@ -781,6 +796,29 @@ export function mergePosStoreData(
     }
   });
 
+  // Merge Daily Visitors by Date (newer store wins per date key, union across dates, capped to 90 days)
+  const localVisitors = sanitizeDailyVisitorsMap(local.cash.dailyVisitorsByDate);
+  const remoteVisitors = sanitizeDailyVisitorsMap(remote.cash.dailyVisitorsByDate);
+  const mergedVisitorsRaw: Record<string, number> = {};
+  const allVisitorDates = new Set([
+    ...Object.keys(localVisitors),
+    ...Object.keys(remoteVisitors)
+  ]);
+  allVisitorDates.forEach((dateKey) => {
+    const hasL = Object.prototype.hasOwnProperty.call(localVisitors, dateKey);
+    const hasR = Object.prototype.hasOwnProperty.call(remoteVisitors, dateKey);
+    if (hasL && hasR) {
+      mergedVisitorsRaw[dateKey] = remoteIsNewerStore
+        ? remoteVisitors[dateKey]
+        : localVisitors[dateKey];
+    } else if (hasR) {
+      mergedVisitorsRaw[dateKey] = remoteVisitors[dateKey];
+    } else if (hasL) {
+      mergedVisitorsRaw[dateKey] = localVisitors[dateKey];
+    }
+  });
+  const mergedVisitors = sanitizeDailyVisitorsMap(mergedVisitorsRaw);
+
   // 4. Merge Credit Transactions by ID
   let mergedCreditTx: CreditTransaction[] | undefined;
   if (Array.isArray(local.creditTransactions) || Array.isArray(remote.creditTransactions)) {
@@ -949,7 +987,8 @@ export function mergePosStoreData(
       ),
       emergencySessions: Array.from(emgMap.values()).sort(
         (a, b) => Date.parse(b.openedAt || '') - Date.parse(a.openedAt || '')
-      )
+      ),
+      dailyVisitorsByDate: mergedVisitors
     },
     lastUpdated: Math.max(local.lastUpdated || 0, remote.lastUpdated || 0),
     updatedBy: remoteIsNewerStore ? remote.updatedBy : local.updatedBy
@@ -1003,7 +1042,12 @@ function parseRemoteDocData(
     sales: Array.isArray(data.sales) ? data.sales : [],
     cash:
       data.cash && typeof data.cash === 'object'
-        ? (data.cash as FirestoreCashState)
+        ? {
+            ...(data.cash as FirestoreCashState),
+            dailyVisitorsByDate: sanitizeDailyVisitorsMap(
+              (data.cash as FirestoreCashState).dailyVisitorsByDate
+            )
+          }
         : ({} as FirestoreCashState),
     customers: Array.isArray(data.customers) ? data.customers : undefined,
     creditTransactions: Array.isArray(data.creditTransactions)

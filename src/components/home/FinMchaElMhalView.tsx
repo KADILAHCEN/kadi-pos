@@ -23,7 +23,11 @@ import {
   Coins,
   CheckCircle2,
   Tag,
-  ShoppingBag
+  ShoppingBag,
+  Users,
+  Plus,
+  Minus,
+  Pencil
 } from 'lucide-react';
 
 interface FinMchaElMhalViewProps {
@@ -61,10 +65,15 @@ export const FinMchaElMhalView: React.FC<FinMchaElMhalViewProps> = ({ onNavigate
     settings,
     currencySymbol,
     language,
-    setCurrentTab
+    setCurrentTab,
+    todayVisitors,
+    adjustTodayVisitors,
+    setTodayVisitorsCount
   } = usePos();
 
   const [actionToast, setActionToast] = useState<string | null>(null);
+  const [editingVisitors, setEditingVisitors] = useState(false);
+  const [visitorsDraft, setVisitorsDraft] = useState('');
 
   const go = (tab: AppTabId) => {
     if (onNavigate) {
@@ -109,6 +118,31 @@ export const FinMchaElMhalView: React.FC<FinMchaElMhalViewProps> = ({ onNavigate
       monthExpensesCount: expMetrics.monthCount
     };
   }, [orders, expenses, todayYMD]);
+
+  // Traffic, Buyers & Conversion Pulse (دخلو اليوم / شراو / معدل الشراء / الخلاصة)
+  const storePulse = useMemo(() => {
+    const visitors = Math.max(0, Number(todayVisitors) || 0);
+    const buyers = todayStats.ordersCount;
+    const totalSales = todayStats.sales;
+    const conversionPct = visitors === 0 ? 0 : (buyers / visitors) * 100;
+    const avgSpend = buyers === 0 ? 0 : totalSales / buyers;
+
+    let summaryText = 'المحال اليوم باقي ما بدا، 0 مبيعات.';
+    if (visitors === 0 && buyers > 0) {
+      summaryText = `اليوم شراو ${buyers} كليان بمعدل ${avgSpend.toFixed(0)} ${currencySymbol} لكل واحد — سجّل عدد اللي دخلو لحساب نسبة الشراء.`;
+    } else if (visitors > 0) {
+      summaryText = `اليوم دخلو ${visitors} و شراو ${buyers} (${conversionPct.toFixed(0)}%)، كل واحد صرف ${avgSpend.toFixed(0)} ${currencySymbol} في المتوسط.`;
+    }
+
+    return {
+      visitors,
+      buyers,
+      totalSales,
+      conversionPct,
+      avgSpend,
+      summaryText
+    };
+  }, [todayVisitors, todayStats.ordersCount, todayStats.sales, currencySymbol]);
 
   // 2. الصندوق — Live Cash in Box (mirrors ShiftsView formula)
   const cashBoxSummary = useMemo(() => {
@@ -368,7 +402,11 @@ export const FinMchaElMhalView: React.FC<FinMchaElMhalViewProps> = ({ onNavigate
         taxAlreadyPaid: taxSummary.alreadyPaid,
         monthlyBillsTotal: monthlyBillsSummary.totalBillsToPay,
         monthlyBills: monthlyBillsSummary.rows,
-        monthExpensesTotal: todayStats.monthExpensesTotal
+        monthExpensesTotal: todayStats.monthExpensesTotal,
+        todayVisitors: storePulse.visitors,
+        todayBuyers: storePulse.buyers,
+        conversionPct: storePulse.conversionPct,
+        avgSpendPerBuyer: storePulse.avgSpend
       });
       if (settings.enableSoundEffects) playSound('success');
       setActionToast(`تم تحميل التقرير PDF بنجاح (${filename})`);
@@ -400,6 +438,12 @@ export const FinMchaElMhalView: React.FC<FinMchaElMhalViewProps> = ({ onNavigate
     return [
       `📊 *فين مشى المحال — ${store}* (${todayYMD})`,
       ``,
+      `🚶 *حركة المحال اليوم:*`,
+      `• دخلو اليوم: ${storePulse.visitors} كليان`,
+      `• شراو: ${storePulse.buyers} (${storePulse.conversionPct.toFixed(0)}%)`,
+      `• معدل الشراء: ${storePulse.avgSpend.toFixed(0)} ${currencySymbol} لكل كليان`,
+      `• الخلاصة: ${storePulse.summaryText}`,
+      ``,
       `1️⃣ *اليوم:*`,
       `• المبيعات: ${todayStats.sales.toFixed(2)} ${currencySymbol}`,
       `• المصاريف: ${todayStats.expenses.toFixed(2)} ${currencySymbol}`,
@@ -420,6 +464,7 @@ export const FinMchaElMhalView: React.FC<FinMchaElMhalViewProps> = ({ onNavigate
   }, [
     settings.storeName,
     todayYMD,
+    storePulse,
     todayStats,
     cashBoxSummary,
     creditSummary,
@@ -493,6 +538,174 @@ export const FinMchaElMhalView: React.FC<FinMchaElMhalViewProps> = ({ onNavigate
             <span>{actionToast}</span>
           </div>
         )}
+
+        {/* STORE PULSE ROW: 3 Top Traffic & Conversion Cards + Summary Insight */}
+        <section aria-label="حركة المحال اليوم" className="space-y-3">
+          <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
+            {/* Card 1: دخلو اليوم (Visitors Counter with real persistence) */}
+            <div className="rounded-2xl bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 p-5 flex flex-col justify-between gap-3">
+              <div className="flex items-center justify-between gap-2">
+                <div className="flex items-center gap-2">
+                  <Users className="w-4 h-4 text-emerald-600 shrink-0" />
+                  <span className="text-sm font-black text-slate-900 dark:text-white">دخلو اليوم</span>
+                </div>
+                <button
+                  type="button"
+                  onClick={() => {
+                    setVisitorsDraft(String(storePulse.visitors));
+                    setEditingVisitors((v) => !v);
+                  }}
+                  title="تعديل عدد الزوار"
+                  className="p-1.5 rounded-lg text-slate-400 hover:text-slate-700 dark:hover:text-slate-200 hover:bg-slate-100 dark:hover:bg-slate-800 transition-colors"
+                >
+                  <Pencil className="w-3.5 h-3.5" />
+                </button>
+              </div>
+
+              {editingVisitors ? (
+                <form
+                  onSubmit={(e) => {
+                    e.preventDefault();
+                    const parsed = parseInt(visitorsDraft, 10);
+                    setTodayVisitorsCount(Number.isFinite(parsed) ? parsed : 0);
+                    setEditingVisitors(false);
+                  }}
+                  className="flex items-center gap-2"
+                >
+                  <input
+                    type="number"
+                    min={0}
+                    step={1}
+                    autoFocus
+                    value={visitorsDraft}
+                    onChange={(e) => setVisitorsDraft(e.target.value)}
+                    className="w-full px-3 py-1.5 text-lg font-mono tabular-nums font-black bg-slate-50 dark:bg-slate-800 border border-slate-300 dark:border-slate-700 rounded-xl text-slate-900 dark:text-white"
+                  />
+                  <button
+                    type="submit"
+                    className="px-3 py-2 rounded-xl bg-emerald-600 hover:bg-emerald-700 text-white text-xs font-black whitespace-nowrap shrink-0"
+                  >
+                    حفظ
+                  </button>
+                </form>
+              ) : (
+                <div className="flex items-baseline justify-between gap-2">
+                  <div className="text-3xl font-mono tabular-nums font-black text-slate-900 dark:text-white">
+                    {storePulse.visitors}
+                  </div>
+                  <span className="text-xs font-bold text-emerald-600 dark:text-emerald-400">
+                    كليان
+                  </span>
+                </div>
+              )}
+
+              <div className="pt-2.5 border-t border-slate-100 dark:border-slate-800 flex items-center justify-between gap-2">
+                <div className="flex items-center gap-1.5">
+                  <button
+                    type="button"
+                    onClick={() => adjustTodayVisitors(1)}
+                    className="px-3 py-1.5 rounded-lg bg-emerald-600 hover:bg-emerald-700 text-white text-xs font-black flex items-center gap-1 transition-colors whitespace-nowrap shrink-0"
+                  >
+                    <Plus className="w-3.5 h-3.5" />
+                    <span>1 دخل</span>
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => adjustTodayVisitors(-1)}
+                    disabled={storePulse.visitors <= 0}
+                    title="نقص 1"
+                    className="px-2.5 py-1.5 rounded-lg border border-slate-200 dark:border-slate-700 hover:bg-slate-100 dark:hover:bg-slate-800 disabled:opacity-40 text-slate-700 dark:text-slate-300 text-xs font-black transition-colors"
+                  >
+                    <Minus className="w-3.5 h-3.5" />
+                  </button>
+                </div>
+
+                {storePulse.buyers > storePulse.visitors && (
+                  <button
+                    type="button"
+                    onClick={() => setTodayVisitorsCount(storePulse.buyers)}
+                    className="text-xs font-bold text-slate-500 hover:text-emerald-600 dark:text-slate-400 dark:hover:text-emerald-400 underline-offset-4 hover:underline whitespace-nowrap shrink-0"
+                  >
+                    مطابقة ({storePulse.buyers})
+                  </button>
+                )}
+              </div>
+            </div>
+
+            {/* Card 2: شراو (Buyers count + Conversion %) */}
+            <button
+              type="button"
+              onClick={() => go('orders')}
+              className="text-start rounded-2xl bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 hover:border-amber-500 p-5 transition-colors flex flex-col justify-between gap-3"
+            >
+              <div className="flex items-center justify-between gap-2 w-full">
+                <div className="flex items-center gap-2">
+                  <ShoppingBag className="w-4 h-4 text-amber-600 shrink-0" />
+                  <span className="text-sm font-black text-slate-900 dark:text-white">شراو</span>
+                </div>
+                <span className="text-xs font-bold text-amber-600 dark:text-amber-400 flex items-center gap-1 whitespace-nowrap">
+                  <span>الفواتير</span>
+                  <ArrowLeft className="w-3.5 h-3.5" />
+                </span>
+              </div>
+
+              <div className="flex items-baseline justify-between gap-2 w-full">
+                <div className="text-3xl font-mono tabular-nums font-black text-slate-900 dark:text-white">
+                  {storePulse.buyers}
+                </div>
+                <span className="text-xs font-mono tabular-nums font-bold text-amber-600 dark:text-amber-400">
+                  {storePulse.conversionPct.toFixed(0)}% شراو
+                </span>
+              </div>
+
+              <div className="pt-2.5 border-t border-slate-100 dark:border-slate-800 w-full text-xs text-slate-500 dark:text-slate-400">
+                نسبة التحويل من مجموع اللي دخلو المحال اليوم
+              </div>
+            </button>
+
+            {/* Card 3: معدل الشراء (Average Spend per Buyer) */}
+            <button
+              type="button"
+              onClick={() => go('pos')}
+              className="text-start rounded-2xl bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 hover:border-blue-500 p-5 transition-colors flex flex-col justify-between gap-3"
+            >
+              <div className="flex items-center justify-between gap-2 w-full">
+                <div className="flex items-center gap-2">
+                  <Wallet className="w-4 h-4 text-blue-600 shrink-0" />
+                  <span className="text-sm font-black text-slate-900 dark:text-white">معدل الشراء</span>
+                </div>
+                <span className="text-xs font-bold text-blue-600 dark:text-blue-400 flex items-center gap-1 whitespace-nowrap">
+                  <span>نقطة البيع</span>
+                  <ArrowLeft className="w-3.5 h-3.5" />
+                </span>
+              </div>
+
+              <div className="flex items-baseline justify-between gap-2 w-full">
+                <div className="text-3xl font-mono tabular-nums font-black text-slate-900 dark:text-white">
+                  {storePulse.avgSpend.toFixed(0)}{' '}
+                  <span className="text-base font-bold">{currencySymbol}</span>
+                </div>
+                <span className="text-xs font-bold text-blue-600 dark:text-blue-400">
+                  لكل كليان
+                </span>
+              </div>
+
+              <div className="pt-2.5 border-t border-slate-100 dark:border-slate-800 w-full text-xs text-slate-500 dark:text-slate-400 font-mono tabular-nums">
+                مجموع المبيعات: {fmtMoney(storePulse.totalSales)} {currencySymbol}
+              </div>
+            </button>
+          </div>
+
+          {/* الخلاصة اليومية */}
+          <div className="rounded-2xl bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 px-5 py-3.5 flex flex-col sm:flex-row sm:items-center justify-between gap-2">
+            <div className="text-xs font-bold text-slate-500 dark:text-slate-400 shrink-0">
+              الخلاصة اليومية
+            </div>
+            <p className="text-sm font-bold text-slate-900 dark:text-white flex-1">
+              {storePulse.summaryText}
+            </p>
+          </div>
+        </section>
 
         {/* SECTION GRID 1: Focal Hero Summary Row (اليوم + الصندوق + الكريدي) */}
         <div className="grid grid-cols-1 lg:grid-cols-12 gap-4">

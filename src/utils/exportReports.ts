@@ -2060,6 +2060,10 @@ export interface FinMchaElMhalPdfPayload {
   monthlyBillsTotal: number;
   monthlyBills: FinMchaElMhalPdfBillLine[];
   monthExpensesTotal: number;
+  todayVisitors?: number;
+  todayBuyers?: number;
+  conversionPct?: number;
+  avgSpendPerBuyer?: number;
 }
 
 export function exportFinMchaElMhalPdf(payload: FinMchaElMhalPdfPayload): string {
@@ -2081,7 +2085,11 @@ export function exportFinMchaElMhalPdf(payload: FinMchaElMhalPdfPayload): string
     taxAlreadyPaid,
     monthlyBillsTotal,
     monthlyBills,
-    monthExpensesTotal
+    monthExpensesTotal,
+    todayVisitors = 0,
+    todayBuyers = 0,
+    conversionPct = 0,
+    avgSpendPerBuyer = 0
   } = payload;
 
   const isAr = language === 'ar';
@@ -2147,7 +2155,26 @@ export function exportFinMchaElMhalPdf(payload: FinMchaElMhalPdfPayload): string
   ctx.moveTo(padX, curY);
   ctx.lineTo(rightEdge, curY);
   ctx.stroke();
-  curY += 18;
+  curY += 12;
+
+  // Store Foot-Traffic & Conversion Summary Strip (دخلو اليوم / شراو / معدل الشراء)
+  const summaryStripH = 38;
+  ctx.fillStyle = '#f1f5f9';
+  ctx.fillRect(padX, curY, contentW, summaryStripH);
+  ctx.strokeStyle = '#cbd5e1';
+  ctx.strokeRect(padX, curY, contentW, summaryStripH);
+  const pulseMsg =
+    todayVisitors === 0 && todayBuyers === 0
+      ? 'حركة المحال اليوم: المحال اليوم باقي ما بدا، 0 مبيعات.'
+      : todayVisitors === 0
+      ? `دخلو اليوم: 0 (غير مسجل) · شراو: ${todayBuyers} كليان · معدل الشراء: ${avgSpendPerBuyer.toFixed(0)} ${currencySymbol}/كليان`
+      : `دخلو اليوم: ${todayVisitors} · شراو: ${todayBuyers} (${conversionPct.toFixed(0)}%) · معدل الشراء: ${avgSpendPerBuyer.toFixed(0)} ${currencySymbol}/كليان`;
+  drawText(pulseMsg, isAr ? rightEdge - 12 : leftEdge + 12, curY + 23, {
+    font: 'bold 11.5px "Cairo", sans-serif',
+    color: '#0f172a',
+    maxWidth: contentW - 24
+  });
+  curY += summaryStripH + 12;
 
   // Row 1: Today + Cash Box + Credit + Profit + Month Expenses + Tax (2 cols x 3 rows)
   const cards = [
