@@ -856,11 +856,14 @@ export function runOfflineInvoiceNumberOcr(img: HTMLImageElement): OfflineOcrRes
 // Tesseract.js Multi-Language Client-Side Invoice OCR (ara + fra + eng)
 // ---------------------------------------------------------------------------
 
+export type DetectedInvoiceUnit = 'piece' | 'kg' | 'liter' | 'gram';
+
 export interface TesseractParsedLine {
   name: string;
   quantity: number;
   unitCost: number;
   lineTotal: number;
+  unitType: DetectedInvoiceUnit;
 }
 
 export interface TesseractInvoiceOcrResult {
@@ -868,6 +871,9 @@ export interface TesseractInvoiceOcrResult {
   items: TesseractParsedLine[];
   detectedTotal: number;
   supplierHint?: string;
+  supplierIce?: string;
+  supplierRc?: string;
+  invoiceDate?: string;
 }
 
 let tesseractWorkerPromise: Promise<Worker> | null = null;
@@ -883,16 +889,47 @@ async function getTesseractWorker(): Promise<Worker> {
 }
 
 const IGNORED_INVOICE_LINE_REGEX =
-  /(المجموع|الاجمالي|الإجمالي|الصافي|الباقي|الضريبة|تاريخ|فاتورة|توصيل|هاتف|شكراً|شكرا|total|sous[\s-]*total|net\s*[aà]\s*payer|tva|ttc|\bht\b|remise|esp[eè]ces|monnaie|rendu|merci|client|facture|ticket|caisse|adresse|ice\b|cnss|patente|rc\b)/i;
+  /(المجموع|الاجمالي|الإجمالي|الصافي|الباقي|الضريبة|تاريخ|فاتورة|توصيل|هاتف|شكراً|شكرا|توقيع|طابع|السجل|total|sous[\s-]*total|net\s*[aà]\s*payer|tva|ttc|\bht\b|remise|esp[eè]ces|monnaie|rendu|merci|client|fournisseur|produit|facture|ticket|caisse|adresse|marrakech|sefrou|hanout|el\s*kadi|hay\s*jdid|payer|signature|cachet|\btel\b|\bgsm\b|\bice\b|cnss|patente|\brc\b|\bdate\b)/i;
+
+export function detectUnitFromItemName(name: string): DetectedInvoiceUnit {
+  const lower = name.toLowerCase();
+  if (/(?:\bkg\b|كيلو|كلغ|كغ)/i.test(lower)) return 'kg';
+  if (/(?:\b\d*\s*l\b|\bltr\b|\blitre\b|لتر|ليتر)/i.test(lower)) return 'liter';
+  if (/(?:\b\d*\s*gr?\b|غرام)/i.test(lower)) return 'gram';
+  return 'piece';
+}
+
+function extractIsoDateFromLine(line: string): string | undefined {
+  const dmy = line.match(/\b(\d{1,2})[\/\-](\d{1,2})[\/\-](20\d{2}|\d{2})\b/);
+  if (dmy) {
+    const day = dmy[1].padStart(2, '0');
+    const month = dmy[2].padStart(2, '0');
+    const rawYear = dmy[3];
+    const year = rawYear.length === 2 ? `20${rawYear}` : rawYear;
+    const mNum = Number(month);
+    const dNum = Number(day);
+    if (mNum >= 1 && mNum <= 12 && dNum >= 1 && dNum <= 31) {
+      return `${year}-${month}-${day}`;
+    }
+  }
+  const ymd = line.match(/\b(20\d{2})[\/\-](\d{1,2})[\/\-](\d{1,2})\b/);
+  if (ymd) {
+    return `${ymd[1]}-${ymd[2].padStart(2, '0')}-${ymd[3].padStart(2, '0')}`;
+  }
+  return undefined;
+}
 
 /**
- * Parses raw OCR text (Arabic / French / English) into structured invoice items.
+ * Parses raw OCR text (Arabic / French / English) into structured invoice items + supplier metadata (ICE, RC, Date).
  * Automatically merges duplicate item names by summing their quantities.
  */
 export function parseTesseractInvoiceText(text: string): {
   items: TesseractParsedLine[];
   detectedTotal: number;
   supplierHint?: string;
+  supplierIce?: string;
+  supplierRc?: string;
+  invoiceDate?: string;
 } {
   const lines = text
     .split(/\r?\n/)
@@ -902,9 +939,45 @@ export function parseTesseractInvoiceText(text: string): {
   const mergedByName = new Map<string, TesseractParsedLine>();
   let detectedTotal = 0;
   let supplierHint: string | undefined;
+  let supplierIce: string | undefined;
+  let supplierRc: string | undefined;
+  let invoiceDate: string | undefined;
 
   for (let i = 0; i < lines.length; i++) {
     const line = lines[i];
+
+    // Extract ICE (15-digit Moroccan tax identifier)
+    if (!supplierIce) {
+      const iceMatch =
+        line.match(/\b(?:ice|i\.c\.e)\s*[:#\-]?\s*(\d[\d\s\-]{10,20}\d)/i) ||
+        line.match(/\b(00\d{13})\b/);
+      if (iceMatch) {
+        const cleanIce = iceMatch[1].replace(/\D/g, '');
+        if (cleanIce.length >= 12 && cleanIce.length <= 18) {
+          supplierIce = cleanIce;
+        }
+      }
+    }
+
+    // Extract RC (Registre de Commerce)
+    if (!supplierRc) {
+      const rcMatch = line.match(/\b(?:rc|r\.c)\s*[:#\-]?\s*([A-Za-z0-9\u0600-\u06FF\-\/\s]{2,28})/i);
+      if (rcMatch) {
+        const cleanRc = rcMatch[1].replace(/\s+/g, ' ').trim();
+        if (cleanRc.length >= 2) {
+          supplierRc = cleanRc;
+        }
+      }
+    }
+
+    // Extract Invoice Date
+    if (!invoiceDate) {
+      const foundDate = extractIsoDateFromLine(line);
+      if (foundDate) {
+        invoiceDate = foundDate;
+      }
+    }
+
     const normalizedLine = line.replace(/(\d),(\d)/g, '$1.$2');
     const rawNums = normalizedLine.match(/\d+(?:\.\d+)?/g);
 
@@ -918,6 +991,11 @@ export function parseTesseractInvoiceText(text: string): {
     }
 
     if (!rawNums || rawNums.length === 0) continue;
+
+    // Skip lines that look purely like phone numbers or dates or ICE/RC metadata
+    if (extractIsoDateFromLine(line) && rawNums.length <= 3 && !/kg|l\b|pcs/i.test(line)) {
+      continue;
+    }
 
     const nums = rawNums
       .map((n) => parseFloat(n))
@@ -980,6 +1058,7 @@ export function parseTesseractInvoiceText(text: string): {
       lineTotal = nums[0];
     }
 
+    const unitType = detectUnitFromItemName(name);
     const key = name.toLowerCase();
     const existing = mergedByName.get(key);
     if (existing) {
@@ -991,7 +1070,8 @@ export function parseTesseractInvoiceText(text: string): {
         name,
         quantity: Number(quantity.toFixed(3)),
         unitCost: Number(unitCost.toFixed(2)),
-        lineTotal: Number(lineTotal.toFixed(2))
+        lineTotal: Number(lineTotal.toFixed(2)),
+        unitType
       });
     }
   }
@@ -999,7 +1079,10 @@ export function parseTesseractInvoiceText(text: string): {
   return {
     items: Array.from(mergedByName.values()),
     detectedTotal: Number(detectedTotal.toFixed(2)),
-    supplierHint
+    supplierHint,
+    supplierIce,
+    supplierRc,
+    invoiceDate
   };
 }
 
@@ -1017,7 +1100,10 @@ export async function runTesseractInvoiceOcr(
     rawText,
     items: parsed.items,
     detectedTotal: parsed.detectedTotal,
-    supplierHint: parsed.supplierHint
+    supplierHint: parsed.supplierHint,
+    supplierIce: parsed.supplierIce,
+    supplierRc: parsed.supplierRc,
+    invoiceDate: parsed.invoiceDate
   };
 }
 

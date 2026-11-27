@@ -1,7 +1,12 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { usePos } from '../../context/PosContext';
 import { Product } from '../../types';
-import { runTesseractInvoiceOcr, parseTesseractInvoiceText } from '../../utils/offlineInvoiceOcr';
+import {
+  runTesseractInvoiceOcr,
+  parseTesseractInvoiceText,
+  DetectedInvoiceUnit,
+  detectUnitFromItemName
+} from '../../utils/offlineInvoiceOcr';
 import { playSound } from '../../utils/audio';
 import { getLocalTodayYMD } from '../../utils/expenses';
 import { safeLocalStorageGet, safeLocalStorageSet } from '../../utils/storage';
@@ -24,7 +29,9 @@ import {
   Smartphone,
   Video,
   Flashlight,
-  X
+  X,
+  Truck,
+  Printer
 } from 'lucide-react';
 
 interface OcrDraftItem {
@@ -33,12 +40,36 @@ interface OcrDraftItem {
   quantity: number;
   buyPrice: number;
   sellPrice: string;
+  unitType: DetectedInvoiceUnit;
   matchedProductId: string;
 }
 
 const DEFAULT_SELL_STORAGE_KEY = 'kadi_invoice_ocr_default_sell_v1';
 const DEFAULT_SUPPLIER_STORAGE_KEY = 'kadi_invoice_ocr_supplier_v1';
+const DEFAULT_SUPPLIER_ICE_KEY = 'kadi_invoice_ocr_ice_v1';
+const DEFAULT_SUPPLIER_RC_KEY = 'kadi_invoice_ocr_rc_v1';
 const PRODUCT_SUPPLIER_MAP_KEY = 'kadi_invoice_ocr_product_suppliers_v1';
+
+const UNIT_SHORT_LABEL: Record<DetectedInvoiceUnit, string> = {
+  piece: 'pcs',
+  kg: 'kg',
+  liter: 'L',
+  gram: 'g'
+};
+
+const escapeHtml = (value: string): string =>
+  value
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&#39;');
+
+const extractRcFromNotes = (notes?: string): string => {
+  if (!notes) return '';
+  const m = notes.match(/RC:\s*([^\n|·]+)/i);
+  return m ? m[1].trim() : '';
+};
 
 const loadSavedSupplierMap = (): Record<string, string> => {
   try {
@@ -210,12 +241,19 @@ export const InvoiceOcrView: React.FC = () => {
   const [successMessage, setSuccessMessage] = useState<string | null>(null);
 
   const [supplierName, setSupplierName] = useState<string>(() =>
-    safeLocalStorageGet(DEFAULT_SUPPLIER_STORAGE_KEY, isAr ? 'مراكش' : 'Fournisseur')
+    safeLocalStorageGet(DEFAULT_SUPPLIER_STORAGE_KEY, 'Marrakech')
   );
+  const [supplierIce, setSupplierIce] = useState<string>(() =>
+    safeLocalStorageGet(DEFAULT_SUPPLIER_ICE_KEY, '')
+  );
+  const [supplierRc, setSupplierRc] = useState<string>(() =>
+    safeLocalStorageGet(DEFAULT_SUPPLIER_RC_KEY, '')
+  );
+  const [invoiceDate, setInvoiceDate] = useState<string>(() => getLocalTodayYMD());
   const [defaultSell, setDefaultSell] = useState<string>(() =>
     safeLocalStorageGet(DEFAULT_SELL_STORAGE_KEY, '')
   );
-  const [archiveToSupplierLedger, setArchiveToSupplierLedger] = useState<boolean>(false);
+  const [archiveToSupplierLedger, setArchiveToSupplierLedger] = useState<boolean>(true);
 
   const [rawOcrText, setRawOcrText] = useState<string>('');
   const [showRawText, setShowRawText] = useState<boolean>(false);
@@ -290,6 +328,17 @@ export const InvoiceOcrView: React.FC = () => {
         setSupplierName(supplierHint);
         safeLocalStorageSet(DEFAULT_SUPPLIER_STORAGE_KEY, supplierHint);
       }
+      if (parsed.supplierIce) {
+        setSupplierIce(parsed.supplierIce);
+        safeLocalStorageSet(DEFAULT_SUPPLIER_ICE_KEY, parsed.supplierIce);
+      }
+      if (parsed.supplierRc) {
+        setSupplierRc(parsed.supplierRc);
+        safeLocalStorageSet(DEFAULT_SUPPLIER_RC_KEY, parsed.supplierRc);
+      }
+      if (parsed.invoiceDate) {
+        setInvoiceDate(parsed.invoiceDate);
+      }
 
       const mapped: OcrDraftItem[] = parsed.items.map((it, idx) => {
         const matched = matchProductByName(it.name, products);
@@ -299,6 +348,10 @@ export const InvoiceOcrView: React.FC = () => {
           quantity: Math.max(0.01, Number(it.quantity) || 1),
           buyPrice: Number(Math.max(0, it.unitCost).toFixed(2)),
           sellPrice: matched ? String(matched.price) : '',
+          unitType:
+            matched?.unitType && (matched.unitType === 'kg' || matched.unitType === 'liter' || matched.unitType === 'gram')
+              ? matched.unitType
+              : it.unitType || detectUnitFromItemName(it.name),
           matchedProductId: matched?.id || ''
         };
       });
@@ -544,11 +597,22 @@ export const InvoiceOcrView: React.FC = () => {
       prev.map((row) => {
         if (row.id !== id) return row;
         const updated = { ...row, ...patch };
+        if (patch.name !== undefined && patch.unitType === undefined) {
+          updated.unitType = detectUnitFromItemName(patch.name);
+        }
         if (patch.name !== undefined && patch.matchedProductId === undefined) {
           const matched = matchProductByName(patch.name, products);
           if (matched) {
             updated.matchedProductId = matched.id;
             if (!updated.sellPrice) updated.sellPrice = String(matched.price);
+            if (
+              matched.unitType === 'kg' ||
+              matched.unitType === 'liter' ||
+              matched.unitType === 'gram' ||
+              matched.unitType === 'piece'
+            ) {
+              updated.unitType = matched.unitType;
+            }
           } else {
             updated.matchedProductId = '';
           }
@@ -567,6 +631,7 @@ export const InvoiceOcrView: React.FC = () => {
         quantity: 1,
         buyPrice: 0,
         sellPrice: '',
+        unitType: 'piece',
         matchedProductId: ''
       }
     ]);
@@ -589,11 +654,16 @@ export const InvoiceOcrView: React.FC = () => {
       return;
     }
 
-    const cleanSupplier = supplierName.trim() || (isAr ? 'مراكش' : 'Supplier');
+    const cleanSupplier = supplierName.trim() || 'Marrakech';
+    const cleanIce = supplierIce.trim();
+    const cleanRc = supplierRc.trim();
+    const cleanDate = invoiceDate.trim() || getLocalTodayYMD();
     const parsedDefSell = parseFloat(defaultSell);
+    const reasonParts = [`توريد فاتورة (${cleanSupplier})`];
+    if (cleanRc) reasonParts.push(`RC: ${cleanRc}`);
     const reason = isAr
-      ? `توريد فاتورة من الهاتف (${cleanSupplier})`
-      : `Phone invoice OCR import (${cleanSupplier})`;
+      ? reasonParts.join(' | ')
+      : `Invoice import (${cleanSupplier})${cleanRc ? ` | RC: ${cleanRc}` : ''}`;
 
     // Merge duplicate rows by matched product ID or normalized name before importing
     const mergedMap = new Map<string, OcrDraftItem>();
@@ -624,7 +694,7 @@ export const InvoiceOcrView: React.FC = () => {
       productName: string;
       quantity: number;
       unitCost: number;
-      unitType: 'piece';
+      unitType: DetectedInvoiceUnit;
     }[] = [];
 
     const updatedSupplierMap: Record<string, string> = { ...productSuppliers };
@@ -641,6 +711,7 @@ export const InvoiceOcrView: React.FC = () => {
           : fallbackSell > 0
           ? fallbackSell
           : 1;
+      const resolvedUnit: DetectedInvoiceUnit = row.unitType || detectUnitFromItemName(row.name);
 
       totalBuyValue += qty * buy;
 
@@ -667,7 +738,13 @@ export const InvoiceOcrView: React.FC = () => {
           productName: existingProd.name,
           quantity: qty,
           unitCost: buy,
-          unitType: 'piece'
+          unitType:
+            existingProd.unitType === 'kg' ||
+            existingProd.unitType === 'liter' ||
+            existingProd.unitType === 'gram' ||
+            existingProd.unitType === 'piece'
+              ? existingProd.unitType
+              : resolvedUnit
         });
       } else {
         const cleanName = row.name.trim() || `${isAr ? 'سلعة جديدة' : 'New Item'} #${idx + 1}`;
@@ -681,7 +758,7 @@ export const InvoiceOcrView: React.FC = () => {
           costPrice: Number(buy.toFixed(2)),
           stock: qty,
           lowStockThreshold: Math.max(2, Math.round(qty * 0.2)),
-          unitType: 'piece'
+          unitType: resolvedUnit
         });
         updatedSupplierMap[cleanName.trim().toLowerCase()] = cleanSupplier;
         createdCount++;
@@ -689,7 +766,7 @@ export const InvoiceOcrView: React.FC = () => {
           productName: cleanName,
           quantity: qty,
           unitCost: buy,
-          unitType: 'piece'
+          unitType: resolvedUnit
         });
       }
     });
@@ -697,12 +774,13 @@ export const InvoiceOcrView: React.FC = () => {
     setProductSuppliers(updatedSupplierMap);
     safeLocalStorageSet(PRODUCT_SUPPLIER_MAP_KEY, JSON.stringify(updatedSupplierMap));
 
-    if (archiveToSupplierLedger && totalBuyValue > 0) {
+    if (archiveToSupplierLedger && snapshotItems.length > 0) {
       addSupplierInvoice({
         supplierName: cleanSupplier,
-        invoiceType: 'official_ice',
+        supplierIce: cleanIce || undefined,
+        invoiceType: cleanIce ? 'official_ice' : 'informal_noir',
         invoiceNumber: `OCR-${Date.now().toString().slice(-5)}`,
-        date: getLocalTodayYMD(),
+        date: cleanDate,
         totalAmount: Number(totalBuyValue.toFixed(2)),
         paidAmount: Number(totalBuyValue.toFixed(2)),
         itemsCount: snapshotItems.length,
@@ -715,12 +793,92 @@ export const InvoiceOcrView: React.FC = () => {
     if (settings.enableSoundEffects) playSound('success');
     setSuccessMessage(
       isAr
-        ? `دخلت للمخزون ✅ (${updatedCount} سلعة محدثة، ${createdCount} سلعة جديدة · المجموع: ${totalBuyValue.toFixed(2)} ${currencySymbol})`
+        ? `دخلت للمخزون وتّسجلت عند المورد "${cleanSupplier}" ✅ (${updatedCount} محدثة، ${createdCount} جديدة · المجموع: ${totalBuyValue.toFixed(2)} ${currencySymbol})`
         : isFr
-        ? `Importé dans le stock ✅ (${updatedCount} mises à jour, ${createdCount} créées)`
-        : `Imported to inventory ✅ (${updatedCount} updated, ${createdCount} created)`
+        ? `Stock + Fournisseur enregistrés ✅ (${updatedCount} mises à jour, ${createdCount} créées)`
+        : `Imported & recorded for ${cleanSupplier} ✅ (${updatedCount} updated, ${createdCount} created)`
     );
     setParsedItems([]);
+  };
+
+  const handlePrintSupplierHistory = () => {
+    if (supplierInvoices.length === 0) return;
+
+    const cardsHtml = supplierInvoices
+      .slice(0, 30)
+      .map((inv) => {
+        const rc = extractRcFromNotes(inv.notes);
+        const rowsHtml = (inv.itemsSummary || [])
+          .map((item) => {
+            const unit = UNIT_SHORT_LABEL[(item.unitType as DetectedInvoiceUnit) || 'piece'] || 'pcs';
+            const lineSum = (Number(item.quantity) || 0) * (Number(item.unitCost) || 0);
+            return `<tr>
+              <td>${escapeHtml(item.productName)}</td>
+              <td>${Number(item.quantity)}</td>
+              <td>${escapeHtml(unit)}</td>
+              <td>${Number(item.unitCost).toFixed(2)}</td>
+              <td>${lineSum.toFixed(2)}</td>
+            </tr>`;
+          })
+          .join('');
+
+        return `<div class="inv-card">
+          <div class="inv-head">
+            <div><strong>🚚 المورد:</strong> ${escapeHtml(inv.supplierName)}</div>
+            <div><strong>ICE:</strong> ${escapeHtml(inv.supplierIce || 'بدون ICE')} ${rc ? ` | <strong>RC:</strong> ${escapeHtml(rc)}` : ''}</div>
+            <div><strong>📅 التاريخ:</strong> ${escapeHtml(inv.date)} | <strong>المجموع:</strong> ${Number(inv.totalAmount).toFixed(2)} ${escapeHtml(currencySymbol)}</div>
+          </div>
+          <table>
+            <thead>
+              <tr><th>السلعة</th><th>العدد</th><th>الوحدة</th><th>شراء</th><th>المجموع</th></tr>
+            </thead>
+            <tbody>${rowsHtml || `<tr><td colspan="5">${inv.itemsCount || 0} أصناف · ${Number(inv.totalAmount).toFixed(2)} ${escapeHtml(currencySymbol)}</td></tr>`}</tbody>
+          </table>
+        </div>`;
+      })
+      .join('');
+
+    const docHtml = `<!DOCTYPE html>
+<html lang="ar" dir="rtl">
+<head>
+<meta charset="UTF-8" />
+<title>تاريخ الموردين - KADI POS</title>
+<style>
+  body { font-family: Arial, Tahoma, sans-serif; padding: 18px; color: #111; }
+  h1 { text-align: center; font-size: 20px; margin-bottom: 16px; }
+  .inv-card { border: 2px solid #000; border-radius: 10px; margin-bottom: 14px; overflow: hidden; page-break-inside: avoid; }
+  .inv-head { background: #111; color: #ffcc00; padding: 10px 12px; font-size: 13px; line-height: 1.7; }
+  table { width: 100%; border-collapse: collapse; font-size: 12px; }
+  th, td { border: 1px solid #ddd; padding: 6px 8px; text-align: center; }
+  th { background: #f2f2f2; color: #111; }
+</style>
+</head>
+<body>
+  <h1>KADI POS — سجل الموردين (ICE / RC / التاريخ)</h1>
+  ${cardsHtml}
+</body>
+</html>`;
+
+    const iframe = document.createElement('iframe');
+    iframe.style.position = 'fixed';
+    iframe.style.right = '0';
+    iframe.style.bottom = '0';
+    iframe.style.width = '0';
+    iframe.style.height = '0';
+    iframe.style.border = '0';
+    iframe.srcdoc = docHtml;
+    document.body.appendChild(iframe);
+    iframe.onload = () => {
+      try {
+        iframe.contentWindow?.focus();
+        iframe.contentWindow?.print();
+      } catch {
+        // Fallback if sandboxed
+      }
+      window.setTimeout(() => {
+        iframe.remove();
+      }, 1500);
+    };
   };
 
   const parsedBatchBuyTotal = useMemo(
@@ -1063,19 +1221,19 @@ export const InvoiceOcrView: React.FC = () => {
             )}
           </div>
 
-          {/* Card 2: Supplier & Remembered Default Sell Price */}
+          {/* Card 2: Supplier (Name, ICE, RC, Date) & Remembered Default Sell Price */}
           <div className="bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-2xl p-4 sm:p-5 space-y-3.5">
             <h2 className="text-sm font-black text-slate-900 dark:text-white">
               {isAr
-                ? '2. معلومات المورد والتسعير'
+                ? '2. معلومات المورد والفاتورة (ICE / RC / التاريخ)'
                 : isFr
-                ? '2. Fournisseur & Prix par défaut'
-                : '2. Supplier & Default Pricing'}
+                ? '2. Fournisseur, ICE, RC & Date'
+                : '2. Supplier, ICE, RC & Date'}
             </h2>
 
             <div className="space-y-1.5">
               <label className="block text-xs font-bold text-slate-700 dark:text-slate-300">
-                {isAr ? 'اسم المورد:' : isFr ? 'Nom du fournisseur :' : 'Supplier Name:'}
+                {isAr ? 'المورد:' : isFr ? 'Fournisseur :' : 'Supplier:'}
               </label>
               <input
                 type="text"
@@ -1084,31 +1242,75 @@ export const InvoiceOcrView: React.FC = () => {
                   setSupplierName(e.target.value);
                   safeLocalStorageSet(DEFAULT_SUPPLIER_STORAGE_KEY, e.target.value);
                 }}
-                placeholder={isAr ? 'مثال: مراكش - فلان' : 'Supplier name'}
+                placeholder={isAr ? 'سمية المورد (مثال: Marrakech)' : 'Supplier name'}
                 className="w-full px-3.5 py-2.5 rounded-xl border border-slate-200 dark:border-slate-700 bg-slate-50 dark:bg-slate-800 text-sm font-semibold text-slate-900 dark:text-white focus:outline-none focus:ring-2 focus:ring-emerald-500"
               />
             </div>
 
-            <div className="space-y-1.5">
-              <label className="block text-xs font-bold text-slate-700 dark:text-slate-300">
-                {isAr
-                  ? 'ثمن البيع الافتراضي إلا ما كتبتيش (غادي يعقل عليه):'
-                  : isFr
-                  ? 'Prix de vente par défaut (mémorisé) :'
-                  : 'Default sell price if blank (remembered):'}
-              </label>
-              <input
-                type="number"
-                step="0.01"
-                min="0"
-                value={defaultSell}
-                onChange={(e) => {
-                  setDefaultSell(e.target.value);
-                  safeLocalStorageSet(DEFAULT_SELL_STORAGE_KEY, e.target.value);
-                }}
-                placeholder={isAr ? 'مثال: 10' : 'e.g. 10'}
-                className="w-full px-3.5 py-2.5 rounded-xl border border-slate-200 dark:border-slate-700 bg-slate-50 dark:bg-slate-800 text-sm font-mono font-bold text-slate-900 dark:text-white focus:outline-none focus:ring-2 focus:ring-emerald-500 tabular-nums"
-              />
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-2.5">
+              <div className="space-y-1">
+                <label className="block text-xs font-bold text-slate-700 dark:text-slate-300">
+                  {isAr ? 'ICE ديال المورد (السجل الضريبي):' : 'Supplier ICE:'}
+                </label>
+                <input
+                  type="text"
+                  value={supplierIce}
+                  onChange={(e) => {
+                    setSupplierIce(e.target.value);
+                    safeLocalStorageSet(DEFAULT_SUPPLIER_ICE_KEY, e.target.value);
+                  }}
+                  placeholder={isAr ? 'مثال: 001234567000045' : '001234567000045'}
+                  className="w-full px-3 py-2 rounded-xl border border-slate-200 dark:border-slate-700 bg-slate-50 dark:bg-slate-800 text-xs font-mono font-bold text-slate-900 dark:text-white focus:outline-none focus:ring-2 focus:ring-emerald-500 tabular-nums"
+                />
+              </div>
+
+              <div className="space-y-1">
+                <label className="block text-xs font-bold text-slate-700 dark:text-slate-300">
+                  {isAr ? 'RC ديال المورد:' : 'Supplier RC:'}
+                </label>
+                <input
+                  type="text"
+                  value={supplierRc}
+                  onChange={(e) => {
+                    setSupplierRc(e.target.value);
+                    safeLocalStorageSet(DEFAULT_SUPPLIER_RC_KEY, e.target.value);
+                  }}
+                  placeholder={isAr ? 'مثال: 12345 - Sefrou' : '12345 - Sefrou'}
+                  className="w-full px-3 py-2 rounded-xl border border-slate-200 dark:border-slate-700 bg-slate-50 dark:bg-slate-800 text-xs font-semibold text-slate-900 dark:text-white focus:outline-none focus:ring-2 focus:ring-emerald-500"
+                />
+              </div>
+            </div>
+
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-2.5">
+              <div className="space-y-1">
+                <label className="block text-xs font-bold text-slate-700 dark:text-slate-300">
+                  {isAr ? 'تاريخ الفاتورة (كيتعبّى تلقائياً):' : 'Invoice Date:'}
+                </label>
+                <input
+                  type="date"
+                  value={invoiceDate}
+                  onChange={(e) => setInvoiceDate(e.target.value)}
+                  className="w-full px-3 py-2 rounded-xl border border-slate-200 dark:border-slate-700 bg-slate-50 dark:bg-slate-800 text-xs font-mono font-bold text-slate-900 dark:text-white focus:outline-none focus:ring-2 focus:ring-emerald-500 tabular-nums"
+                />
+              </div>
+
+              <div className="space-y-1">
+                <label className="block text-xs font-bold text-slate-700 dark:text-slate-300">
+                  {isAr ? 'ثمن البيع الافتراضي (إلا خاوي):' : 'Default Sell Price:'}
+                </label>
+                <input
+                  type="number"
+                  step="0.01"
+                  min="0"
+                  value={defaultSell}
+                  onChange={(e) => {
+                    setDefaultSell(e.target.value);
+                    safeLocalStorageSet(DEFAULT_SELL_STORAGE_KEY, e.target.value);
+                  }}
+                  placeholder={isAr ? 'مثال: 10' : 'e.g. 10'}
+                  className="w-full px-3 py-2 rounded-xl border border-slate-200 dark:border-slate-700 bg-slate-50 dark:bg-slate-800 text-xs font-mono font-bold text-slate-900 dark:text-white focus:outline-none focus:ring-2 focus:ring-emerald-500 tabular-nums"
+                />
+              </div>
             </div>
 
             <label className="flex items-center gap-2 pt-1 text-xs font-semibold text-slate-600 dark:text-slate-300 cursor-pointer select-none">
@@ -1120,16 +1322,16 @@ export const InvoiceOcrView: React.FC = () => {
               />
               <span>
                 {isAr
-                  ? 'تسجيل الفاتورة أيضاً في أرشيف الموردين'
+                  ? 'تسجيل الفاتورة تلقائياً في سجل وتاريخ الموردين'
                   : isFr
-                  ? 'Archiver aussi dans le registre fournisseurs'
-                  : 'Also record in Supplier Invoices ledger'}
+                  ? 'Enregistrer automatiquement chez le fournisseur'
+                  : 'Automatically log invoice under Supplier History'}
               </span>
             </label>
           </div>
         </div>
 
-        {/* Right Column: Parsed Invoice Table + Current Live Stock */}
+        {/* Right Column: Parsed Invoice Table + Current Live Stock + Supplier History */}
         <div className="lg:col-span-7 space-y-5">
           {errorMessage && (
             <div className="px-4 py-3 rounded-2xl bg-rose-50 dark:bg-rose-950/40 border border-rose-300 dark:border-rose-800 text-rose-800 dark:text-rose-200 text-xs font-bold flex items-center gap-2">
@@ -1152,10 +1354,10 @@ export const InvoiceOcrView: React.FC = () => {
                 <FileText className="w-4 h-4 text-amber-500 shrink-0" />
                 <span>
                   {isAr
-                    ? '3. هنا تعدل قبل ما تدخل للمخزون'
+                    ? '3. السلعات اللي في الفاتورة - راجعهم قبل ما تدخلهم'
                     : isFr
                     ? '3. Modifier avant d’importer dans le stock'
-                    : '3. Edit Items Before Stock Import'}
+                    : '3. Review Items Before Import'}
                 </span>
               </h2>
               <span className="text-[11px] font-bold text-slate-500 dark:text-slate-400 tabular-nums">
@@ -1174,7 +1376,7 @@ export const InvoiceOcrView: React.FC = () => {
                 <thead className="bg-slate-900 dark:bg-slate-800 text-white">
                   <tr>
                     <th className="py-2.5 px-3 text-start">
-                      {isAr ? 'السمية - تعدلها' : isFr ? 'Article (modifiable)' : 'Item Name'}
+                      {isAr ? 'السلعة + الوحدة' : isFr ? 'Article + Unité' : 'Item + Unit'}
                     </th>
                     <th className="py-2.5 px-2 text-center">{isAr ? 'العدد' : isFr ? 'Qté' : 'Qty'}</th>
                     <th className="py-2.5 px-2 text-end">{isAr ? 'شراء' : isFr ? 'Achat' : 'Buy'}</th>
@@ -1199,14 +1401,30 @@ export const InvoiceOcrView: React.FC = () => {
                   ) : (
                     parsedItems.map((it) => (
                       <tr key={it.id} className="hover:bg-slate-50/70 dark:hover:bg-slate-800/40">
-                        <td className="py-2 px-2.5 min-w-[170px]">
-                          <input
-                            type="text"
-                            value={it.name}
-                            onChange={(e) => updateDraftItem(it.id, { name: e.target.value })}
-                            placeholder={isAr ? 'سمية السلعة' : 'Product name'}
-                            className="w-full px-2.5 py-1.5 rounded-lg border border-slate-200 dark:border-slate-700 bg-slate-50 dark:bg-slate-800 font-bold text-slate-900 dark:text-white"
-                          />
+                        <td className="py-2 px-2.5 min-w-[190px]">
+                          <div className="flex items-center gap-1.5">
+                            <input
+                              type="text"
+                              value={it.name}
+                              onChange={(e) => updateDraftItem(it.id, { name: e.target.value })}
+                              placeholder={isAr ? 'سمية السلعة' : 'Product name'}
+                              className="flex-1 min-w-[120px] px-2.5 py-1.5 rounded-lg border border-slate-200 dark:border-slate-700 bg-slate-50 dark:bg-slate-800 font-bold text-slate-900 dark:text-white"
+                            />
+                            <select
+                              value={it.unitType}
+                              onChange={(e) =>
+                                updateDraftItem(it.id, {
+                                  unitType: e.target.value as DetectedInvoiceUnit
+                                })
+                              }
+                              className="px-1.5 py-1.5 rounded-lg border border-slate-200 dark:border-slate-700 bg-slate-100 dark:bg-slate-800 text-[11px] font-black text-slate-700 dark:text-slate-200 shrink-0"
+                            >
+                              <option value="piece">pcs</option>
+                              <option value="kg">kg</option>
+                              <option value="liter">L</option>
+                              <option value="gram">g</option>
+                            </select>
+                          </div>
                           <div className="text-[10px] mt-0.5 text-slate-500 dark:text-slate-400">
                             {it.matchedProductId
                               ? isAr
@@ -1323,25 +1541,27 @@ export const InvoiceOcrView: React.FC = () => {
                 type="button"
                 onClick={handleBatchSaveToInventory}
                 disabled={parsedItems.length === 0}
-                className="w-full min-h-[46px] px-4 py-3 rounded-xl bg-emerald-600 hover:bg-emerald-700 disabled:opacity-45 disabled:cursor-not-allowed text-white text-sm font-black flex items-center justify-center gap-2 transition-colors"
+                className="w-full min-h-[46px] px-4 py-3 rounded-xl bg-emerald-600 hover:bg-emerald-700 disabled:opacity-45 disabled:cursor-not-allowed text-white text-xs sm:text-sm font-black flex items-center justify-center gap-2 transition-colors"
               >
-                <PackagePlus className="w-4 h-4" />
+                <PackagePlus className="w-4 h-4 shrink-0" />
                 <span>
                   {isAr
-                    ? 'دخل للمخزون ✅'
+                    ? archiveToSupplierLedger
+                      ? 'راجعتهم، دخل للمخزون + سجل عند المورد ✅'
+                      : 'راجعتهم، دخل كلشي للمخزون ✅'
                     : isFr
-                    ? 'Importer dans le stock ✅'
-                    : 'Import to Stock ✅'}
+                    ? 'Valider Stock + Fournisseur ✅'
+                    : 'Import to Stock & Supplier ✅'}
                 </span>
               </button>
 
               <button
                 type="button"
                 onClick={addEmptyRow}
-                className="w-full min-h-[46px] px-4 py-3 rounded-xl bg-slate-700 hover:bg-slate-800 dark:bg-slate-800 dark:hover:bg-slate-700 text-white text-sm font-black flex items-center justify-center gap-2 transition-colors"
+                className="w-full min-h-[46px] px-4 py-3 rounded-xl bg-slate-700 hover:bg-slate-800 dark:bg-slate-800 dark:hover:bg-slate-700 text-white text-xs sm:text-sm font-black flex items-center justify-center gap-2 transition-colors"
               >
-                <Plus className="w-4 h-4" />
-                <span>{isAr ? 'زيد سطر بيدك' : isFr ? 'Ajouter une ligne' : 'Add Row Manually'}</span>
+                <Plus className="w-4 h-4 shrink-0" />
+                <span>{isAr ? 'زيد سطر بيدي' : isFr ? 'Ajouter une ligne' : 'Add Row Manually'}</span>
               </button>
             </div>
           </div>
@@ -1431,6 +1651,115 @@ export const InvoiceOcrView: React.FC = () => {
                 </button>
               )}
             </div>
+          </div>
+
+          {/* Card 5: Supplier History (Name, ICE, RC, Date) + Print */}
+          <div className="bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-2xl p-4 sm:p-5 space-y-3.5">
+            <div className="flex flex-wrap items-center justify-between gap-2">
+              <h2 className="text-sm font-black text-slate-900 dark:text-white flex items-center gap-2">
+                <Truck className="w-4 h-4 text-amber-500 shrink-0" />
+                <span>
+                  {isAr
+                    ? '5. تاريخ الموردين (الاسم، الـ ICE، الـ RC والتاريخ)'
+                    : isFr
+                    ? '5. Historique Fournisseurs (ICE / RC / Date)'
+                    : '5. Supplier History (Name, ICE, RC & Date)'}
+                </span>
+              </h2>
+              <button
+                type="button"
+                onClick={handlePrintSupplierHistory}
+                disabled={supplierInvoices.length === 0}
+                className="px-3.5 py-2 rounded-xl bg-slate-900 dark:bg-amber-400 hover:bg-slate-800 dark:hover:bg-amber-500 disabled:opacity-45 disabled:cursor-not-allowed text-amber-400 dark:text-slate-950 text-xs font-black flex items-center gap-1.5 transition-colors"
+              >
+                <Printer className="w-3.5 h-3.5" />
+                <span>{isAr ? 'طبع قسم الموردين 🖨️' : isFr ? 'Imprimer fournisseurs' : 'Print Supplier Log'}</span>
+              </button>
+            </div>
+
+            {supplierInvoices.length === 0 ? (
+              <div className="py-6 px-4 text-center text-xs text-slate-500 dark:text-slate-400 border border-dashed border-slate-200 dark:border-slate-700 rounded-xl">
+                {isAr
+                  ? 'مازال ما كاين حتى فاتورة مسجلة عند الموردين'
+                  : 'No supplier invoices recorded yet'}
+              </div>
+            ) : (
+              <div className="space-y-3 max-h-[420px] overflow-y-auto pe-1">
+                {supplierInvoices.slice(0, 15).map((inv) => {
+                  const rc = extractRcFromNotes(inv.notes);
+                  return (
+                    <div
+                      key={inv.id}
+                      className="border-2 border-slate-900 dark:border-slate-700 rounded-xl overflow-hidden bg-white dark:bg-slate-950"
+                    >
+                      <div className="bg-slate-900 dark:bg-slate-800 text-amber-300 px-3.5 py-2.5 text-xs font-bold space-y-0.5">
+                        <div className="flex flex-wrap items-center justify-between gap-2">
+                          <span className="font-black text-white">
+                            🚚 {isAr ? 'المورد:' : 'Supplier:'} {inv.supplierName}
+                          </span>
+                          <span className="font-mono tabular-nums text-amber-300">
+                            {Number(inv.totalAmount).toFixed(2)} {currencySymbol}
+                          </span>
+                        </div>
+                        <div className="flex flex-wrap items-center gap-x-3 gap-y-0.5 text-[11px] text-slate-200 font-mono">
+                          <span>ICE: {inv.supplierIce || (isAr ? 'بدون ICE' : '—')}</span>
+                          {rc && <span>· RC: {rc}</span>}
+                          <span>· {inv.date}</span>
+                        </div>
+                      </div>
+
+                      {inv.itemsSummary && inv.itemsSummary.length > 0 ? (
+                        <div className="overflow-x-auto">
+                          <table className="w-full text-[11px]">
+                            <thead className="bg-slate-100 dark:bg-slate-900 text-slate-700 dark:text-slate-300">
+                              <tr>
+                                <th className="py-1.5 px-2.5 text-start">{isAr ? 'السلعة' : 'Item'}</th>
+                                <th className="py-1.5 px-2 text-center">{isAr ? 'العدد' : 'Qty'}</th>
+                                <th className="py-1.5 px-2 text-center">{isAr ? 'الوحدة' : 'Unit'}</th>
+                                <th className="py-1.5 px-2 text-end">{isAr ? 'شراء' : 'Buy'}</th>
+                                <th className="py-1.5 px-2.5 text-end">{isAr ? 'المجموع' : 'Total'}</th>
+                              </tr>
+                            </thead>
+                            <tbody className="divide-y divide-slate-100 dark:divide-slate-800">
+                              {inv.itemsSummary.map((line, lineIdx) => {
+                                const unit =
+                                  UNIT_SHORT_LABEL[(line.unitType as DetectedInvoiceUnit) || 'piece'] || 'pcs';
+                                const lineTotal = (Number(line.quantity) || 0) * (Number(line.unitCost) || 0);
+                                return (
+                                  <tr key={`${inv.id}-${lineIdx}`}>
+                                    <td className="py-1.5 px-2.5 font-semibold text-slate-800 dark:text-slate-100">
+                                      {line.productName}
+                                    </td>
+                                    <td className="py-1.5 px-2 text-center font-mono tabular-nums text-slate-700 dark:text-slate-300">
+                                      {line.quantity}
+                                    </td>
+                                    <td className="py-1.5 px-2 text-center font-mono text-slate-500 dark:text-slate-400">
+                                      {unit}
+                                    </td>
+                                    <td className="py-1.5 px-2 text-end font-mono tabular-nums text-slate-700 dark:text-slate-300">
+                                      {Number(line.unitCost).toFixed(2)}
+                                    </td>
+                                    <td className="py-1.5 px-2.5 text-end font-mono font-bold tabular-nums text-slate-900 dark:text-white">
+                                      {lineTotal.toFixed(2)}
+                                    </td>
+                                  </tr>
+                                );
+                              })}
+                            </tbody>
+                          </table>
+                        </div>
+                      ) : (
+                        <div className="px-3.5 py-2 text-[11px] text-slate-500 dark:text-slate-400">
+                          {isAr
+                            ? `${inv.itemsCount || 0} أصناف · المجموع: ${Number(inv.totalAmount).toFixed(2)} ${currencySymbol}`
+                            : `${inv.itemsCount || 0} items`}
+                        </div>
+                      )}
+                    </div>
+                  );
+                })}
+              </div>
+            )}
           </div>
         </div>
       </div>

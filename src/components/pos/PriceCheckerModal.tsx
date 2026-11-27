@@ -1,6 +1,14 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { BrowserCodeReader, BrowserMultiFormatReader, IScannerControls } from '@zxing/browser';
-import { BarcodeFormat, DecodeHintType } from '@zxing/library';
+import {
+  applyHardwareZoomConstraint,
+  applyTrackTorchConstraint,
+  CameraHardwareCapabilities,
+  decodeBarcodeFromImageFile,
+  inspectTrackCapabilities,
+  openHighResCameraStream,
+  startFastBarcodeLoop,
+  triggerTrackSingleShotFocus
+} from '../../utils/fastBarcodeEngine';
 import {
   Barcode,
   Camera,
@@ -8,6 +16,7 @@ import {
   Eye,
   EyeOff,
   Flashlight,
+  Focus,
   ImagePlus,
   PackagePlus,
   RefreshCw,
@@ -16,6 +25,7 @@ import {
   ShoppingCart,
   Tag,
   X,
+  ZoomIn,
   AlertCircle
 } from 'lucide-react';
 import { usePos } from '../../context/PosContext';
@@ -39,12 +49,28 @@ export const PriceCheckerModal: React.FC = () => {
   const [cameraError, setCameraError] = useState<string | null>(null);
   const [torchSupported, setTorchSupported] = useState(false);
   const [torchOn, setTorchOn] = useState(false);
+  const [macroZoom, setMacroZoom] = useState<1 | 2 | 3>(1);
+  const [hardwareCaps, setHardwareCaps] = useState<CameraHardwareCapabilities>({
+    torch: false,
+    zoomMin: 1,
+    zoomMax: 1,
+    zoomStep: 0.1,
+    supportsZoom: false,
+    supportsContinuousFocus: false
+  });
+  const [focusReticle, setFocusReticle] = useState<{ x: number; y: number } | null>(null);
   const [cameraRetryNonce, setCameraRetryNonce] = useState(0);
 
   const videoRef = useRef<HTMLVideoElement | null>(null);
-  const controlsRef = useRef<IScannerControls | null>(null);
+  const streamRef = useRef<MediaStream | null>(null);
+  const stopFastLoopRef = useRef<(() => void) | null>(null);
+  const macroZoomRef = useRef<number>(1);
   const imageInputRef = useRef<HTMLInputElement | null>(null);
   const lastScanRef = useRef<{ code: string; time: number }>({ code: '', time: 0 });
+
+  useEffect(() => {
+    macroZoomRef.current = macroZoom;
+  }, [macroZoom]);
 
   const foundProduct: Product | undefined = useMemo(
     () => (foundProductId ? products.find((p) => p.id === foundProductId) : undefined),
@@ -53,15 +79,23 @@ export const PriceCheckerModal: React.FC = () => {
 
   const stopCamera = useCallback(() => {
     try {
-      controlsRef.current?.stop();
+      stopFastLoopRef.current?.();
     } catch {
       // ignore
     }
-    controlsRef.current = null;
-    try {
-      BrowserCodeReader.releaseAllStreams();
-    } catch {
-      // ignore
+    stopFastLoopRef.current = null;
+    if (streamRef.current) {
+      streamRef.current.getTracks().forEach((track) => {
+        try {
+          track.stop();
+        } catch {
+          // ignore
+        }
+      });
+      streamRef.current = null;
+    }
+    if (videoRef.current) {
+      videoRef.current.srcObject = null;
     }
     setCameraActive(false);
     setTorchOn(false);
@@ -83,7 +117,7 @@ export const PriceCheckerModal: React.FC = () => {
       if (
         !fromUserAction &&
         lastScanRef.current.code === code &&
-        now - lastScanRef.current.time < 1300
+        now - lastScanRef.current.time < 950
       ) {
         return;
       }
@@ -172,7 +206,7 @@ export const PriceCheckerModal: React.FC = () => {
     };
   }, [isOpen]);
 
-  // Live ZXing Camera loop while open
+  // Live 1080p + Fast Multi-Scale Camera loop while open
   useEffect(() => {
     if (!isOpen) {
       stopCamera();
@@ -183,86 +217,59 @@ export const PriceCheckerModal: React.FC = () => {
 
     async function startLiveCamera() {
       setCameraError(null);
-      if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
-        if (mounted) {
-          setCameraError(
-            isAr
-              ? 'الكاميرا غير مدعومة هنا — استعمل خانة البحث أو صورة الباركود أو قارئ البلوتوث.'
-              : 'Camera unavailable — use search, photo scan, or Bluetooth scanner.'
-          );
-        }
-        return;
-      }
 
       try {
-        const hints = new Map();
-        hints.set(DecodeHintType.POSSIBLE_FORMATS, [
-          BarcodeFormat.EAN_13,
-          BarcodeFormat.EAN_8,
-          BarcodeFormat.UPC_A,
-          BarcodeFormat.UPC_E,
-          BarcodeFormat.CODE_128,
-          BarcodeFormat.CODE_39,
-          BarcodeFormat.QR_CODE
-        ]);
-        hints.set(DecodeHintType.TRY_HARDER, true);
-
-        const reader = new BrowserMultiFormatReader(hints, {
-          delayBetweenScanAttempts: 180,
-          delayBetweenScanSuccess: 900
-        });
-
-        if (!videoRef.current) return;
-
-        const controls = await reader.decodeFromConstraints(
-          {
-            video: {
-              facingMode: { ideal: 'environment' },
-              width: { ideal: 1280 },
-              height: { ideal: 720 }
-            }
-          },
-          videoRef.current,
-          (result) => {
-            if (!mounted || !result) return;
-            const txt = result.getText();
-            if (txt) lookupRef.current(txt);
-          }
-        );
-
+        const stream = await openHighResCameraStream();
         if (!mounted) {
-          controls.stop();
+          stream.getTracks().forEach((t) => t.stop());
           return;
         }
 
-        controlsRef.current = controls;
+        streamRef.current = stream;
+        const video = videoRef.current;
+        if (!video) {
+          stream.getTracks().forEach((t) => t.stop());
+          return;
+        }
+
+        video.srcObject = stream;
+        await video.play().catch(() => {});
+        if (!mounted) return;
+
         setCameraActive(true);
 
-        try {
-          const caps = controls.streamVideoCapabilitiesGet?.((track) => [track]);
-          if (caps && 'torch' in caps && (caps as { torch?: boolean }).torch) {
-            setTorchSupported(true);
-          }
-          const tracks = (videoRef.current?.srcObject as MediaStream | null)?.getVideoTracks?.() || [];
-          if (tracks[0]) {
-            tracks[0]
-              .applyConstraints({
-                advanced: [{ focusMode: 'continuous' } as unknown as MediaTrackConstraintSet]
-              })
-              .catch(() => {});
-          }
-        } catch {
-          // optional
+        const activeTrack = stream.getVideoTracks()[0];
+        const caps = inspectTrackCapabilities(activeTrack);
+        setHardwareCaps(caps);
+        if (caps.torch) {
+          setTorchSupported(true);
         }
-      } catch {
-        if (mounted) {
-          setCameraActive(false);
-          setCameraError(
-            isAr
-              ? 'تعذر فتح الكاميرا — اضغط إعادة المحاولة أو اكتب الباركود / اسم السلعة.'
-              : 'Could not open camera — retry or search manually.'
-          );
+        if (macroZoomRef.current > 1 && caps.supportsZoom) {
+          void applyHardwareZoomConstraint(activeTrack, macroZoomRef.current);
         }
+
+        stopFastLoopRef.current = startFastBarcodeLoop({
+          video,
+          scanFormatMode: 'all',
+          macroZoomRef,
+          onDetected: (hit) => {
+            if (!mounted) return;
+            lookupRef.current(hit.text);
+          }
+        });
+      } catch (err) {
+        if (!mounted) return;
+        setCameraActive(false);
+        const unavailable = err instanceof Error && err.message === 'CAMERA_UNAVAILABLE';
+        setCameraError(
+          unavailable
+            ? isAr
+              ? 'الكاميرا غير مدعومة هنا — استعمل خانة البحث أو صورة الباركود أو قارئ البلوتوث.'
+              : 'Camera unavailable — use search, photo scan, or Bluetooth scanner.'
+            : isAr
+            ? 'تعذر فتح الكاميرا — اضغط إعادة المحاولة أو اكتب الباركود / اسم السلعة.'
+            : 'Could not open camera — retry or search manually.'
+        );
       }
     }
 
@@ -274,15 +281,37 @@ export const PriceCheckerModal: React.FC = () => {
   }, [isOpen, cameraRetryNonce, isAr, stopCamera]);
 
   const handleToggleTorch = async () => {
-    try {
-      const next = !torchOn;
-      await controlsRef.current?.streamVideoConstraintsApply?.({
-        advanced: [{ torch: next } as unknown as MediaTrackConstraintSet]
-      });
+    const next = !torchOn;
+    const track = streamRef.current?.getVideoTracks?.()[0];
+    const ok = await applyTrackTorchConstraint(track, next);
+    if (ok) {
       setTorchOn(next);
-    } catch {
-      // ignore
     }
+  };
+
+  const handleSelectMacroZoom = async (level: 1 | 2 | 3) => {
+    setMacroZoom(level);
+    macroZoomRef.current = level;
+    const track = streamRef.current?.getVideoTracks?.()[0];
+    if (track) {
+      await applyHardwareZoomConstraint(track, level);
+      await triggerTrackSingleShotFocus(track);
+    }
+  };
+
+  const handleTriggerFocus = async (evt?: React.MouseEvent<HTMLDivElement>) => {
+    if (evt) {
+      const rect = evt.currentTarget.getBoundingClientRect();
+      setFocusReticle({
+        x: Math.round(((evt.clientX - rect.left) / Math.max(1, rect.width)) * 100),
+        y: Math.round(((evt.clientY - rect.top) / Math.max(1, rect.height)) * 100)
+      });
+    } else {
+      setFocusReticle({ x: 50, y: 50 });
+    }
+    window.setTimeout(() => setFocusReticle(null), 900);
+    const track = streamRef.current?.getVideoTracks?.()[0];
+    await triggerTrackSingleShotFocus(track);
   };
 
   const handleImageFileScan = async (e: React.ChangeEvent<HTMLInputElement>) => {
@@ -290,23 +319,21 @@ export const PriceCheckerModal: React.FC = () => {
     e.target.value = '';
     if (!file) return;
 
-    const url = URL.createObjectURL(file);
     try {
-      const reader = new BrowserMultiFormatReader();
-      const result = await reader.decodeFromImageUrl(url);
-      const txt = result?.getText()?.trim();
-      if (txt) {
-        lookupBarcode(txt, true);
+      const result = await decodeBarcodeFromImageFile(file, 'all');
+      if (result?.text) {
+        lookupBarcode(result.text, true);
       } else {
         setNotFoundCode('');
         setFoundProductId(null);
+        setCameraError(
+          isAr ? 'ما بانش الباركود واضح فالتصويرة — جرب تصويرة أوضح.' : 'Barcode not found in image.'
+        );
       }
     } catch {
       setCameraError(
         isAr ? 'ما بانش الباركود واضح فالتصويرة — جرب تصويرة أوضح.' : 'Barcode not found in image.'
       );
-    } finally {
-      URL.revokeObjectURL(url);
     }
   };
 
@@ -392,25 +419,50 @@ export const PriceCheckerModal: React.FC = () => {
         {/* Scrollable Content */}
         <div className="flex-1 overflow-y-auto p-3.5 sm:p-4 space-y-3.5">
           {/* Camera Scanner Viewport */}
-          <div className="relative rounded-2xl overflow-hidden bg-black border border-slate-800 min-h-[210px] flex items-center justify-center">
+          <div
+            onClick={(e) => {
+              if (cameraActive) void handleTriggerFocus(e);
+            }}
+            className="relative rounded-2xl overflow-hidden bg-black border border-slate-800 min-h-[220px] flex items-center justify-center cursor-crosshair"
+          >
             <video
               ref={videoRef}
               playsInline
               muted
-              className="w-full h-56 sm:h-64 object-cover"
+              style={{
+                transform:
+                  !hardwareCaps.supportsZoom && macroZoom > 1
+                    ? `scale(${macroZoom === 2 ? 1.55 : 2.1})`
+                    : undefined
+              }}
+              className="w-full h-56 sm:h-64 object-cover transition-transform duration-150"
             />
+
+            {focusReticle && cameraActive && (
+              <div
+                style={{ left: `${focusReticle.x}%`, top: `${focusReticle.y}%` }}
+                className="absolute -translate-x-1/2 -translate-y-1/2 w-12 h-12 rounded-xl border-2 border-amber-400 pointer-events-none"
+              />
+            )}
 
             {/* Aim Overlay Frame */}
             {cameraActive && (
               <div className="pointer-events-none absolute inset-0 flex items-center justify-center">
-                <div className="w-56 h-28 rounded-2xl border-2 border-amber-400/90 shadow-[0_0_0_999px_rgba(0,0,0,0.35)] relative">
-                  <div className="absolute inset-x-3 top-1/2 -translate-y-1/2 h-0.5 bg-rose-500/80 animate-pulse" />
+                <div
+                  className={`rounded-2xl border-2 border-amber-400/90 shadow-[0_0_0_999px_rgba(0,0,0,0.4)] relative transition-all duration-150 ${
+                    macroZoom === 3 ? 'w-36 h-20' : macroZoom === 2 ? 'w-44 h-24' : 'w-56 h-28'
+                  }`}
+                >
+                  <div className="absolute inset-x-3 top-1/2 -translate-y-1/2 h-0.5 bg-rose-500/85" />
                 </div>
               </div>
             )}
 
             {/* Top Camera Action Controls */}
-            <div className="absolute top-2.5 inset-x-2.5 flex items-center justify-between gap-2">
+            <div
+              onClick={(e) => e.stopPropagation()}
+              className="absolute top-2.5 inset-x-2.5 flex items-center justify-between gap-2"
+            >
               <button
                 type="button"
                 onClick={() => imageInputRef.current?.click()}
@@ -421,6 +473,15 @@ export const PriceCheckerModal: React.FC = () => {
               </button>
 
               <div className="flex items-center gap-1.5">
+                <button
+                  type="button"
+                  onClick={() => void handleTriggerFocus()}
+                  className="px-2.5 py-1.5 rounded-xl bg-slate-900/85 hover:bg-slate-800 border border-slate-700 text-[11px] font-bold text-emerald-300 flex items-center gap-1 backdrop-blur-xs"
+                  title={isAr ? 'تركيز سريع' : 'Focus'}
+                >
+                  <Focus className="w-3.5 h-3.5" />
+                </button>
+
                 {torchSupported && (
                   <button
                     type="button"
@@ -446,6 +507,33 @@ export const PriceCheckerModal: React.FC = () => {
                 </button>
               </div>
             </div>
+
+            {/* Bottom Small Barcode Zoom Bar */}
+            {cameraActive && (
+              <div
+                onClick={(e) => e.stopPropagation()}
+                className="absolute bottom-2.5 start-2.5 inline-flex items-center gap-1 p-1 rounded-xl bg-slate-950/85 border border-slate-700/80 backdrop-blur-xs"
+              >
+                <span className="px-1.5 text-[10px] font-bold text-slate-300 flex items-center gap-1 whitespace-nowrap">
+                  <ZoomIn className="w-3 h-3 text-amber-400" />
+                  <span>{isAr ? 'حجم الكود:' : 'Zoom:'}</span>
+                </span>
+                {([1, 2, 3] as const).map((lvl) => (
+                  <button
+                    key={lvl}
+                    type="button"
+                    onClick={() => void handleSelectMacroZoom(lvl)}
+                    className={`px-2 py-0.5 rounded-lg text-[10px] font-black tabular-nums transition-colors whitespace-nowrap ${
+                      macroZoom === lvl
+                        ? 'bg-amber-400 text-slate-950'
+                        : 'text-slate-200 hover:bg-slate-800'
+                    }`}
+                  >
+                    {lvl === 1 ? '1×' : lvl === 2 ? (isAr ? '2× صغير' : '2× Small') : isAr ? '3× دقيق' : '3× Micro'}
+                  </button>
+                ))}
+              </div>
+            )}
 
             <input
               ref={imageInputRef}
