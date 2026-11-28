@@ -30,6 +30,7 @@ import { SmartDreamGoalBanner } from './components/analytics/SmartDreamGoalBanne
 import { ShopEarView } from './components/shopEar/ShopEarView';
 import { MarketRadarView } from './components/marketRadar/MarketRadarView';
 import { FinMchaElMhalView } from './components/home/FinMchaElMhalView';
+import { StoreMapView } from './components/home/StoreMapView';
 import { ShopEarQuickModal } from './components/shopEar/ShopEarQuickModal';
 import { PurchaseInvoiceScanModal } from './components/inventory/PurchaseInvoiceScanModal';
 import { PriceCheckerModal } from './components/pos/PriceCheckerModal';
@@ -71,7 +72,10 @@ import {
   Download,
   BellRing,
   Zap,
-  Lock
+  Lock,
+  LayoutGrid,
+  ArrowRight,
+  ArrowLeft
 } from 'lucide-react';
 
 import { OfflineIndicator } from './components/pwa/OfflineIndicator';
@@ -125,15 +129,36 @@ const PosMainContent: React.FC = () => {
 
   const [showAppPinModal, setShowAppPinModal] = useState(false);
   const [pendingAppTab, setPendingAppTab] = useState<typeof currentTab | null>(null);
+  const [openedFromStoreMap, setOpenedFromStoreMap] = useState(false);
+  const [pendingFromStoreMap, setPendingFromStoreMap] = useState(false);
 
   const handleProtectedTab = (tab: typeof currentTab) => {
     if (isTabProtected(tab)) {
       setPendingAppTab(tab);
+      setPendingFromStoreMap(false);
       setShowAppPinModal(true);
     } else {
+      setOpenedFromStoreMap(false);
       setCurrentTab(tab);
     }
   };
+
+  const handleSelectFromMap = (tab: typeof currentTab) => {
+    if (isTabProtected(tab)) {
+      setPendingAppTab(tab);
+      setPendingFromStoreMap(true);
+      setShowAppPinModal(true);
+    } else {
+      setOpenedFromStoreMap(tab !== 'store_map');
+      setCurrentTab(tab);
+    }
+  };
+
+  useEffect(() => {
+    if (currentTab === 'store_map') {
+      setOpenedFromStoreMap(false);
+    }
+  }, [currentTab]);
 
   // Active Modals
   const [showCheckout, setShowCheckout] = useState(false);
@@ -649,8 +674,36 @@ const PosMainContent: React.FC = () => {
         />
       )}
 
+      {/* Back to Store Map Quick Bar when user navigated from the 21-section map */}
+      {openedFromStoreMap && currentTab !== 'store_map' && (
+        <div className="bg-slate-900 dark:bg-slate-950 border-b border-slate-800 px-3 sm:px-4 py-1.5 flex items-center justify-between gap-2 shrink-0">
+          <button
+            type="button"
+            onClick={() => {
+              setOpenedFromStoreMap(false);
+              setCurrentTab('store_map');
+            }}
+            className="px-3 py-1.5 rounded-lg bg-orange-500 hover:bg-orange-600 text-white text-xs font-extrabold flex items-center gap-1.5 transition-colors whitespace-nowrap shrink-0"
+          >
+            {isAr ? (
+              <ArrowRight className="w-3.5 h-3.5 shrink-0" />
+            ) : (
+              <ArrowLeft className="w-3.5 h-3.5 shrink-0" />
+            )}
+            <span>{isAr ? 'رجوع للخريطة' : isFr ? 'Retour à la carte' : 'Back to Store Map'}</span>
+          </button>
+          <div className="flex items-center gap-1.5 text-[11px] font-semibold text-slate-300 truncate">
+            <LayoutGrid className="w-3.5 h-3.5 text-orange-400 shrink-0" />
+            <span className="truncate">
+              {isAr ? 'خريطة المحال ديالي — 21 قسم' : 'Store Map — 21 Modules'}
+            </span>
+          </div>
+        </div>
+      )}
+
       {/* Main View Area */}
       <main className="flex-1 flex overflow-hidden relative pb-16 lg:pb-0">
+        {currentTab === 'store_map' && <StoreMapView onSelectSection={handleSelectFromMap} />}
         {currentTab === 'pos' && (
           <div className="flex-1 flex w-full h-full overflow-hidden">
             {/* Left: Visual Product Grid ("واجهة للفئة بالصور") */}
@@ -820,11 +873,14 @@ const PosMainContent: React.FC = () => {
         onClose={() => {
           setShowAppPinModal(false);
           setPendingAppTab(null);
+          setPendingFromStoreMap(false);
         }}
         onSuccess={() => {
           if (pendingAppTab) {
+            setOpenedFromStoreMap(pendingFromStoreMap && pendingAppTab !== 'store_map');
             setCurrentTab(pendingAppTab);
             setPendingAppTab(null);
+            setPendingFromStoreMap(false);
           }
         }}
         title={

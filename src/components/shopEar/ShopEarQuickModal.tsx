@@ -2,6 +2,7 @@ import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { usePos } from '../../context/PosContext';
 import { getLocalTodayYMD } from '../../utils/expenses';
 import { safeParseJsonResponse } from '../../utils/aiVoice';
+import { parseMoroccanNumber, sanitizeDecimalInput } from '../../utils/priceAlerts';
 import {
   Ear,
   Mic,
@@ -293,11 +294,11 @@ export const ShopEarQuickModal: React.FC = () => {
     const clean = itemName.trim();
     if (!clean) return;
 
-    const priceNum = parseFloat(estimatedPrice);
+    const priceNum = parseMoroccanNumber(estimatedPrice);
     addShopEarRequest({
       itemName: clean,
       productId: selectedProductId,
-      estimatedUnitPrice: !Number.isNaN(priceNum) && priceNum > 0 ? priceNum : undefined,
+      estimatedUnitPrice: priceNum > 0 ? priceNum : undefined,
       customerId: selectedCustomerId,
       customerName: customerSearch.trim() || undefined,
       customerPhone: customerPhone.trim() || undefined,
@@ -569,11 +570,10 @@ export const ShopEarQuickModal: React.FC = () => {
                 : `Estimated Price (${currencySymbol}) - optional`}
             </label>
             <input
-              type="number"
-              min="0"
-              step="0.5"
+              type="text"
+              inputMode="decimal"
               value={estimatedPrice}
-              onChange={(e) => setEstimatedPrice(e.target.value)}
+              onChange={(e) => setEstimatedPrice(sanitizeDecimalInput(e.target.value))}
               placeholder={isAr ? 'مثال: 65' : '0'}
               className="w-full px-3 py-2 text-xs rounded-xl bg-slate-50 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 text-slate-900 dark:text-white font-mono focus:outline-none focus:border-amber-500"
             />

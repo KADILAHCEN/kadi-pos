@@ -32,7 +32,7 @@ import { ShelfLabelPrintModal } from '../inventory/ShelfLabelPrintModal';
 import { lookupProductByBarcode } from '../../utils/openFoodFacts';
 import { bluetoothScanner } from '../../utils/bluetoothScanner';
 import { PriceAlertAdvisor } from '../alerts/PriceAlertAdvisor';
-import { markPriceAlertFixed, recordPriceAlert } from '../../utils/priceAlerts';
+import { markPriceAlertFixed, parseMoroccanNumber, recordPriceAlert, sanitizeDecimalInput } from '../../utils/priceAlerts';
 import {
   addBatchFefo,
   getEarliestExpiryFromBatches,
@@ -69,8 +69,10 @@ export const EditProductModal: React.FC<EditProductModalProps> = ({
   // Form Fields
   const [name, setName] = useState('');
   const [nameEn, setNameEn] = useState('');
-  const [price, setPrice] = useState<number>(0);
-  const [costPrice, setCostPrice] = useState<number>(0);
+  const [priceInput, setPriceInput] = useState<string>('0');
+  const [costPriceInput, setCostPriceInput] = useState<string>('0');
+  const price = parseMoroccanNumber(priceInput);
+  const costPrice = parseMoroccanNumber(costPriceInput);
   const [categoryId, setCategoryId] = useState('');
   const [unitType, setUnitType] = useState<UnitType>('piece');
   const [stockInput, setStockInput] = useState<string>('0');
@@ -110,8 +112,8 @@ export const EditProductModal: React.FC<EditProductModalProps> = ({
     if (product) {
       setName(product.name || '');
       setNameEn(product.nameEn || '');
-      setPrice(product.price || 0);
-      setCostPrice(product.costPrice || 0);
+      setPriceInput(product.price !== undefined && product.price !== null ? String(product.price) : '');
+      setCostPriceInput(product.costPrice !== undefined && product.costPrice !== null ? String(product.costPrice) : '');
       setCategoryId(product.categoryId || categories[0]?.id || 'cat-all');
       setUnitType(product.unitType || 'piece');
       setStockInput(String(product.stock ?? 0));
@@ -274,14 +276,14 @@ export const EditProductModal: React.FC<EditProductModalProps> = ({
     const parsedStock = parseFloat(stockInput.replace(',', '.'));
     const safeStock = Number.isFinite(parsedStock) && parsedStock >= 0 ? parsedStock : 0;
 
-    const nextPrice = Math.max(0, Number(price));
-    const nextCost = Math.max(0, Number(costPrice));
+    const nextPrice = Math.max(0, parseMoroccanNumber(priceInput));
+    const nextCost = Math.max(0, parseMoroccanNumber(costPriceInput));
 
     const parsedUnitsPerBox = parseInt(unitsPerBox, 10);
-    const parsedSemiQty = parseFloat(semiWholesaleMinQty);
-    const parsedSemiPrice = parseFloat(semiWholesalePrice);
-    const parsedWsQty = parseFloat(wholesaleMinQty);
-    const parsedWsPrice = parseFloat(wholesalePrice);
+    const parsedSemiQty = parseFloat(semiWholesaleMinQty.replace(',', '.'));
+    const parsedSemiPrice = parseMoroccanNumber(semiWholesalePrice);
+    const parsedWsQty = parseFloat(wholesaleMinQty.replace(',', '.'));
+    const parsedWsPrice = parseMoroccanNumber(wholesalePrice);
 
     const sortedBatches = batches.length > 0 ? sortBatchesFefo(batches) : [];
     const earliestBatchExpiry = getEarliestExpiryFromBatches(sortedBatches);
@@ -540,12 +542,12 @@ export const EditProductModal: React.FC<EditProductModalProps> = ({
                 </label>
                 <div className="relative">
                   <input
-                    type="number"
-                    step="0.25"
-                    min="0"
+                    type="text"
+                    inputMode="decimal"
                     required
-                    value={price}
-                    onChange={(e) => setPrice(parseFloat(e.target.value) || 0)}
+                    value={priceInput}
+                    placeholder="0.00"
+                    onChange={(e) => setPriceInput(sanitizeDecimalInput(e.target.value))}
                     className="w-full px-3 py-2 bg-white dark:bg-slate-800 border border-slate-300 dark:border-slate-700 rounded-xl text-slate-900 dark:text-white font-mono font-bold text-sm focus:border-emerald-500"
                   />
                   <span className="absolute end-3 top-1/2 -translate-y-1/2 text-slate-400 font-bold">
@@ -560,11 +562,11 @@ export const EditProductModal: React.FC<EditProductModalProps> = ({
                 </label>
                 <div className="relative">
                   <input
-                    type="number"
-                    step="0.25"
-                    min="0"
-                    value={costPrice}
-                    onChange={(e) => setCostPrice(parseFloat(e.target.value) || 0)}
+                    type="text"
+                    inputMode="decimal"
+                    value={costPriceInput}
+                    placeholder="0.00"
+                    onChange={(e) => setCostPriceInput(sanitizeDecimalInput(e.target.value))}
                     className="w-full px-3 py-2 bg-white dark:bg-slate-800 border border-slate-300 dark:border-slate-700 rounded-xl text-slate-900 dark:text-white font-mono font-bold text-sm focus:border-emerald-500"
                   />
                   <span className="absolute end-3 top-1/2 -translate-y-1/2 text-slate-400 font-bold">
@@ -589,8 +591,8 @@ export const EditProductModal: React.FC<EditProductModalProps> = ({
               currencySymbol={currencySymbol}
               isAr={isAr}
               onApplyChoice={(patch) => {
-                if (typeof patch.price === 'number') setPrice(patch.price);
-                if (typeof patch.costPrice === 'number') setCostPrice(patch.costPrice);
+                if (typeof patch.price === 'number') setPriceInput(String(patch.price));
+                if (typeof patch.costPrice === 'number') setCostPriceInput(String(patch.costPrice));
               }}
             />
 
@@ -619,11 +621,10 @@ export const EditProductModal: React.FC<EditProductModalProps> = ({
                     {isAr ? `سعر نصف الجملة (${currencySymbol})` : 'Semi-WS Price'}
                   </label>
                   <input
-                    type="number"
-                    min="0"
-                    step="0.05"
+                    type="text"
+                    inputMode="decimal"
                     value={semiWholesalePrice}
-                    onChange={(e) => setSemiWholesalePrice(e.target.value)}
+                    onChange={(e) => setSemiWholesalePrice(sanitizeDecimalInput(e.target.value))}
                     placeholder="0.00"
                     className="w-full px-2.5 py-1.5 text-xs font-mono bg-white dark:bg-slate-800 border border-slate-300 dark:border-slate-700 rounded-lg text-slate-900 dark:text-white"
                   />
@@ -647,11 +648,10 @@ export const EditProductModal: React.FC<EditProductModalProps> = ({
                     {isAr ? `سعر الجملة (${currencySymbol})` : 'Wholesale Price'}
                   </label>
                   <input
-                    type="number"
-                    min="0"
-                    step="0.05"
+                    type="text"
+                    inputMode="decimal"
                     value={wholesalePrice}
-                    onChange={(e) => setWholesalePrice(e.target.value)}
+                    onChange={(e) => setWholesalePrice(sanitizeDecimalInput(e.target.value))}
                     placeholder="0.00"
                     className="w-full px-2.5 py-1.5 text-xs font-mono bg-white dark:bg-slate-800 border border-slate-300 dark:border-slate-700 rounded-lg text-slate-900 dark:text-white"
                   />

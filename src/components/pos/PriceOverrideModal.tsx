@@ -15,6 +15,7 @@ import {
   Info
 } from 'lucide-react';
 import { playSound } from '../../utils/audio';
+import { parseMoroccanNumber, sanitizeDecimalInput } from '../../utils/priceAlerts';
 
 interface PriceOverrideModalProps {
   isOpen: boolean;
@@ -92,7 +93,7 @@ export const PriceOverrideModal: React.FC<PriceOverrideModalProps> = ({
 
   const originalPrice = item.originalPrice !== undefined ? item.originalPrice : item.price;
   const costPrice = item.costPrice;
-  const parsedPrice = parseFloat(newPrice) || 0;
+  const parsedPrice = parseMoroccanNumber(newPrice);
   const isBelowCost = parsedPrice > 0 && parsedPrice < costPrice;
 
   // New profit & margin calculation
@@ -355,11 +356,10 @@ export const PriceOverrideModal: React.FC<PriceOverrideModalProps> = ({
                 </label>
                 <div className="relative">
                   <input
-                    type="number"
-                    step="0.01"
-                    min="0"
+                    type="text"
+                    inputMode="decimal"
                     value={newPrice}
-                    onChange={(e) => setNewPrice(e.target.value)}
+                    onChange={(e) => setNewPrice(sanitizeDecimalInput(e.target.value))}
                     placeholder="0.00"
                     autoFocus
                     className="w-full text-2xl font-black px-4 py-3 bg-slate-50 dark:bg-slate-800 border-2 border-emerald-500 rounded-xl text-slate-900 dark:text-white focus:outline-hidden tabular-nums"

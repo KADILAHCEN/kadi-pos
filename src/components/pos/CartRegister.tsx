@@ -20,9 +20,13 @@ import {
   Monitor,
   Banknote,
   BookOpen,
-  Receipt
+  Receipt,
+  MessageCircle,
+  AlertTriangle,
+  Search
 } from 'lucide-react';
 import { playSound } from '../../utils/audio';
+import { computeCustomerVisitInsight } from '../../utils/customerInsights';
 
 interface CartRegisterProps {
   onOpenCheckout: () => void;
@@ -110,6 +114,7 @@ export const CartRegister: React.FC<CartRegisterProps> = ({
 
   // Customer selection modal / quick add
   const [showCustomerDropdown, setShowCustomerDropdown] = useState(false);
+  const [custDropdownSearch, setCustDropdownSearch] = useState('');
   const [showAddCustomerModal, setShowAddCustomerModal] = useState(false);
   const [newCustName, setNewCustName] = useState('');
   const [newCustPhone, setNewCustPhone] = useState('');
@@ -147,6 +152,19 @@ export const CartRegister: React.FC<CartRegisterProps> = ({
       recentOrders: todayOrders.slice(0, 5)
     };
   }, [orders]);
+
+  const selectedCustomerInsight = useMemo(
+    () => computeCustomerVisitInsight(selectedCustomer, orders, settings.storeName),
+    [selectedCustomer, orders, settings.storeName]
+  );
+
+  const filteredDropdownCustomers = useMemo(() => {
+    const q = custDropdownSearch.trim().toLowerCase();
+    if (!q) return customers.slice(0, 25);
+    return customers
+      .filter((c) => c.name.toLowerCase().includes(q) || c.phone.toLowerCase().includes(q))
+      .slice(0, 25);
+  }, [customers, custDropdownSearch]);
 
   useEffect(() => {
     if (!pendingQuickCredit || !selectedCustomer || cart.length === 0) return;
@@ -303,19 +321,31 @@ export const CartRegister: React.FC<CartRegisterProps> = ({
 
             {/* Customer Dropdown */}
             {showCustomerDropdown && (
-              <div className="absolute top-full left-0 right-0 z-40 mt-1 bg-white dark:bg-slate-800 border border-slate-200 dark:border-slate-700 rounded-xl shadow-xl overflow-hidden max-h-60 overflow-y-auto">
-                <div className="p-2 border-b border-slate-100 dark:border-slate-700 flex items-center justify-between">
-                  <span className="text-[11px] font-bold text-slate-500">{t.select_customer}</span>
-                  <button
-                    onClick={() => {
-                      setShowAddCustomerModal(true);
-                      setShowCustomerDropdown(false);
-                    }}
-                    className="text-[11px] font-bold text-emerald-600 hover:text-emerald-700 flex items-center gap-1"
-                  >
-                    <Plus className="w-3 h-3" />
-                    <span>{isAr ? 'عميل جديد' : isFr ? 'Nouveau' : 'New'}</span>
-                  </button>
+              <div className="absolute top-full left-0 right-0 z-40 mt-1 bg-white dark:bg-slate-800 border border-slate-200 dark:border-slate-700 rounded-xl shadow-xl overflow-hidden max-h-72 overflow-y-auto">
+                <div className="p-2 border-b border-slate-100 dark:border-slate-700 space-y-1.5">
+                  <div className="flex items-center justify-between">
+                    <span className="text-[11px] font-bold text-slate-500">{t.select_customer}</span>
+                    <button
+                      onClick={() => {
+                        setShowAddCustomerModal(true);
+                        setShowCustomerDropdown(false);
+                      }}
+                      className="text-[11px] font-bold text-emerald-600 hover:text-emerald-700 flex items-center gap-1"
+                    >
+                      <Plus className="w-3 h-3" />
+                      <span>{isAr ? 'عميل جديد' : isFr ? 'Nouveau' : 'New'}</span>
+                    </button>
+                  </div>
+                  <div className="relative">
+                    <Search className="w-3 h-3 text-slate-400 absolute start-2.5 top-1/2 -translate-y-1/2 pointer-events-none" />
+                    <input
+                      type="text"
+                      value={custDropdownSearch}
+                      onChange={(e) => setCustDropdownSearch(e.target.value)}
+                      placeholder={isAr ? 'بحث بالاسم أو رقم الهاتف...' : 'Search name or phone...'}
+                      className="w-full ps-7 pe-2 py-1 text-[11px] bg-slate-50 dark:bg-slate-900 border border-slate-200 dark:border-slate-700 rounded-lg text-slate-900 dark:text-white"
+                    />
+                  </div>
                 </div>
                 <button
                   onClick={() => {
@@ -326,21 +356,22 @@ export const CartRegister: React.FC<CartRegisterProps> = ({
                 >
                   {t.guest_customer}
                 </button>
-                {customers.map((c) => (
+                {filteredDropdownCustomers.map((c) => (
                   <button
                     key={c.id}
                     onClick={() => {
                       setSelectedCustomer(c);
+                      setCustDropdownSearch('');
                       setShowCustomerDropdown(false);
                     }}
                     className="w-full px-3 py-2 text-xs text-left rtl:text-right hover:bg-slate-100 dark:hover:bg-slate-700 flex items-center justify-between border-t border-slate-100 dark:border-slate-700/60"
                   >
                     <div>
                       <div className="font-bold text-slate-900 dark:text-white">{c.name}</div>
-                      <div className="text-[10px] text-slate-400">{c.phone}</div>
+                      <div className="text-[10px] text-slate-400 font-mono">{c.phone}</div>
                     </div>
                     <div className="text-right rtl:text-left">
-                      <span className="px-1.5 py-0.5 text-[9px] font-bold rounded bg-emerald-50 dark:bg-emerald-950/60 text-emerald-700 dark:text-emerald-400">
+                      <span className="px-1.5 py-0.5 text-[9px] font-bold rounded bg-emerald-50 dark:bg-emerald-950/60 text-emerald-700 dark:text-emerald-400 font-mono tabular-nums">
                         {c.tier} · {c.points} pts
                       </span>
                     </div>
@@ -381,6 +412,43 @@ export const CartRegister: React.FC<CartRegisterProps> = ({
             </button>
           )}
         </div>
+
+        {/* Selected Customer Visit History & 15-Day Win-Back Alert */}
+        {selectedCustomer && selectedCustomerInsight && (selectedCustomerInsight.isAbsent15Days || selectedCustomerInsight.isReturningCustomer) && (
+          <div
+            className={`mb-2 px-3 py-2 rounded-xl border text-[11px] font-bold flex items-center justify-between gap-2 ${
+              selectedCustomerInsight.isAbsent15Days
+                ? 'bg-amber-50 dark:bg-amber-950/50 border-amber-200 dark:border-amber-800 text-amber-900 dark:text-amber-200'
+                : 'bg-slate-100 dark:bg-slate-800/80 border-slate-200 dark:border-slate-700 text-slate-700 dark:text-slate-200'
+            }`}
+          >
+            <div className="flex items-start gap-1.5 min-w-0">
+              {selectedCustomerInsight.isAbsent15Days && (
+                <AlertTriangle className="w-3.5 h-3.5 text-amber-600 shrink-0 mt-0.5" />
+              )}
+              <span className="leading-snug">
+                {selectedCustomerInsight.isAbsent15Days
+                  ? isAr
+                    ? `هاد الزبون غبر عليك ${selectedCustomerInsight.daysSinceLastVisit} يوم! سيفط ليه مساج: توحشناك، عندنا سلعة جديدة`
+                    : `Absent for ${selectedCustomerInsight.daysSinceLastVisit} days — send a win-back message`
+                  : isAr
+                  ? `هاد الزبون شرى عندك ${selectedCustomerInsight.visits} مرات من قبل، مجموع ${selectedCustomerInsight.totalSpent.toFixed(0)} ${currencySymbol}`
+                  : `Visited ${selectedCustomerInsight.visits} times · Total ${selectedCustomerInsight.totalSpent.toFixed(0)} ${currencySymbol}`}
+              </span>
+            </div>
+            {selectedCustomerInsight.isAbsent15Days && selectedCustomerInsight.whatsappWinBackHref && (
+              <a
+                href={selectedCustomerInsight.whatsappWinBackHref}
+                target="_blank"
+                rel="noopener noreferrer"
+                className="px-2 py-1 rounded-lg bg-emerald-600 hover:bg-emerald-700 text-white text-[10px] font-black flex items-center gap-1 whitespace-nowrap shrink-0"
+              >
+                <MessageCircle className="w-3 h-3" />
+                <span>{isAr ? 'واتساب' : 'WhatsApp'}</span>
+              </a>
+            )}
+          </div>
+        )}
 
         {/* Today's Sales Quick KPI & Recent Invoices Bar */}
         <div className="relative">

@@ -33,12 +33,33 @@ export interface OldStockPriceIssue {
 const STORAGE_KEY = 'kadi_price_alerts_v1';
 export const PRICE_ALERTS_CHANGED_EVENT = 'kadi:price-alerts-changed';
 
+export function normalizeNumericDigits(raw: string): string {
+  return raw
+    .replace(/[\u0660-\u0669]/g, (d) => String(d.charCodeAt(0) - 0x0660))
+    .replace(/[\u06F0-\u06F9]/g, (d) => String(d.charCodeAt(0) - 0x06f0));
+}
+
+export function sanitizeDecimalInput(raw: string): string {
+  const normalized = normalizeNumericDigits(raw).replace(/٫/g, '.');
+  let result = '';
+  let hasSep = false;
+  for (const ch of normalized) {
+    if (ch >= '0' && ch <= '9') {
+      result += ch;
+    } else if ((ch === '.' || ch === ',') && !hasSep) {
+      result += ch;
+      hasSep = true;
+    }
+  }
+  return result;
+}
+
 export function parseMoroccanNumber(raw: string | number | undefined | null): number {
   if (typeof raw === 'number') {
     return Number.isFinite(raw) ? raw : 0;
   }
   if (!raw) return 0;
-  const cleaned = String(raw).trim().replace(',', '.');
+  const cleaned = normalizeNumericDigits(String(raw)).trim().replace(/٫/g, '.').replace(',', '.');
   const n = parseFloat(cleaned);
   return Number.isFinite(n) && n >= 0 ? n : 0;
 }

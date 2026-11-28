@@ -70,10 +70,13 @@ export const SettingsView: React.FC = () => {
     resetToDemoData,
     exportDatabaseJson,
     importDatabaseJson,
+    exportImagesBackupJson,
+    importImagesBackupJson,
     localSnapshotAt,
     saveLocalSnapshot,
     restoreLocalSnapshot,
     products,
+    categories,
     remoteOrders,
     language,
     users,
@@ -466,6 +469,37 @@ export const SettingsView: React.FC = () => {
       }
     };
     reader.readAsText(file);
+    e.target.value = '';
+  };
+
+  const handleImportImagesFile = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+
+    const reader = new FileReader();
+    reader.onload = (evt) => {
+      const content = evt.target?.result as string;
+      const res = importImagesBackupJson(content);
+      if (res.success) {
+        setImportError(null);
+        const total = res.restoredProducts + res.restoredCategories + (res.restoredLogo ? 1 : 0);
+        setImportSuccess(
+          total > 0
+            ? isAr
+              ? `تم استرجاع الصور بنجاح (${res.restoredProducts} صورة منتج · ${res.restoredCategories} صورة قسم${res.restoredLogo ? ' · شعار المتجر' : ''})`
+              : `Images restored (${res.restoredProducts} products, ${res.restoredCategories} categories${res.restoredLogo ? ', store logo' : ''})`
+            : isAr
+            ? 'ملف الصور مقروء ولكن جميع الصور المطابقة موجودة مسبقاً'
+            : 'Images file read; all matching images are already up to date'
+        );
+        setTimeout(() => setImportSuccess(null), 5000);
+      } else {
+        setImportSuccess(null);
+        setImportError(isAr ? 'ملف نسخ الصور غير صالح أو تالف' : 'Invalid images backup JSON file');
+      }
+    };
+    reader.readAsText(file);
+    e.target.value = '';
   };
 
   const handleLogoUpload = (e: React.ChangeEvent<HTMLInputElement>) => {
@@ -1041,7 +1075,7 @@ export const SettingsView: React.FC = () => {
                 <input
                   type="number"
                   min={0}
-                  step="0.1"
+                  step="any"
                   disabled={!loyaltyEnabled}
                   value={loyaltyPointValue}
                   onChange={(e) => setLoyaltyPointValue(Math.max(0, parseFloat(e.target.value) || 0))}
@@ -3202,13 +3236,42 @@ export const SettingsView: React.FC = () => {
                 <span>{t.backup_db}</span>
               </button>
 
-              <label className="px-4 py-2.5 text-xs font-bold rounded-xl border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-800 hover:bg-slate-50 text-slate-700 dark:text-slate-200 transition-colors flex items-center gap-2 shadow-2xs cursor-pointer">
+              <label className="px-4 py-2.5 text-xs font-bold rounded-xl border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-800 hover:bg-slate-50 text-slate-700 dark:text-slate-200 transition-colors flex items-center gap-2 shadow-2xs cursor-pointer whitespace-nowrap shrink-0">
                 <Upload className="w-4 h-4 text-blue-600" />
                 <span>{t.import_db}</span>
                 <input
                   type="file"
                   accept=".json"
                   onChange={handleImportFile}
+                  className="hidden"
+                />
+              </label>
+
+              <button
+                type="button"
+                onClick={() => {
+                  const res = exportImagesBackupJson();
+                  setImportError(null);
+                  setImportSuccess(
+                    isAr
+                      ? `تم حفظ ملف الصور بنجاح (${res.productImagesCount} صورة منتج · ${res.categoryImagesCount} صورة قسم)`
+                      : `Images backup saved (${res.productImagesCount} products, ${res.categoryImagesCount} categories)`
+                  );
+                  setTimeout(() => setImportSuccess(null), 5000);
+                }}
+                className="px-4 py-2.5 text-xs font-black rounded-xl bg-violet-600 hover:bg-violet-700 text-white transition-colors flex items-center gap-2 shadow-2xs whitespace-nowrap shrink-0"
+              >
+                <ImagePlus className="w-4 h-4" />
+                <span>{isAr ? 'حفظ الصور' : 'Save Images'}</span>
+              </button>
+
+              <label className="px-4 py-2.5 text-xs font-black rounded-xl bg-amber-500 hover:bg-amber-600 text-slate-950 transition-colors flex items-center gap-2 shadow-2xs cursor-pointer whitespace-nowrap shrink-0">
+                <Upload className="w-4 h-4" />
+                <span>{isAr ? 'استرجاع الصور' : 'Restore Images'}</span>
+                <input
+                  type="file"
+                  accept=".json"
+                  onChange={handleImportImagesFile}
                   className="hidden"
                 />
               </label>
@@ -3254,6 +3317,12 @@ export const SettingsView: React.FC = () => {
                 <span>{t.reset_demo}</span>
               </button>
             </div>
+
+            <p className="text-[11px] text-slate-500 dark:text-slate-400">
+              {isAr
+                ? `الصور المحفوظة محلياً حالياً: ${products.filter((p) => Boolean(p.image)).length} صورة سلعة · ${categories.filter((c) => Boolean(c.image)).length} صورة قسم`
+                : `Local images stored: ${products.filter((p) => Boolean(p.image)).length} products · ${categories.filter((c) => Boolean(c.image)).length} categories`}
+            </p>
 
             {importSuccess && (
               <div className="text-xs text-emerald-700 dark:text-emerald-400 font-bold mt-2">

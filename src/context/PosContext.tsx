@@ -91,6 +91,7 @@ import { addBatchFefo, deductStockFefo } from '../utils/fefoBatches';
 import { matchEntityByName } from '../utils/darijaVoiceParser';
 import { generate2000MoroccanProducts } from '../utils/catalogGenerator';
 import { calculateTradeZakatSummary, ZakatSummary } from '../utils/zakat';
+import { computeCumulativeLoyaltyPoints } from '../utils/customerInsights';
 import { DEFAULT_DELIVERY_ZONES, REMOTE_ORDERS_CHANNEL } from '../utils/remoteCatalog';
 import {
   DEFAULT_CPU_SETTINGS,
@@ -136,6 +137,7 @@ import {
 import { loadRemiseBoxData, RemiseBoxData, saveRemiseBoxData } from '../utils/remiseVault';
 
 export type AppTabId =
+  | 'store_map'
   | 'home_summary'
   | 'pos'
   | 'branch_stock'
@@ -515,6 +517,17 @@ interface PosContextType {
   resetToDemoData: () => void;
   exportDatabaseJson: () => void;
   importDatabaseJson: (jsonStr: string) => boolean;
+  exportImagesBackupJson: () => {
+    productImagesCount: number;
+    categoryImagesCount: number;
+    hasStoreLogo: boolean;
+  };
+  importImagesBackupJson: (jsonStr: string) => {
+    success: boolean;
+    restoredProducts: number;
+    restoredCategories: number;
+    restoredLogo: boolean;
+  };
 }
 
 const PosContext = createContext<PosContextType | undefined>(undefined);
@@ -1389,13 +1402,18 @@ export const PosProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
 
     const loyaltyEnabled = settings.loyaltyEnabled !== false;
     const pointsPer100 = Math.max(0, Number(settings.loyaltyPointsPer100 ?? 10));
-    const voicePointsEarned = loyaltyEnabled
-      ? Math.floor((totalPrice / 100) * pointsPer100 + 1e-9)
-      : 0;
 
     // 2. Find or auto-create Customer (supports any spoken name)
     let targetCust = matchEntityByName(customers, cleanCustName);
     let createdCustomer = false;
+
+    const voiceLoyalty = computeCumulativeLoyaltyPoints(
+      totalPrice,
+      targetCust?.loyaltyCarrySpend || 0,
+      pointsPer100,
+      loyaltyEnabled
+    );
+    const voicePointsEarned = voiceLoyalty.pointsEarned;
 
     if (!targetCust) {
       createdCustomer = true;
@@ -1405,11 +1423,13 @@ export const PosProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
         name: cleanCustName,
         phone: '',
         points: voicePointsEarned,
+        loyaltyCarrySpend: voiceLoyalty.nextCarrySpend,
         balance: newBalance,
         tier: 'Silver',
         totalSpent: totalPrice,
         ordersCount: 1,
         createdAt: nowIso.split('T')[0],
+        lastVisit: nowIso,
         notes: 'تم إنشاؤه تلقائياً عبر التسجيل الصوتي'
       };
       setCustomers((prev) => [targetCust!, ...prev]);
@@ -1426,12 +1446,17 @@ export const PosProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
         totalSpent: nextTotalSpent,
         ordersCount: targetCust.ordersCount + 1,
         points: targetCust.points + voicePointsEarned,
+        loyaltyCarrySpend: voiceLoyalty.nextCarrySpend,
+        lastVisit: nowIso,
         balance: nextBal,
-        tier: nextTier
+        tier: nextTier,
+        updatedAt: Date.now()
       };
       setCustomers((prev) => prev.map((c) => (c.id === targetCust!.id ? updatedCust : c)));
       targetCust = updatedCust;
     }
+
+    adjustTodayVisitors(1);
 
     // 3. Record completed Order with all spoken items
     const orderNum = `#KD-${1000 + orders.length + 1}`;
@@ -5538,11 +5563,16 @@ export const PosProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
       cartTaxTotal.toString()
     );
 
-    // Calculate Loyalty Points (configurable points per 100 currency spent)
-    const pointsEarned =
-      loyaltyEnabled && selectedCustomer
-        ? Math.floor((finalGrandTotal / 100) * pointsPer100 + 1e-9)
-        : 0;
+    // Calculate Loyalty Points (cumulative spend carry-over so < 100 DH accumulates across visits)
+    const loyaltyCalc = selectedCustomer
+      ? computeCumulativeLoyaltyPoints(
+          finalGrandTotal,
+          selectedCustomer.loyaltyCarrySpend || 0,
+          pointsPer100,
+          loyaltyEnabled
+        )
+      : { pointsEarned: 0, nextCarrySpend: 0 };
+    const pointsEarned = loyaltyCalc.pointsEarned;
 
     const resolvedAmountTendered =
       amountTendered !== undefined ? amountTendered : finalGrandTotal;
@@ -5592,6 +5622,7 @@ export const PosProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
     // 1. Save order (persisted to IndexedDB + offline sync queue when offline)
     setOrders((prev) => [newOrder, ...prev]);
     setLastCompletedOrder(newOrder);
+    adjustTodayVisitors(1);
 
     if (isEmergencyOvertimeSale && currentEmergencySession) {
       recordOvertimeOrderInSession(
@@ -5736,9 +5767,12 @@ export const PosProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
               ...c,
               totalSpent: Number(newTotalSpent.toFixed(2)),
               points: newPoints,
+              loyaltyCarrySpend: loyaltyCalc.nextCarrySpend,
               ordersCount: newOrdersCount,
+              lastVisit: orderDate,
               tier,
-              balance: Number(newBalance.toFixed(2))
+              balance: Number(newBalance.toFixed(2)),
+              updatedAt: Date.now()
             };
           }
           return c;
@@ -6312,6 +6346,213 @@ export const PosProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
       return true;
     } catch {
       return false;
+    }
+  };
+
+  // Dedicated Images Backup & Restore (حفظ واسترجاع صور السلع والأقسام وشعار المتجر)
+  const exportImagesBackupJson = () => {
+    const nowIso = new Date().toISOString();
+    const productImages = products
+      .filter((p) => typeof p.image === 'string' && p.image.trim().length > 0)
+      .map((p) => ({
+        id: p.id,
+        barcode: p.barcode || '',
+        sku: p.sku || '',
+        name: p.name,
+        nameEn: p.nameEn || '',
+        image: p.image as string,
+        color: p.color || ''
+      }));
+
+    const categoryImages = categories
+      .filter((c) => typeof c.image === 'string' && c.image.trim().length > 0)
+      .map((c) => ({
+        id: c.id,
+        name: c.name,
+        nameEn: c.nameEn || '',
+        image: c.image as string
+      }));
+
+    const hasStoreLogo =
+      typeof settings.storeLogo === 'string' && settings.storeLogo.trim().length > 0;
+
+    const payload = {
+      type: 'kadi_pos_images_backup',
+      version: '1.0',
+      exportedAt: nowIso,
+      storeName: settings.storeName,
+      storeLogo: hasStoreLogo ? settings.storeLogo : undefined,
+      productImages,
+      categoryImages
+    };
+
+    const blob = new Blob([JSON.stringify(payload, null, 2)], { type: 'application/json' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = `kadi_pos_images_backup_${nowIso.slice(0, 10)}.json`;
+    a.click();
+    URL.revokeObjectURL(url);
+    if (settings.enableSoundEffects) playSound('success');
+
+    return {
+      productImagesCount: productImages.length,
+      categoryImagesCount: categoryImages.length,
+      hasStoreLogo
+    };
+  };
+
+  const importImagesBackupJson = (jsonStr: string) => {
+    try {
+      const data = JSON.parse(jsonStr);
+      if (!isPlainRecord(data)) {
+        return { success: false, restoredProducts: 0, restoredCategories: 0, restoredLogo: false };
+      }
+
+      const rawProductEntries: Array<{
+        id?: unknown;
+        barcode?: unknown;
+        sku?: unknown;
+        name?: unknown;
+        nameEn?: unknown;
+        image?: unknown;
+        color?: unknown;
+      }> = Array.isArray(data.productImages)
+        ? data.productImages
+        : Array.isArray(data.products)
+        ? data.products
+        : [];
+
+      const rawCategoryEntries: Array<{
+        id?: unknown;
+        name?: unknown;
+        nameEn?: unknown;
+        image?: unknown;
+      }> = Array.isArray(data.categoryImages)
+        ? data.categoryImages
+        : Array.isArray(data.categories)
+        ? data.categories
+        : [];
+
+      const rawLogo =
+        typeof data.storeLogo === 'string' && data.storeLogo.trim()
+          ? data.storeLogo.trim()
+          : isPlainRecord(data.settings) &&
+            typeof data.settings.storeLogo === 'string' &&
+            data.settings.storeLogo.trim()
+          ? data.settings.storeLogo.trim()
+          : '';
+
+      const hasAnyImagesPayload =
+        Array.isArray(data.productImages) ||
+        Array.isArray(data.categoryImages) ||
+        Array.isArray(data.products) ||
+        Array.isArray(data.categories) ||
+        Boolean(rawLogo);
+
+      if (!hasAnyImagesPayload) {
+        return { success: false, restoredProducts: 0, restoredCategories: 0, restoredLogo: false };
+      }
+
+      const byId = new Map<string, { image: string; color?: string }>();
+      const byBarcode = new Map<string, { image: string; color?: string }>();
+      const bySku = new Map<string, { image: string; color?: string }>();
+      const byName = new Map<string, { image: string; color?: string }>();
+
+      rawProductEntries.forEach((entry) => {
+        if (!entry || typeof entry !== 'object') return;
+        const img = typeof entry.image === 'string' ? entry.image.trim() : '';
+        if (!img) return;
+        const val = {
+          image: img,
+          color: typeof entry.color === 'string' && entry.color.trim() ? entry.color.trim() : undefined
+        };
+        if (typeof entry.id === 'string' && entry.id.trim()) byId.set(entry.id.trim(), val);
+        if (typeof entry.barcode === 'string' && entry.barcode.trim()) {
+          byBarcode.set(entry.barcode.trim(), val);
+        }
+        if (typeof entry.sku === 'string' && entry.sku.trim()) {
+          bySku.set(entry.sku.trim().toLowerCase(), val);
+        }
+        if (typeof entry.name === 'string' && entry.name.trim()) {
+          byName.set(entry.name.trim().toLowerCase(), val);
+        }
+        if (typeof entry.nameEn === 'string' && entry.nameEn.trim()) {
+          byName.set(entry.nameEn.trim().toLowerCase(), val);
+        }
+      });
+
+      let restoredProducts = 0;
+      if (byId.size > 0 || byBarcode.size > 0 || bySku.size > 0 || byName.size > 0) {
+        const nowMs = Date.now();
+        const nextProducts = products.map((p) => {
+          const match =
+            byId.get(p.id) ||
+            (p.barcode ? byBarcode.get(p.barcode.trim()) : undefined) ||
+            (p.sku ? bySku.get(p.sku.trim().toLowerCase()) : undefined) ||
+            byName.get(p.name.trim().toLowerCase()) ||
+            (p.nameEn ? byName.get(p.nameEn.trim().toLowerCase()) : undefined);
+          if (!match) return p;
+          if (p.image === match.image) return p;
+          restoredProducts++;
+          return {
+            ...p,
+            image: match.image,
+            color: p.color || match.color,
+            updatedAt: nowMs
+          };
+        });
+        if (restoredProducts > 0) {
+          setProducts(nextProducts);
+        }
+      }
+
+      const catById = new Map<string, string>();
+      const catByName = new Map<string, string>();
+      rawCategoryEntries.forEach((c) => {
+        if (!c || typeof c !== 'object') return;
+        const img = typeof c.image === 'string' ? c.image.trim() : '';
+        if (!img) return;
+        if (typeof c.id === 'string' && c.id.trim()) catById.set(c.id.trim(), img);
+        if (typeof c.name === 'string' && c.name.trim()) {
+          catByName.set(c.name.trim().toLowerCase(), img);
+        }
+        if (typeof c.nameEn === 'string' && c.nameEn.trim()) {
+          catByName.set(c.nameEn.trim().toLowerCase(), img);
+        }
+      });
+
+      let restoredCategories = 0;
+      if (catById.size > 0 || catByName.size > 0) {
+        const nextCats = categories.map((c) => {
+          const matchImg =
+            catById.get(c.id) ||
+            catByName.get(c.name.trim().toLowerCase()) ||
+            (c.nameEn ? catByName.get(c.nameEn.trim().toLowerCase()) : undefined);
+          if (!matchImg || c.image === matchImg) return c;
+          restoredCategories++;
+          return { ...c, image: matchImg };
+        });
+        if (restoredCategories > 0) {
+          setCategories(nextCats);
+        }
+      }
+
+      let restoredLogo = false;
+      if (rawLogo && rawLogo !== settings.storeLogo) {
+        updateSettings({ storeLogo: rawLogo });
+        restoredLogo = true;
+      }
+
+      if (settings.enableSoundEffects) playSound('success');
+      return {
+        success: true,
+        restoredProducts,
+        restoredCategories,
+        restoredLogo
+      };
+    } catch {
+      return { success: false, restoredProducts: 0, restoredCategories: 0, restoredLogo: false };
     }
   };
 
@@ -7816,7 +8057,9 @@ export const PosProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
         buildFullBackupObject,
         resetToDemoData,
         exportDatabaseJson,
-        importDatabaseJson
+        importDatabaseJson,
+        exportImagesBackupJson,
+        importImagesBackupJson
       }}
     >
       {children}

@@ -23,7 +23,8 @@ import {
   markPriceAlertFixed,
   OldStockPriceIssue,
   parseMoroccanNumber,
-  recordPriceAlert
+  recordPriceAlert,
+  sanitizeDecimalInput
 } from '../../utils/priceAlerts';
 import {
   Search,
@@ -357,7 +358,7 @@ export const ProductGrid: React.FC<ProductGridProps> = ({ onOpenBarcodeScanner }
       return;
     }
 
-    const rawPrice = parseFloat(buyPriceInput.replace(',', '.'));
+    const rawPrice = parseMoroccanNumber(buyPriceInput);
     if (!Number.isFinite(rawPrice) || rawPrice <= 0) {
       setBuyModalError(
         isAr ? 'كتب الثمن الصحيح' : isFr ? 'Saisissez un prix valide' : 'Please enter a valid price'
@@ -366,7 +367,7 @@ export const ProductGrid: React.FC<ProductGridProps> = ({ onOpenBarcodeScanner }
     }
 
     const cleanQty = Number(rawQty.toFixed(2));
-    const cleanPrice = Number(rawPrice.toFixed(2));
+    const cleanPrice = Number(rawPrice.toFixed(4));
 
     adjustStock(
       buyModalProduct.id,
@@ -1383,12 +1384,11 @@ export const ProductGrid: React.FC<ProductGridProps> = ({ onOpenBarcodeScanner }
                 </span>
               </div>
               <input
-                type="number"
-                step="0.01"
-                min="0.01"
+                type="text"
+                inputMode="decimal"
                 value={buyPriceInput}
                 onChange={(e) => {
-                  setBuyPriceInput(e.target.value);
+                  setBuyPriceInput(sanitizeDecimalInput(e.target.value));
                   if (buyModalError) setBuyModalError(null);
                 }}
                 placeholder={String(buyModalProduct.price)}

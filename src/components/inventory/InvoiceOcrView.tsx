@@ -1322,7 +1322,7 @@ export const InvoiceOcrView: React.FC = () => {
                 </label>
                 <input
                   type="number"
-                  step="0.01"
+                  step="any"
                   min="0"
                   value={defaultSell}
                   onChange={(e) => {
@@ -1472,7 +1472,7 @@ export const InvoiceOcrView: React.FC = () => {
                             </button>
                             <input
                               type="number"
-                              step="0.1"
+                              step="any"
                               min="0.01"
                               value={it.quantity}
                               onChange={(e) =>
@@ -1498,7 +1498,7 @@ export const InvoiceOcrView: React.FC = () => {
                         <td className="py-2 px-2 text-end">
                           <input
                             type="number"
-                            step="0.01"
+                            step="any"
                             min="0"
                             value={it.buyPrice}
                             onChange={(e) =>
@@ -1512,7 +1512,7 @@ export const InvoiceOcrView: React.FC = () => {
                         <td className="py-2 px-2 text-end">
                           <input
                             type="number"
-                            step="0.01"
+                            step="any"
                             min="0"
                             value={it.sellPrice}
                             onChange={(e) => updateDraftItem(it.id, { sellPrice: e.target.value })}

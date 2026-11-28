@@ -1203,7 +1203,7 @@ export const ShopEarView: React.FC = () => {
                     <td className="py-2.5 px-3 text-end">
                       <input
                         type="number"
-                        step="0.5"
+                        step="any"
                         min="0"
                         value={it.wholesaleCost}
                         onChange={(e) =>
@@ -1221,7 +1221,7 @@ export const ShopEarView: React.FC = () => {
                     <td className="py-2.5 px-3 text-end">
                       <input
                         type="number"
-                        step="0.5"
+                        step="any"
                         min="0"
                         value={it.sellPrice}
                         onChange={(e) =>

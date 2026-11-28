@@ -34,7 +34,7 @@ import { compressImageFile } from '../../utils/imageUtils';
 import { lookupProductByBarcode } from '../../utils/openFoodFacts';
 import { bluetoothScanner } from '../../utils/bluetoothScanner';
 import { PriceAlertAdvisor } from '../alerts/PriceAlertAdvisor';
-import { recordPriceAlert } from '../../utils/priceAlerts';
+import { parseMoroccanNumber, recordPriceAlert, sanitizeDecimalInput } from '../../utils/priceAlerts';
 import { RetailProductSearchSelect } from './RetailProductSearchSelect';
 
 interface AddProductModalProps {
@@ -100,8 +100,10 @@ export const AddProductModal: React.FC<AddProductModalProps> = ({
   const [unitType, setUnitType] = useState<UnitType>('piece');
 
   // Pricing, Cost & Wholesale Tiers
-  const [price, setPrice] = useState<number>(0);
-  const [costPrice, setCostPrice] = useState<number>(0);
+  const [priceInput, setPriceInput] = useState<string>('');
+  const [costPriceInput, setCostPriceInput] = useState<string>('');
+  const price = parseMoroccanNumber(priceInput);
+  const costPrice = parseMoroccanNumber(costPriceInput);
   const [scalePlu, setScalePlu] = useState<string>('');
   const [boxChildProductId, setBoxChildProductId] = useState<string>('');
   const [unitsPerBox, setUnitsPerBox] = useState<string>('');
@@ -139,8 +141,8 @@ export const AddProductModal: React.FC<AddProductModalProps> = ({
       );
       setSoldBy('each');
       setUnitType('piece');
-      setPrice(0);
-      setCostPrice(0);
+      setPriceInput('');
+      setCostPriceInput('');
       setTrackStock(true);
       setStockInput('20');
       setLowStockThreshold(5);
@@ -237,7 +239,7 @@ export const AddProductModal: React.FC<AddProductModalProps> = ({
 
   // Variants (Loyverse multi-size / flavor variants)
   const [hasVariants, setHasVariants] = useState<boolean>(false);
-  const [variantsList, setVariantsList] = useState<Array<{ name: string; price: number; costPrice: number; stock: number; sku: string }>>([
+  const [variantsList, setVariantsList] = useState<Array<{ name: string; price: number | string; costPrice: number; stock: number; sku: string }>>([
     { name: isAr ? 'صغير (Small)' : 'Small', price: 20, costPrice: 8, stock: 25, sku: 'VAR-SM' },
     { name: isAr ? 'كبير (Large)' : 'Large', price: 28, costPrice: 11, stock: 25, sku: 'VAR-LG' }
   ]);
@@ -412,14 +414,17 @@ export const AddProductModal: React.FC<AddProductModalProps> = ({
 
     // Build ProductVariant array if hasVariants is true
     const parsedVariants: ProductVariant[] | undefined = hasVariants && variantsList.length > 0
-      ? variantsList.map((v, i) => ({
-          id: `var-${Date.now()}-${i}`,
-          name: v.name,
-          sku: v.sku || `SKU-${finalBarcode.slice(-4)}-${i + 1}`,
-          price: Number(v.price) || price,
-          costPrice: Number(v.costPrice) || costPrice,
-          stock: Number(v.stock) || 0
-        }))
+      ? variantsList.map((v, i) => {
+          const parsedVarPrice = parseMoroccanNumber(v.price);
+          return {
+            id: `var-${Date.now()}-${i}`,
+            name: v.name,
+            sku: v.sku || `SKU-${finalBarcode.slice(-4)}-${i + 1}`,
+            price: parsedVarPrice > 0 ? parsedVarPrice : price,
+            costPrice: Number(v.costPrice) || costPrice,
+            stock: Number(v.stock) || 0
+          };
+        })
       : undefined;
 
     const parsedSingleStock = parseFloat(stockInput.replace(',', '.'));
@@ -436,10 +441,10 @@ export const AddProductModal: React.FC<AddProductModalProps> = ({
         : categories.find((c) => c.id !== 'cat-all')?.id || 'cat-oils-grains';
 
     const parsedUnitsPerBox = parseInt(unitsPerBox, 10);
-    const parsedSemiQty = parseFloat(semiWholesaleMinQty);
-    const parsedSemiPrice = parseFloat(semiWholesalePrice);
-    const parsedWsQty = parseFloat(wholesaleMinQty);
-    const parsedWsPrice = parseFloat(wholesalePrice);
+    const parsedSemiQty = parseFloat(semiWholesaleMinQty.replace(',', '.'));
+    const parsedSemiPrice = parseMoroccanNumber(semiWholesalePrice);
+    const parsedWsQty = parseFloat(wholesaleMinQty.replace(',', '.'));
+    const parsedWsPrice = parseMoroccanNumber(wholesalePrice);
 
     const newProductData: Omit<Product, 'id'> = {
       name: name.trim(),
@@ -1052,16 +1057,12 @@ export const AddProductModal: React.FC<AddProductModalProps> = ({
                 </label>
                 <div className="relative">
                   <input
-                    type="number"
-                    step="0.01"
-                    min="0"
+                    type="text"
+                    inputMode="decimal"
                     required
-                    value={price === 0 ? '' : price}
+                    value={priceInput}
                     placeholder="0.00"
-                    onChange={(e) => {
-                      const val = e.target.value;
-                      setPrice(val === '' ? 0 : parseFloat(val) || 0);
-                    }}
+                    onChange={(e) => setPriceInput(sanitizeDecimalInput(e.target.value))}
                     className="w-full px-3 py-2 bg-white dark:bg-slate-800 border border-slate-300 dark:border-slate-700 rounded-xl text-slate-900 dark:text-white font-mono font-bold tabular-nums text-sm focus:border-emerald-500"
                   />
                   <span className="absolute end-3 top-1/2 -translate-y-1/2 text-slate-400 font-bold">
@@ -1076,15 +1077,11 @@ export const AddProductModal: React.FC<AddProductModalProps> = ({
                 </label>
                 <div className="relative">
                   <input
-                    type="number"
-                    step="0.25"
-                    min="0"
-                    value={costPrice === 0 ? '' : costPrice}
+                    type="text"
+                    inputMode="decimal"
+                    value={costPriceInput}
                     placeholder="0.00"
-                    onChange={(e) => {
-                      const val = e.target.value;
-                      setCostPrice(val === '' ? 0 : parseFloat(val) || 0);
-                    }}
+                    onChange={(e) => setCostPriceInput(sanitizeDecimalInput(e.target.value))}
                     className="w-full px-3 py-2 bg-white dark:bg-slate-800 border border-slate-300 dark:border-slate-700 rounded-xl text-slate-900 dark:text-white font-mono font-bold tabular-nums text-sm focus:border-emerald-500"
                   />
                   <span className="absolute end-3 top-1/2 -translate-y-1/2 text-slate-400 font-bold">
@@ -1110,8 +1107,8 @@ export const AddProductModal: React.FC<AddProductModalProps> = ({
               currencySymbol={currencySymbol}
               isAr={isAr}
               onApplyChoice={(patch) => {
-                if (typeof patch.price === 'number') setPrice(patch.price);
-                if (typeof patch.costPrice === 'number') setCostPrice(patch.costPrice);
+                if (typeof patch.price === 'number') setPriceInput(String(patch.price));
+                if (typeof patch.costPrice === 'number') setCostPriceInput(String(patch.costPrice));
               }}
             />
 
@@ -1140,11 +1137,10 @@ export const AddProductModal: React.FC<AddProductModalProps> = ({
                     {isAr ? `سعر نصف الجملة (${currencySymbol})` : 'Semi-WS Price'}
                   </label>
                   <input
-                    type="number"
-                    min="0"
-                    step="0.05"
+                    type="text"
+                    inputMode="decimal"
                     value={semiWholesalePrice}
-                    onChange={(e) => setSemiWholesalePrice(e.target.value)}
+                    onChange={(e) => setSemiWholesalePrice(sanitizeDecimalInput(e.target.value))}
                     placeholder="0.00"
                     className="w-full px-2.5 py-1.5 text-xs font-mono bg-white dark:bg-slate-800 border border-slate-300 dark:border-slate-700 rounded-lg text-slate-900 dark:text-white"
                   />
@@ -1168,11 +1164,10 @@ export const AddProductModal: React.FC<AddProductModalProps> = ({
                     {isAr ? `سعر الجملة (${currencySymbol})` : 'Wholesale Price'}
                   </label>
                   <input
-                    type="number"
-                    min="0"
-                    step="0.05"
+                    type="text"
+                    inputMode="decimal"
                     value={wholesalePrice}
-                    onChange={(e) => setWholesalePrice(e.target.value)}
+                    onChange={(e) => setWholesalePrice(sanitizeDecimalInput(e.target.value))}
                     placeholder="0.00"
                     className="w-full px-2.5 py-1.5 text-xs font-mono bg-white dark:bg-slate-800 border border-slate-300 dark:border-slate-700 rounded-lg text-slate-900 dark:text-white"
                   />
@@ -1538,10 +1533,10 @@ export const AddProductModal: React.FC<AddProductModalProps> = ({
                     <div className="col-span-3">
                       <div className="relative">
                         <input
-                          type="number"
-                          step="0.25"
+                          type="text"
+                          inputMode="decimal"
                           value={variant.price}
-                          onChange={(e) => updateVariantRow(index, 'price', parseFloat(e.target.value) || 0)}
+                          onChange={(e) => updateVariantRow(index, 'price', sanitizeDecimalInput(e.target.value))}
                           placeholder="السعر"
                           className="w-full px-2 py-1 bg-slate-50 dark:bg-slate-700 border border-slate-300 dark:border-slate-600 rounded-lg text-xs font-mono font-bold tabular-nums"
                         />

@@ -3,6 +3,7 @@ import { usePos } from '../../context/PosContext';
 import { Category, Product, SupplierInvoice } from '../../types';
 import { exportMarketRadarWeeklyPdf } from '../../utils/exportReports';
 import { getLocalTodayYMD } from '../../utils/expenses';
+import { parseMoroccanNumber, sanitizeDecimalInput } from '../../utils/priceAlerts';
 import {
   Compass,
   Download,
@@ -547,8 +548,10 @@ export const MarketRadarView: React.FC = () => {
     e.preventDefault();
     if (!quickStockTarget) return;
 
-    const sell = Math.max(0.5, parseFloat(quickSellPrice) || 10);
-    const cost = Math.max(0, parseFloat(quickCostPrice) || Number((sell * 0.78).toFixed(2)));
+    const parsedSell = parseMoroccanNumber(quickSellPrice);
+    const sell = parsedSell > 0 ? parsedSell : 10;
+    const parsedCost = parseMoroccanNumber(quickCostPrice);
+    const cost = quickCostPrice.trim() !== '' ? Math.max(0, parsedCost) : Number((sell * 0.78).toFixed(2));
     const qty = Math.max(1, parseFloat(quickStockQty) || 6);
     const fallbackCat =
       quickStockTarget.classification.matchedCatalogCategoryId ||
@@ -1111,12 +1114,11 @@ export const MarketRadarView: React.FC = () => {
                   {isAr ? `ثمن البيع (${currencySymbol})` : 'Sell Price'}
                 </label>
                 <input
-                  type="number"
-                  step="0.01"
-                  min="0.1"
+                  type="text"
+                  inputMode="decimal"
                   required
                   value={quickSellPrice}
-                  onChange={(e) => setQuickSellPrice(e.target.value)}
+                  onChange={(e) => setQuickSellPrice(sanitizeDecimalInput(e.target.value))}
                   className="w-full px-3 py-2 rounded-xl bg-slate-50 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 font-mono font-bold text-slate-900 dark:text-white"
                 />
               </div>
@@ -1126,12 +1128,11 @@ export const MarketRadarView: React.FC = () => {
                   {isAr ? `ثمن الجملة (${currencySymbol})` : 'Cost Price'}
                 </label>
                 <input
-                  type="number"
-                  step="0.01"
-                  min="0"
+                  type="text"
+                  inputMode="decimal"
                   required
                   value={quickCostPrice}
-                  onChange={(e) => setQuickCostPrice(e.target.value)}
+                  onChange={(e) => setQuickCostPrice(sanitizeDecimalInput(e.target.value))}
                   className="w-full px-3 py-2 rounded-xl bg-slate-50 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 font-mono font-bold text-slate-900 dark:text-white"
                 />
               </div>

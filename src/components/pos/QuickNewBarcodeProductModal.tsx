@@ -6,7 +6,7 @@ import { playSound } from '../../utils/audio';
 import { lookupProductByBarcode } from '../../utils/openFoodFacts';
 import { Barcode, CheckCircle2, Globe, Loader2, PackagePlus, Search, Sparkles, X } from 'lucide-react';
 import { PriceAlertAdvisor } from '../alerts/PriceAlertAdvisor';
-import { parseMoroccanNumber, recordPriceAlert } from '../../utils/priceAlerts';
+import { parseMoroccanNumber, recordPriceAlert, sanitizeDecimalInput } from '../../utils/priceAlerts';
 
 export type QuickBarcodeSourceContext = 'pos' | 'inventory' | 'invoice' | 'price_checker' | 'global';
 
@@ -364,14 +364,13 @@ export const QuickNewBarcodeProductModal: React.FC<QuickNewBarcodeProductModalPr
                 {isAr ? `ثمن البيع (${currencySymbol}) *` : `Sale Price (${currencySymbol}) *`}
               </label>
               <input
-                type="number"
-                step="0.01"
-                min="0.1"
+                type="text"
+                inputMode="decimal"
                 required
                 data-barcode-allow-input="true"
                 value={price}
                 onChange={(e) => {
-                  setPrice(e.target.value);
+                  setPrice(sanitizeDecimalInput(e.target.value));
                   if (errorMsg) setErrorMsg(null);
                 }}
                 placeholder="0.00"
@@ -384,12 +383,11 @@ export const QuickNewBarcodeProductModal: React.FC<QuickNewBarcodeProductModalPr
                 {isAr ? `ثمن الشراء (${currencySymbol})` : `Cost Price (${currencySymbol})`}
               </label>
               <input
-                type="number"
-                step="0.01"
-                min="0"
+                type="text"
+                inputMode="decimal"
                 data-barcode-allow-input="true"
                 value={costPrice}
-                onChange={(e) => setCostPrice(e.target.value)}
+                onChange={(e) => setCostPrice(sanitizeDecimalInput(e.target.value))}
                 placeholder={isAr ? 'اختياري' : 'Optional'}
                 className="w-full px-3.5 py-2.5 text-base font-mono font-bold rounded-xl bg-slate-50 dark:bg-slate-800 border border-slate-300 dark:border-slate-700 text-slate-900 dark:text-white focus:outline-none focus:ring-2 focus:ring-emerald-500"
               />

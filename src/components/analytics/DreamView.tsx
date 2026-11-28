@@ -1,5 +1,6 @@
 import React, { useMemo, useState } from 'react';
 import { usePos } from '../../context/PosContext';
+import { parseMoroccanNumber, sanitizeDecimalInput } from '../../utils/priceAlerts';
 import {
   Sparkles,
   TrendingUp,
@@ -75,8 +76,8 @@ export const DreamView: React.FC = () => {
   const [calcVente, setCalcVente] = useState<string>('13');
   const [calcSavedNotice, setCalcSavedNotice] = useState<string | null>(null);
 
-  const calcNumAchat = Math.max(0, Number(calcAchat) || 0);
-  const calcNumVente = Math.max(0, Number(calcVente) || 0);
+  const calcNumAchat = Math.max(0, parseMoroccanNumber(calcAchat));
+  const calcNumVente = Math.max(0, parseMoroccanNumber(calcVente));
   const calcProfit = Number((calcNumVente - calcNumAchat).toFixed(2));
   const calcMarginPct = calcNumVente > 0 ? Number(((calcProfit / calcNumVente) * 100).toFixed(1)) : 0;
 
@@ -822,11 +823,10 @@ export const DreamView: React.FC = () => {
                 ثمن الشراء Achat ({currencySymbol})
               </label>
               <input
-                type="number"
-                min="0"
-                step="0.5"
+                type="text"
+                inputMode="decimal"
                 value={calcAchat}
-                onChange={(e) => setCalcAchat(e.target.value)}
+                onChange={(e) => setCalcAchat(sanitizeDecimalInput(e.target.value))}
                 className="w-full px-3 py-2 rounded-xl bg-slate-900 border border-slate-700 text-sm font-mono font-bold text-white focus:outline-none focus:border-emerald-400"
               />
             </div>
@@ -836,11 +836,10 @@ export const DreamView: React.FC = () => {
                 ثمن البيع Vente ({currencySymbol})
               </label>
               <input
-                type="number"
-                min="0"
-                step="0.5"
+                type="text"
+                inputMode="decimal"
                 value={calcVente}
-                onChange={(e) => setCalcVente(e.target.value)}
+                onChange={(e) => setCalcVente(sanitizeDecimalInput(e.target.value))}
                 className="w-full px-3 py-2 rounded-xl bg-slate-900 border border-slate-700 text-sm font-mono font-bold text-white focus:outline-none focus:border-amber-400"
               />
             </div>

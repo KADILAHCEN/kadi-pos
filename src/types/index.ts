@@ -160,6 +160,8 @@ export interface Customer {
   ordersCount: number;
   creditLimit?: number; // سقف الكريدي الأقصى
   createdAt: string;
+  lastVisit?: string; // ISO timestamp of most recent completed purchase
+  loyaltyCarrySpend?: number; // Remaining spend (< threshold) carried forward to next purchase
   notes?: string;
   updatedAt?: number;
 }

@@ -34,7 +34,8 @@ import {
   Award,
   Ear,
   Compass,
-  Home
+  Home,
+  LayoutGrid
 } from 'lucide-react';
 
 export type TabIconKey =
@@ -72,7 +73,8 @@ export type TabIconKey =
   | 'award'
   | 'ear'
   | 'compass'
-  | 'home';
+  | 'home'
+  | 'layout_grid';
 
 export type TabColorKey =
   | 'emerald'
@@ -94,6 +96,7 @@ export interface TabIconOption {
 }
 
 export const TAB_ICON_OPTIONS: TabIconOption[] = [
+  { key: 'layout_grid', labelAr: 'خريطة الأقسام', labelEn: 'Store Map', icon: LayoutGrid },
   { key: 'home', labelAr: 'الرئيسية / المحال', labelEn: 'Home', icon: Home },
   { key: 'store', labelAr: 'متجر', labelEn: 'Store', icon: Store },
   { key: 'shopping_bag', labelAr: 'سلة تسوق', labelEn: 'Shopping Bag', icon: ShoppingBag },
@@ -304,6 +307,7 @@ export const TAB_COLOR_PRESETS: Record<TabColorKey, TabColorPreset> = {
 
 export interface PosTabDefinition {
   id:
+    | 'store_map'
     | 'home_summary'
     | 'pos'
     | 'branch_stock'
@@ -337,6 +341,7 @@ export interface PosTabDefinition {
 }
 
 export const FOCUSED_CASHIER_TAB_IDS: ReadonlySet<PosTabDefinition['id']> = new Set([
+  'store_map',
   'home_summary',
   'pos',
   'customers',
@@ -348,6 +353,18 @@ export const FOCUSED_CASHIER_TAB_IDS: ReadonlySet<PosTabDefinition['id']> = new 
 ]);
 
 export const POS_TAB_CATALOG: PosTabDefinition[] = [
+  {
+    id: 'store_map',
+    labelAr: 'خريطة المحال (21 قسم)',
+    labelFr: 'Carte Boutique (21)',
+    labelEn: 'Store Map (21)',
+    shortLabelAr: 'الخريطة',
+    shortLabelFr: 'Carte',
+    shortLabelEn: 'Map',
+    defaultIcon: 'layout_grid',
+    defaultColor: 'orange',
+    showInTopNav: true
+  },
   {
     id: 'home_summary',
     labelAr: 'فين مشى المحال',
